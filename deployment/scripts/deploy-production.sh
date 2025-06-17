@@ -238,9 +238,12 @@ install_service() {
     
     local current_dir=$(pwd)
     
+    # Copy original service file to temp location for modification
+    cp "deployment/systemd/monad-analytics.service" "/tmp/monad-analytics.service"
+    
     # Update service file with current directory and correct Node.js path
-    sed "s|WorkingDirectory=/opt/monad-analytics|WorkingDirectory=$current_dir|g" \
-        "deployment/systemd/monad-analytics.service" > "/tmp/monad-analytics.service"
+    sed -i "s|WorkingDirectory=/opt/monad-analytics|WorkingDirectory=$current_dir|g" \
+        "/tmp/monad-analytics.service"
     
     sed -i "s|EnvironmentFile=-/opt/monad-analytics/.env|EnvironmentFile=-$current_dir/.env|g" \
         "/tmp/monad-analytics.service"
