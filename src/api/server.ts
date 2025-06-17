@@ -15,6 +15,7 @@ import { ValidatorController } from './controllers/ValidatorController';
 import { NetworkController } from './controllers/NetworkController';
 import { EventController } from './controllers/EventController';
 import { AdminController } from './controllers/AdminController';
+import { QueryPerformanceController } from './controllers/QueryPerformanceController';
 
 // Import Routes
 import { createHealthRoutes } from './routes/health';
@@ -22,6 +23,7 @@ import { createValidatorRoutes } from './routes/validators';
 import { createNetworkRoutes } from './routes/network';
 import { createEventRoutes } from './routes/events';
 import { createAdminRoutes } from './routes/admin';
+import { createQueryPerformanceRoutes } from './routes/query-performance';
 
 export interface APIServerConfig {
   port: number;
@@ -51,6 +53,7 @@ export class AnalyticsAPIServer {
   private networkController!: NetworkController;
   private eventController!: EventController;
   private adminController!: AdminController;
+  private queryPerformanceController!: QueryPerformanceController;
 
   constructor(config: APIServerConfig, ingestionService: DataIngestionService) {
     this.config = config;
@@ -121,6 +124,10 @@ export class AnalyticsAPIServer {
       this.clickhouseClient,
       this.redisClient
     );
+
+    this.queryPerformanceController = new QueryPerformanceController(
+      this.clickhouseClient
+    );
   }
 
   // =============================================
@@ -185,6 +192,7 @@ export class AnalyticsAPIServer {
     this.app.use('/', createNetworkRoutes(this.networkController));
     this.app.use('/', createEventRoutes(this.eventController));
     this.app.use('/', createAdminRoutes(this.adminController));
+    this.app.use('/', createQueryPerformanceRoutes(this.queryPerformanceController));
 
     // API documentation endpoint
     this.app.get('/api/docs', this.handleApiDocs.bind(this));
