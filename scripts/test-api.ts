@@ -14,7 +14,7 @@ class APITester {
   private baseUrl: string;
   private results: TestResult[] = [];
 
-  constructor(baseUrl: string = 'http://localhost:3000') {
+  constructor(baseUrl: string = 'http://localhost:4000') {
     this.baseUrl = baseUrl;
   }
 

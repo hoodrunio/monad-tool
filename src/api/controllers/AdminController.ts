@@ -245,8 +245,10 @@ export class AdminController {
       // Get disk usage and performance metrics
       const diskUsageQuery = `
         SELECT 
-          formatReadableSize(free_space) as free_space,
-          formatReadableSize(total_space) as total_space,
+          formatReadableSize(free_space) as free_space_readable,
+          formatReadableSize(total_space) as total_space_readable,
+          free_space,
+          total_space,
           round((total_space - free_space) / total_space * 100, 2) as disk_usage_percent
         FROM system.disks 
         WHERE name = 'default'

@@ -260,9 +260,9 @@ export class NetworkController {
         SELECT 
           toStartOfMinute(timestamp) as minute,
           COUNT(*) as total_consensus_events,
-          COUNT(CASE WHEN event_type LIKE '%vote%' THEN 1 END) as vote_events,
-          COUNT(CASE WHEN event_type LIKE '%qc%' THEN 1 END) as qc_events,
-          COUNT(CASE WHEN event_type LIKE '%block%' THEN 1 END) as block_events,
+          COUNT(CASE WHEN toString(event_type) LIKE '%vote%' THEN 1 END) as vote_events,
+          COUNT(CASE WHEN toString(event_type) LIKE '%qc%' THEN 1 END) as qc_events,
+          COUNT(CASE WHEN toString(event_type) LIKE '%block%' THEN 1 END) as block_events,
           AVG(processing_delay_ms) as avg_processing_time,
           COUNT(DISTINCT validator_id) as participating_validators
         FROM validator_events
