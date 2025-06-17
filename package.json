@@ -11,6 +11,7 @@
     "test:watch": "jest --watch",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
+    "health": "ts-node scripts/health-check.ts",
     "schema:init": "ts-node scripts/init-schema.ts",
     "demo:process-logs": "ts-node scripts/demo-process-logs.ts",
     "docker:build": "docker build -t monad-analytics .",
@@ -70,10 +71,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/monad/validator-analytics.git"
+    "url": "https://github.com/hoodrunio/monad-tool.git"
   },
   "bugs": {
-    "url": "https://github.com/monad/validator-analytics/issues"
+    "url": "https://github.com/hoodrunio/monad-tool/issues"
   },
-  "homepage": "https://github.com/monad/validator-analytics#readme"
+  "homepage": "https://github.com/hoodrunio/monad-tool#readme"
 } 
