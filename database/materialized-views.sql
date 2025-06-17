@@ -17,14 +17,14 @@ SELECT
     -- Round progression metrics
     uniqState(round_number) as total_rounds,
     countIfState(event_type = 'qc_commit_triggered') as successful_rounds,
-    avgState(CASE WHEN event_type = 'qc_commit_triggered' THEN processing_delay_ms END) as avg_round_time,
+    avgIfState(processing_delay_ms, event_type = 'qc_commit_triggered') as avg_round_time,
     
     -- QC participation efficiency
-    avgState(participation_rate) as avg_qc_participation_rate,
+    avgState(toFloat32(coalesce(participation_rate, 0.0))) as avg_qc_participation_rate,
     
     -- Block metrics
     countIfState(event_type IN ('block_proposal', 'block_committed')) as total_blocks,
-    avgState(CASE WHEN event_type = 'block_committed' THEN processing_delay_ms END) as avg_block_time,
+    avgIfState(processing_delay_ms, event_type = 'block_committed') as avg_block_time,
     avgState(processing_delay_ms) as avg_processing_delay,
     
     -- Validator activity
@@ -33,7 +33,7 @@ SELECT
     uniqState(infrastructure_provider) as active_providers,
     
     -- Performance indicators
-    avgState(CASE WHEN event_type = 'qc_commit_triggered' THEN participation_rate * 100 END) as consensus_efficiency,
+    avgIfState(toFloat32(coalesce(participation_rate, 0.0) * 100), event_type = 'qc_commit_triggered') as consensus_efficiency,
     quantileState(0.95)(processing_delay_ms) as network_latency_p95
 FROM validator_events
 WHERE event_type IN ('qc_commit_triggered', 'block_proposal', 'block_committed', 'vote_created')
@@ -55,20 +55,20 @@ SELECT
     countIfState(event_type = 'block_proposal') as blocks_proposed,
     countIfState(event_type = 'block_committed') as blocks_committed,
     countIfState(event_type = 'block_skipped') as blocks_skipped,
-    avgState(CASE WHEN event_type IN ('block_proposal', 'block_committed') THEN processing_delay_ms END) as avg_proposal_delay,
+    avgIfState(processing_delay_ms, event_type IN ('block_proposal', 'block_committed')) as avg_proposal_delay,
     
     -- Voting performance
     countIfState(event_type = 'vote_attempt') as votes_attempted,
     countIfState(event_type = 'vote_result' AND is_successful = 1) as votes_successful,
-    avgState(CASE WHEN event_type IN ('vote_attempt', 'vote_result') THEN processing_delay_ms END) as avg_vote_latency,
+    avgIfState(processing_delay_ms, event_type IN ('vote_attempt', 'vote_result')) as avg_vote_latency,
     
     -- QC participation
     countIfState(event_type = 'qc_commit_triggered') as qc_participations,
-    avgState(participation_rate) as avg_qc_participation_rate,
+    avgState(toFloat32(coalesce(participation_rate, 0.0))) as avg_qc_participation_rate,
     
     -- Leadership metrics
     countIfState(event_type = 'vote_created') as leadership_rounds,
-    avgState(CASE WHEN event_type = 'vote_created' THEN processing_delay_ms END) as avg_leadership_latency
+    avgIfState(processing_delay_ms, event_type = 'vote_created') as avg_leadership_latency
 FROM validator_events
 WHERE timestamp >= now() - INTERVAL 25 HOUR -- Process last 25 hours to ensure completeness
 GROUP BY timestamp, validator_id;
@@ -84,20 +84,20 @@ SELECT
     countIfState(event_type = 'block_proposal') as blocks_proposed,
     countIfState(event_type = 'block_committed') as blocks_committed,
     countIfState(event_type = 'block_skipped') as blocks_skipped,
-    avgState(CASE WHEN event_type IN ('block_proposal', 'block_committed') THEN processing_delay_ms END) as avg_proposal_delay,
+    avgIfState(processing_delay_ms, event_type IN ('block_proposal', 'block_committed')) as avg_proposal_delay,
     
     -- Voting performance
     countIfState(event_type = 'vote_attempt') as votes_attempted,
     countIfState(event_type = 'vote_result' AND is_successful = 1) as votes_successful,
-    avgState(CASE WHEN event_type IN ('vote_attempt', 'vote_result') THEN processing_delay_ms END) as avg_vote_latency,
+    avgIfState(processing_delay_ms, event_type IN ('vote_attempt', 'vote_result')) as avg_vote_latency,
     
     -- QC participation
     countIfState(event_type = 'qc_commit_triggered') as qc_participations,
-    avgState(participation_rate) as avg_qc_participation_rate,
+    avgState(toFloat32(coalesce(participation_rate, 0.0))) as avg_qc_participation_rate,
     
     -- Leadership metrics
     countIfState(event_type = 'vote_created') as leadership_rounds,
-    avgState(CASE WHEN event_type = 'vote_created' THEN processing_delay_ms END) as avg_leadership_latency
+    avgIfState(processing_delay_ms, event_type = 'vote_created') as avg_leadership_latency
 FROM validator_events
 WHERE timestamp >= now() - INTERVAL 2 HOUR
 GROUP BY timestamp, validator_id;
@@ -123,11 +123,11 @@ SELECT
     avgState(processing_delay_ms) as avg_latency,
     
     -- Network contribution
-    avgState(participation_rate) as qc_participation_rate,
+    avgState(toFloat32(coalesce(participation_rate, 0.0))) as qc_participation_rate,
     countIfState(event_type = 'vote_created') as leadership_assignments,
     
     -- Risk metrics (concentration and diversity)
-    maxState(CASE WHEN event_type = 'block_proposal' THEN 1.0 END) as validator_concentration,
+    maxIfState(toFloat32(1.0), event_type = 'block_proposal') as validator_concentration,
     uniqState(infrastructure_provider) as provider_diversity
 FROM validator_events
 WHERE geographic_region != ''
@@ -186,28 +186,30 @@ GROUP BY validator_id;
 -- 6. NETWORK HEALTH ALERTS PREPARATION
 -- =============================================
 
--- Real-time network health indicators for alerting
-CREATE MATERIALIZED VIEW network_health_alerts_mv
+-- Real-time network health indicators for alerting - Consensus Efficiency
+CREATE MATERIALIZED VIEW network_health_consensus_alerts_mv
 ENGINE = ReplacingMergeTree(timestamp)
 ORDER BY (alert_type, timestamp)
 AS SELECT 
     toStartOfMinute(timestamp) as timestamp,
     'consensus_efficiency' as alert_type,
-    avg(participation_rate) as metric_value,
+    avg(toFloat32(coalesce(participation_rate, 0.0))) as metric_value,
     CASE 
-        WHEN avg(participation_rate) < 0.8 THEN 'critical'
-        WHEN avg(participation_rate) < 0.9 THEN 'warning'
+        WHEN avg(toFloat32(coalesce(participation_rate, 0.0))) < 0.8 THEN 'critical'
+        WHEN avg(toFloat32(coalesce(participation_rate, 0.0))) < 0.9 THEN 'warning'
         ELSE 'normal'
     END as alert_level,
     count() as sample_count
 FROM validator_events
 WHERE event_type = 'qc_commit_triggered'
   AND timestamp >= now() - INTERVAL 1 HOUR
-GROUP BY timestamp
+GROUP BY timestamp;
 
-UNION ALL
-
-SELECT 
+-- Real-time network health indicators for alerting - Round Time
+CREATE MATERIALIZED VIEW network_health_roundtime_alerts_mv
+ENGINE = ReplacingMergeTree(timestamp)
+ORDER BY (alert_type, timestamp)
+AS SELECT 
     toStartOfMinute(timestamp) as timestamp,
     'round_time' as alert_type,
     avg(processing_delay_ms) as metric_value,
@@ -237,20 +239,20 @@ SELECT
     countIfState(event_type = 'block_proposal') as blocks_proposed,
     countIfState(event_type = 'block_committed') as blocks_committed,
     countIfState(event_type = 'block_skipped') as blocks_skipped,
-    avgState(CASE WHEN event_type IN ('block_proposal', 'block_committed') THEN processing_delay_ms END) as avg_proposal_delay,
+    avgIfState(processing_delay_ms, event_type IN ('block_proposal', 'block_committed')) as avg_proposal_delay,
     
     -- Voting performance
     countIfState(event_type = 'vote_attempt') as votes_attempted,
     countIfState(event_type = 'vote_result' AND is_successful = 1) as votes_successful,
-    avgState(CASE WHEN event_type IN ('vote_attempt', 'vote_result') THEN processing_delay_ms END) as avg_vote_latency,
+    avgIfState(processing_delay_ms, event_type IN ('vote_attempt', 'vote_result')) as avg_vote_latency,
     
     -- QC participation
     countIfState(event_type = 'qc_commit_triggered') as qc_participations,
-    avgState(participation_rate) as avg_qc_participation_rate,
+    avgState(toFloat32(coalesce(participation_rate, 0.0))) as avg_qc_participation_rate,
     
     -- Leadership metrics
     countIfState(event_type = 'vote_created') as leadership_rounds,
-    avgState(CASE WHEN event_type = 'vote_created' THEN processing_delay_ms END) as avg_leadership_latency
+    avgIfState(processing_delay_ms, event_type = 'vote_created') as avg_leadership_latency
 FROM validator_events
 WHERE timestamp >= now() - INTERVAL 25 HOUR
 GROUP BY timestamp, validator_id;
@@ -264,12 +266,12 @@ SELECT
     -- Consensus metrics
     uniqState(round_number) as total_rounds,
     countIfState(event_type = 'qc_commit_triggered') as successful_rounds,
-    avgState(CASE WHEN event_type = 'qc_commit_triggered' THEN processing_delay_ms END) as avg_round_time,
-    avgState(participation_rate) as avg_qc_participation_rate,
+    avgIfState(processing_delay_ms, event_type = 'qc_commit_triggered') as avg_round_time,
+    avgState(toFloat32(coalesce(participation_rate, 0.0))) as avg_qc_participation_rate,
     
     -- Block metrics
     countIfState(event_type IN ('block_proposal', 'block_committed')) as total_blocks,
-    avgState(CASE WHEN event_type = 'block_committed' THEN processing_delay_ms END) as avg_block_time,
+    avgIfState(processing_delay_ms, event_type = 'block_committed') as avg_block_time,
     avgState(processing_delay_ms) as avg_processing_delay,
     
     -- Validator metrics
@@ -278,7 +280,7 @@ SELECT
     uniqState(infrastructure_provider) as active_providers,
     
     -- Performance indicators
-    avgState(CASE WHEN event_type = 'qc_commit_triggered' THEN participation_rate * 100 END) as consensus_efficiency,
+    avgIfState(toFloat32(coalesce(participation_rate, 0.0) * 100), event_type = 'qc_commit_triggered') as consensus_efficiency,
     quantileState(0.95)(processing_delay_ms) as network_latency_p95
 FROM validator_events
 WHERE timestamp >= now() - INTERVAL 25 HOUR
@@ -297,44 +299,41 @@ SELECT
     total_rows,
     total_bytes,
     formatReadableSize(total_bytes) as readable_size,
-    data_compressed_bytes,
-    formatReadableSize(data_compressed_bytes) as compressed_size,
-    compression_ratio,
-    primary_key_bytes_in_memory,
-    formatReadableSize(primary_key_bytes_in_memory) as pk_memory
+    create_table_query
 FROM system.tables
 WHERE database = 'monad_analytics' 
   AND engine LIKE '%MergeTree%'
 ORDER BY total_bytes DESC;
 
--- View for monitoring query performance
-CREATE VIEW query_performance_monitor AS
-SELECT 
-    query_id,
-    query_duration_ms,
-    read_rows,
-    read_bytes,
-    formatReadableSize(read_bytes) as readable_bytes,
-    result_rows,
-    memory_usage,
-    formatReadableSize(memory_usage) as readable_memory,
-    query,
-    event_time
-FROM system.query_log
-WHERE event_time >= now() - INTERVAL 1 HOUR
-  AND type = 'QueryFinish'
-  AND databases HAS 'monad_analytics'
-ORDER BY query_duration_ms DESC
-LIMIT 100;
+-- View for monitoring query performance (requires query_log to be enabled)
+-- Uncomment below if system.query_log is available:
+-- CREATE VIEW query_performance_monitor AS
+-- SELECT 
+--     query_id,
+--     query_duration_ms,
+--     read_rows,
+--     read_bytes,
+--     formatReadableSize(read_bytes) as readable_bytes,
+--     result_rows,
+--     memory_usage,
+--     formatReadableSize(memory_usage) as readable_memory,
+--     substring(query, 1, 200) as query_snippet,
+--     event_time
+-- FROM system.query_log
+-- WHERE event_time >= now() - INTERVAL 1 HOUR
+--   AND type = 'QueryFinish'
+--   AND has(databases, 'monad_analytics')
+-- ORDER BY query_duration_ms DESC
+-- LIMIT 100;
 
 -- =============================================
 -- 9. MATERIALIZED VIEW COMMENTS
 -- =============================================
 
 -- Add comments for documentation
-ALTER TABLE network_metrics_agg COMMENT 'Real-time network consensus health with 1m/1h/24h aggregations';
-ALTER TABLE validator_performance_agg COMMENT 'Validator performance metrics with multiple time windows';
-ALTER TABLE geographic_metrics COMMENT 'Geographic distribution and performance analytics';
+ALTER TABLE network_metrics_agg MODIFY COMMENT 'Real-time network consensus health with 1m/1h/24h aggregations';
+ALTER TABLE validator_performance_agg MODIFY COMMENT 'Validator performance metrics with multiple time windows';
+ALTER TABLE geographic_metrics MODIFY COMMENT 'Geographic distribution and performance analytics';
 
 -- Optimization settings for materialized views
 SYSTEM RELOAD CONFIG; 

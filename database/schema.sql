@@ -331,10 +331,10 @@ ALTER TABLE geographic_metrics ADD INDEX idx_region_time (geographic_region, tim
 -- 9. TABLE COMMENTS FOR DOCUMENTATION
 -- =============================================
 
-ALTER TABLE raw_logs COMMENT 'Raw log storage with deduplication and compression';
-ALTER TABLE validator_events COMMENT 'Main events table with 15+ event types and enhanced metadata';
-ALTER TABLE qc_participation COMMENT 'QC participation tracking with BitVec analysis support';
-ALTER TABLE validators COMMENT 'Enhanced validator registry with infrastructure intelligence';
-ALTER TABLE validator_performance_agg COMMENT 'Pre-aggregated validator performance metrics';
-ALTER TABLE network_metrics_agg COMMENT 'Network-wide consensus and performance aggregations';
-ALTER TABLE geographic_metrics COMMENT 'Geographic distribution and risk analysis'; 
+ALTER TABLE raw_logs MODIFY COMMENT 'Raw log storage with deduplication and compression';
+ALTER TABLE validator_events MODIFY COMMENT 'Main events table with 15+ event types and enhanced metadata';
+ALTER TABLE qc_participation MODIFY COMMENT 'QC participation tracking with BitVec analysis support';
+ALTER TABLE validators MODIFY COMMENT 'Enhanced validator registry with infrastructure intelligence';
+ALTER TABLE validator_performance_agg MODIFY COMMENT 'Pre-aggregated validator performance metrics';
+ALTER TABLE network_metrics_agg MODIFY COMMENT 'Network-wide consensus and performance aggregations';
+ALTER TABLE geographic_metrics MODIFY COMMENT 'Geographic distribution and risk analysis'; 
