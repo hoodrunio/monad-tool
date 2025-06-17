@@ -49,8 +49,13 @@ export class MonadClickHouseClient {
       });
 
       // Execute schema creation
-      const schemaScript = await this.loadSchemaScript();
-      await this.client.command({ query: schemaScript });
+      const schemaStatements = await this.loadSchemaStatements();
+      
+      for (const statement of schemaStatements) {
+        if (statement.trim().length > 0) {
+          await this.client.command({ query: statement });
+        }
+      }
       
       console.log('Schema initialized successfully');
     } catch (error) {
@@ -59,12 +64,12 @@ export class MonadClickHouseClient {
     }
   }
 
-  private async loadSchemaScript(): Promise<string> {
-    // In production, this would load from the schema.sql file
-    return `
-      USE ${this.config.database};
+  private async loadSchemaStatements(): Promise<string[]> {
+    // Return individual SQL statements
+    return [
+      `USE ${this.config.database}`,
       
-      CREATE TABLE IF NOT EXISTS raw_logs (
+      `CREATE TABLE IF NOT EXISTS raw_logs (
         timestamp DateTime64(3, 'UTC'),
         log_source Enum8('consensus' = 1, 'ledger_tail' = 2),
         log_level Enum8('DEBUG' = 1, 'INFO' = 2, 'WARN' = 3, 'ERROR' = 4),
@@ -77,9 +82,9 @@ export class MonadClickHouseClient {
       ) ENGINE = ReplacingMergeTree(parsed_at)
       PARTITION BY toYYYYMM(timestamp)
       ORDER BY (timestamp, log_source, ingestion_id)
-      TTL timestamp + INTERVAL 7 DAY;
+      TTL toDateTime(timestamp) + INTERVAL 7 DAY`,
       
-      CREATE TABLE IF NOT EXISTS validator_events (
+      `CREATE TABLE IF NOT EXISTS validator_events (
         timestamp DateTime64(3, 'UTC'),
         event_type Enum16(
           'vote_attempt' = 1, 'vote_result' = 2, 'vote_created' = 3,
@@ -116,8 +121,8 @@ export class MonadClickHouseClient {
       ) ENGINE = MergeTree()
       PARTITION BY toYYYYMM(timestamp)
       ORDER BY (timestamp, validator_id, event_type, round_number)
-      TTL timestamp + INTERVAL 30 DAY;
-    `;
+      TTL toDateTime(timestamp) + INTERVAL 30 DAY`
+    ];
   }
 
   // =============================================
@@ -128,7 +133,7 @@ export class MonadClickHouseClient {
     if (events.length === 0) return;
 
     const data = events.map(event => ({
-      timestamp: event.timestamp,
+      timestamp: this.formatTimestamp(event.timestamp),
       event_type: event.eventType,
       validator_id: event.validatorId,
       round_number: event.roundNumber,
@@ -166,7 +171,7 @@ export class MonadClickHouseClient {
     if (events.length === 0) return;
 
     const data = events.map(event => ({
-      timestamp: event.timestamp,
+      timestamp: this.formatTimestamp(event.timestamp),
       event_type: event.eventType,
       validator_id: event.validatorId,
       round_number: event.roundNumber,
@@ -381,6 +386,11 @@ export class MonadClickHouseClient {
   // UTILITY METHODS
   // =============================================
 
+  private formatTimestamp(date: Date): string {
+    // Format Date to ClickHouse DateTime64 format: 'YYYY-MM-DD HH:mm:ss.SSS'
+    return date.toISOString().replace('T', ' ').replace('Z', '');
+  }
+
   async ping(): Promise<boolean> {
     try {
       await this.client.ping();
@@ -403,9 +413,7 @@ export class MonadClickHouseClient {
         engine,
         total_rows,
         total_bytes,
-        formatReadableSize(total_bytes) as readable_size,
-        data_compressed_bytes,
-        formatReadableSize(data_compressed_bytes) as compressed_size
+        formatReadableSize(total_bytes) as readable_size
       FROM system.tables
       WHERE database = '${this.config.database}'
         AND engine LIKE '%MergeTree%'

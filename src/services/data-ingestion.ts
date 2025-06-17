@@ -214,10 +214,40 @@ export class DataIngestionService extends EventEmitter {
       for (const log of logs) {
         const processed = this.logProcessor.parseLog(JSON.stringify(log));
         if (processed) {
+          // Convert basic parsed event to proper typed event
+          const typedEvent = {
+            ...processed,
+            timestamp: new Date(processed.timestamp),
+            eventType: processed.eventType,
+            validatorId: processed.validatorId || 'unknown',
+            roundNumber: processed.roundNumber || 0,
+            epochNumber: processed.epochNumber || 1,
+            blockNumber: processed.blockNumber || null,
+            blockId: processed.blockId || null,
+            parentVoteId: null,
+            parentRound: null,
+            nextLeaderId: null,
+            blockTimestampMs: null,
+            processingTimestampMs: Date.now(),
+            processingDelayMs: 0,
+            transactionCount: 0,
+            stateRootAction: '',
+            sequenceNumber: null,
+            validatorDns: '',
+            geographicRegion: 'unknown',
+            infrastructureProvider: 'unknown',
+            datacenterCode: 'unknown',
+            isSuccessful: true,
+            participantCount: null,
+            participationRate: null,
+            metadata: JSON.stringify(processed.raw || {}),
+            ingestionId: `ingestion_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+          };
+          
           if (log.target === 'monad_consensus_state') {
-            consensusEvents.push(processed);
+            consensusEvents.push(typedEvent);
           } else if (log.target === 'ledger_tail') {
-            ledgerEvents.push(processed);
+            ledgerEvents.push(typedEvent);
           }
         }
       }

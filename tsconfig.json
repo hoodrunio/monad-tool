@@ -43,9 +43,7 @@
     "types": ["node", "jest"]
   },
   "include": [
-    "src/**/*",
-    "scripts/**/*",
-    "tests/**/*"
+    "src/**/*"
   ],
   "exclude": [
     "node_modules",

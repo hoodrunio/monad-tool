@@ -1,6 +1,11 @@
 node_modules
 dist
 examples
+logs
+*.d.ts*
+*-logs.js*
+*check.js*
+*schema.js*
 .DS_Store
 package-lock.json
 .env
