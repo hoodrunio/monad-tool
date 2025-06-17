@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: monad-clickhouse
+    hostname: clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql
+      - ./database/materialized-views.sql:/docker-entrypoint-initdb.d/002-materialized-views.sql
+    environment:
+      CLICKHOUSE_DB: monad_analytics
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - monad-network
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: monad-redis
+    hostname: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks:
+      - monad-network
+
+  monad-analytics:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: monad-analytics-app
+    hostname: monad-analytics
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./examples:/app/examples:ro
+      - ./logs:/app/logs
+    environment:
+      NODE_ENV: production
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - monad-network
+    restart: unless-stopped
+
+volumes:
+  clickhouse_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  monad-network:
+    driver: bridge 
