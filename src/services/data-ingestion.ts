@@ -47,6 +47,7 @@ export class DataIngestionService extends EventEmitter {
   private metrics: IngestionMetrics;
   private processingQueue: RawLog[] = [];
   private batchTimer: NodeJS.Timeout | null = null;
+  private serviceStartTime: number = 0;
 
   constructor(config: IngestionConfig) {
     super();
@@ -77,6 +78,9 @@ export class DataIngestionService extends EventEmitter {
     console.log('Starting Monad Data Ingestion Service...');
     
     try {
+      // Record service start time
+      this.serviceStartTime = Date.now();
+      
       // Initialize database schema
       await this.clickhouseClient.initializeSchema();
       
@@ -409,8 +413,7 @@ export class DataIngestionService extends EventEmitter {
   }
 
   private getServiceStartTime(): number {
-    // This would be stored when service starts
-    return Date.now() - 3600000; // Placeholder: 1 hour ago
+    return this.serviceStartTime;
   }
 
   // =============================================

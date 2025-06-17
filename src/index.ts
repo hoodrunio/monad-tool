@@ -1,6 +1,7 @@
 // Monad Validator Analytics - Main Application Entry Point
 import 'dotenv/config';
 import { DataIngestionService, IngestionConfig } from './services/data-ingestion';
+import { SystemdLogStream, SystemdLogStreamConfig } from './services/systemd-log-stream';
 import { AnalyticsAPIServer } from './api/server';
 import { logger } from './utils/logger';
 
@@ -14,6 +15,13 @@ async function main() {
     // Initialize data ingestion service
     const ingestionService = new DataIngestionService(config);
     
+    // Initialize systemd log stream for production
+    let logStream: SystemdLogStream | null = null;
+    if (process.env.NODE_ENV === 'production') {
+      const streamConfig = loadSystemdStreamConfig();
+      logStream = new SystemdLogStream(streamConfig, ingestionService);
+    }
+    
     // Initialize API server
     const apiServer = new AnalyticsAPIServer({
       port: parseInt(process.env.API_PORT || '3000'),
@@ -23,21 +31,30 @@ async function main() {
     }, ingestionService);
     
     // Setup graceful shutdown
-    setupGracefulShutdown(ingestionService, apiServer);
+    setupGracefulShutdown(ingestionService, apiServer, logStream);
     
     // Start services
     await ingestionService.start();
     await apiServer.start();
     
-    logger.info('✅ Monad Validator Analytics System started successfully');
-    
-    // Demo: Process the provided log files
-    if (process.env.NODE_ENV === 'development') {
+    // Start log streaming based on environment
+    if (process.env.NODE_ENV === 'production' && logStream) {
+      logger.info('🔄 Starting real-time systemd log streaming...');
+      await logStream.start();
+      
+      // Setup log stream event handlers
+      setupLogStreamHandlers(logStream);
+      
+      logger.info('✅ Production systemd log streaming started');
+    } else {
+      // Demo: Process the provided log files in development
       logger.info('🔄 Processing demo log files...');
       await ingestionService.processLogFile('./examples/monad-bft.log');
       await ingestionService.processLogFile('./examples/ledger-tail.log');
       logger.info('✅ Demo log files processed');
     }
+    
+    logger.info('✅ Monad Validator Analytics System started successfully');
     
   } catch (error) {
     logger.error('❌ Failed to start Monad Validator Analytics System:', error);
@@ -89,7 +106,47 @@ function loadConfiguration(): IngestionConfig {
   };
 }
 
-function setupGracefulShutdown(ingestionService: DataIngestionService, apiServer: AnalyticsAPIServer) {
+function loadSystemdStreamConfig(): SystemdLogStreamConfig {
+  return {
+    serviceNames: [
+      process.env.MONAD_BFT_SERVICE_NAME || 'monad-bft',
+      process.env.MONAD_LEDGER_SERVICE_NAME || 'monad-ledger-tail'
+    ],
+    followMode: true, // Always follow in production
+    sinceWhen: process.env.LOG_SINCE_WHEN || 'now', // Start from now by default
+    outputFormat: 'json', // JSON format for easier parsing
+    priority: process.env.LOG_PRIORITY as any || 'info',
+    bufferSize: parseInt(process.env.STREAM_BUFFER_SIZE || '100'),
+    restartOnFailure: true,
+    maxRestartAttempts: parseInt(process.env.STREAM_MAX_RESTART_ATTEMPTS || '5'),
+    restartDelayMs: parseInt(process.env.STREAM_RESTART_DELAY_MS || '5000'),
+    includeKernelMessages: false
+  };
+}
+
+function setupLogStreamHandlers(logStream: SystemdLogStream): void {
+  logStream.on('batchProcessed', (data) => {
+    logger.debug(`Log stream batch processed: ${data.linesProcessed} lines`);
+  });
+  
+  logStream.on('metricsUpdated', (metrics) => {
+    logger.debug(`Log stream metrics - Lines/sec: ${metrics.linesPerSecond.toFixed(2)}, Buffer: ${metrics.bufferUsage.toFixed(1)}%`);
+  });
+  
+  logStream.on('error', (error) => {
+    logger.error('Log stream error:', error);
+  });
+  
+  logStream.on('bufferError', ({ error, linesLost }) => {
+    logger.error(`Log stream buffer error - lost ${linesLost} lines:`, error);
+  });
+}
+
+function setupGracefulShutdown(
+  ingestionService: DataIngestionService, 
+  apiServer: AnalyticsAPIServer,
+  logStream?: SystemdLogStream | null
+) {
   const gracefulShutdown = async (signal: string) => {
     logger.info(`🛑 Received ${signal}, starting graceful shutdown...`);
     
@@ -97,6 +154,12 @@ function setupGracefulShutdown(ingestionService: DataIngestionService, apiServer
       // Stop accepting new requests
       await apiServer.stop();
       logger.info('✅ API server stopped');
+      
+      // Stop log streaming if running
+      if (logStream) {
+        await logStream.stop();
+        logger.info('✅ Log stream stopped');
+      }
       
       // Stop data ingestion service
       await ingestionService.stop();
