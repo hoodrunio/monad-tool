@@ -12,6 +12,8 @@ services:
       - clickhouse_data:/var/lib/clickhouse
       - ./database/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql
       - ./database/materialized-views.sql:/docker-entrypoint-initdb.d/002-materialized-views.sql
+      - ./database/clickhouse-config.xml:/etc/clickhouse-server/config.d/logging-config.xml
+      - ./database/users-config.xml:/etc/clickhouse-server/users.d/custom-users.xml
     environment:
       CLICKHOUSE_DB: monad_analytics
       CLICKHOUSE_USER: default

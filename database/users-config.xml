@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<clickhouse>
+    <profiles>
+        <default>
+            <!-- Memory and performance settings for all users -->
+            <max_memory_usage>10000000000</max_memory_usage> <!-- 10GB -->
+            <max_bytes_before_external_group_by>8000000000</max_bytes_before_external_group_by> <!-- 8GB -->
+            <max_bytes_before_external_sort>8000000000</max_bytes_before_external_sort> <!-- 8GB -->
+            
+            <!-- Query execution limits -->
+            <max_execution_time>3600</max_execution_time> <!-- 1 hour -->
+            <timeout_before_checking_execution_speed>10</timeout_before_checking_execution_speed>
+            
+            <!-- Join and aggregation settings -->
+            <join_use_nulls>1</join_use_nulls>
+            <max_block_size>65536</max_block_size>
+            <max_insert_block_size>1048576</max_insert_block_size>
+            
+            <!-- Thread settings -->
+            <max_threads>0</max_threads> <!-- Auto-detect CPU cores -->
+            <max_insert_threads>4</max_insert_threads>
+            <max_final_threads>16</max_final_threads>
+            
+            <!-- Parallel processing -->
+            <parallel_view_processing>1</parallel_view_processing>
+            <parallel_distributed_insert_select>2</parallel_distributed_insert_select>
+        </default>
+        
+        <!-- High-performance profile for analytics queries -->
+        <analytics>
+            <max_memory_usage>15000000000</max_memory_usage> <!-- 15GB -->
+            <max_bytes_before_external_group_by>12000000000</max_bytes_before_external_group_by> <!-- 12GB -->
+            <max_bytes_before_external_sort>12000000000</max_bytes_before_external_sort> <!-- 12GB -->
+            <max_execution_time>7200</max_execution_time> <!-- 2 hours -->
+            <max_threads>0</max_threads>
+            <join_use_nulls>1</join_use_nulls>
+        </analytics>
+    </profiles>
+    
+    <users>
+        <default>
+            <profile>default</profile>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <password></password>
+            <quota>default</quota>
+        </default>
+        
+        <!-- Analytics user with higher limits -->
+        <analytics>
+            <profile>analytics</profile>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <password></password>
+            <quota>default</quota>
+        </analytics>
+    </users>
+    
+    <quotas>
+        <default>
+            <interval>
+                <duration>3600</duration>
+                <queries>0</queries>
+                <errors>0</errors>
+                <result_rows>0</result_rows>
+                <read_rows>0</read_rows>
+                <execution_time>0</execution_time>
+            </interval>
+        </default>
+    </quotas>
+</clickhouse> 

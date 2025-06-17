@@ -19,6 +19,7 @@
     "api:build": "tsc && node dist/api/main.js",
     "api:test": "ts-node scripts/test-api.ts",
     "api:fix": "ts-node scripts/fix-api-issues.ts",
+    "query:setup": "ts-node scripts/setup-query-monitoring.ts",
     "docker:build": "docker build -t monad-analytics .",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down"

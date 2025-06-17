@@ -305,26 +305,9 @@ WHERE database = 'monad_analytics'
   AND engine LIKE '%MergeTree%'
 ORDER BY total_bytes DESC;
 
--- View for monitoring query performance (requires query_log to be enabled)
--- Uncomment below if system.query_log is available:
--- CREATE VIEW query_performance_monitor AS
--- SELECT 
---     query_id,
---     query_duration_ms,
---     read_rows,
---     read_bytes,
---     formatReadableSize(read_bytes) as readable_bytes,
---     result_rows,
---     memory_usage,
---     formatReadableSize(memory_usage) as readable_memory,
---     substring(query, 1, 200) as query_snippet,
---     event_time
--- FROM system.query_log
--- WHERE event_time >= now() - INTERVAL 1 HOUR
---   AND type = 'QueryFinish'
---   AND has(databases, 'monad_analytics')
--- ORDER BY query_duration_ms DESC
--- LIMIT 100;
+-- Query performance monitoring SQL (to be executed after query_log is populated)
+-- Note: system.query_log table is created automatically after first queries
+-- Run this separately: docker exec monad-clickhouse clickhouse-client --query "CREATE VIEW IF NOT EXISTS query_performance_monitor AS ..."
 
 -- =============================================
 -- 9. MATERIALIZED VIEW COMMENTS
