@@ -5,8 +5,8 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-async function setupQueryMonitoring(): Promise<void> {
-  console.log('Setting up query performance monitoring...');
+async function setupQueryMonitoring(retryAttempts: number = 3): Promise<void> {
+  console.log('🔧 Setting up query performance monitoring...');
   
   const config = {
     host: process.env.CLICKHOUSE_HOST || 'localhost',
@@ -22,6 +22,12 @@ async function setupQueryMonitoring(): Promise<void> {
   const client = new MonadClickHouseClient(config);
   
   try {
+    // Check if ClickHouse is responding
+    if (!await client.ping()) {
+      throw new Error('ClickHouse server is not responding');
+    }
+    console.log('✅ ClickHouse connection established');
+    
     // First check if query_log table exists
     const checkQuery = `
       SELECT count() as table_exists 
@@ -29,11 +35,7 @@ async function setupQueryMonitoring(): Promise<void> {
       WHERE database = 'system' AND name = 'query_log'
     `;
     
-    const result = await (client as any).client.query({
-      query: checkQuery,
-      format: 'JSONEachRow'
-    });
-    const rows = await result.json() as any[];
+    const rows = await client.executeRawQuery(checkQuery);
     const tableExists = rows[0]?.table_exists > 0;
     
     if (!tableExists) {
@@ -45,26 +47,85 @@ async function setupQueryMonitoring(): Promise<void> {
     
     console.log('✅ system.query_log table exists, creating monitoring views...');
     
-    // Read the SQL file and execute it
-    const fs = await import('fs');
-    const path = await import('path');
+    // Define the monitoring views directly in code for better maintenance
+    const monitoringViews = [
+      {
+        name: 'query_performance_monitor',
+        sql: `
+          CREATE VIEW IF NOT EXISTS query_performance_monitor AS
+          SELECT 
+            query_id,
+            query_duration_ms,
+            read_rows,
+            read_bytes,
+            formatReadableSize(read_bytes) as readable_bytes,
+            result_rows,
+            memory_usage,
+            formatReadableSize(memory_usage) as readable_memory,
+            substring(query, 1, 200) as query_snippet,
+            event_time,
+            type,
+            exception,
+            user,
+            current_database
+          FROM system.query_log
+          WHERE event_time >= now() - INTERVAL 1 HOUR
+            AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+            AND (current_database = 'monad_analytics' OR has(databases, 'monad_analytics'))
+          ORDER BY query_duration_ms DESC
+          LIMIT 100
+        `
+      },
+      {
+        name: 'slow_queries_monitor',
+        sql: `
+          CREATE VIEW IF NOT EXISTS slow_queries_monitor AS
+          SELECT 
+            query_id,
+            query_duration_ms,
+            formatReadableSize(memory_usage) as memory_used,
+            substring(query, 1, 500) as query_text,
+            event_time,
+            user,
+            exception
+          FROM system.query_log
+          WHERE event_time >= now() - INTERVAL 24 HOUR
+            AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+            AND query_duration_ms > 1000
+            AND (current_database = 'monad_analytics' OR has(databases, 'monad_analytics'))
+          ORDER BY query_duration_ms DESC
+          LIMIT 50
+        `
+      },
+      {
+        name: 'query_stats_hourly',
+        sql: `
+          CREATE VIEW IF NOT EXISTS query_stats_hourly AS
+          SELECT 
+            toStartOfHour(event_time) as hour,
+            count() as total_queries,
+            avg(query_duration_ms) as avg_duration_ms,
+            max(query_duration_ms) as max_duration_ms,
+            sum(read_rows) as total_read_rows,
+            formatReadableSize(sum(read_bytes)) as total_read_bytes,
+            formatReadableSize(sum(memory_usage)) as total_memory_usage,
+            count(CASE WHEN exception != '' THEN 1 END) as failed_queries
+          FROM system.query_log
+          WHERE event_time >= now() - INTERVAL 7 DAY
+            AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+            AND (current_database = 'monad_analytics' OR has(databases, 'monad_analytics'))
+          GROUP BY hour
+          ORDER BY hour DESC
+        `
+      }
+    ];
     
-    const sqlFilePath = path.join(__dirname, 'create-query-performance-view.sql');
-    const sqlContent = fs.readFileSync(sqlFilePath, 'utf8');
-    
-    // Split by semicolon and execute each statement
-    const statements = sqlContent
-      .split(';')
-      .map(stmt => stmt.trim())
-      .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'));
-    
-    for (const statement of statements) {
+    for (const view of monitoringViews) {
       try {
-        await (client as any).client.command({ query: statement });
-        console.log('✅ Executed query monitoring statement');
+        await client.executeCommand(view.sql);
+        console.log(`✅ Created view: ${view.name}`);
       } catch (error) {
-        console.error('❌ Failed to execute statement:', error);
-        console.log('Statement was:', statement.substring(0, 100) + '...');
+        console.error(`❌ Failed to create view ${view.name}:`, error);
       }
     }
     
@@ -79,11 +140,7 @@ async function setupQueryMonitoring(): Promise<void> {
     
     for (const test of testQueries) {
       try {
-        const result = await (client as any).client.query({
-          query: test.query,
-          format: 'JSONEachRow'
-        });
-        const rows = await result.json() as any[];
+        const rows = await client.executeRawQuery(test.query);
         console.log(`✅ View ${test.name}: ${rows[0]?.['count()'] || 0} records`);
       } catch (error) {
         console.error(`❌ View ${test.name} failed:`, error);

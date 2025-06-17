@@ -405,6 +405,23 @@ export class MonadClickHouseClient {
     await this.client.close();
   }
 
+  // =============================================
+  // RAW QUERY METHODS FOR SYSTEM OPERATIONS
+  // =============================================
+
+  async executeRawQuery(query: string): Promise<any[]> {
+    const result = await this.client.query({
+      query,
+      format: 'JSONEachRow'
+    });
+
+    return result.json();
+  }
+
+  async executeCommand(command: string): Promise<void> {
+    await this.client.command({ query: command });
+  }
+
   async getTableStats(): Promise<any[]> {
     const query = `
       SELECT 
