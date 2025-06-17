@@ -14,6 +14,10 @@
     "health": "ts-node scripts/health-check.ts",
     "schema:init": "ts-node scripts/init-schema.ts",
     "demo:process-logs": "ts-node scripts/demo-process-logs.ts",
+    "api:start": "ts-node scripts/start-api.ts",
+    "api:dev": "ts-node --watch src/api/main.ts",
+    "api:build": "tsc && node dist/api/main.js",
+    "api:test": "ts-node scripts/test-api.ts",
     "docker:build": "docker build -t monad-analytics .",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down"
