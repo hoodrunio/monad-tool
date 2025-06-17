@@ -18,22 +18,12 @@ Environment=NODE_ENV=production
 Environment=LOG_LEVEL=info
 EnvironmentFile=-/opt/monad-analytics/.env
 
-# Security and resource limits
+# Security and resource limits (relaxed for NVM/Node.js compatibility)
 NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ReadWritePaths=/opt/monad-analytics/logs /opt/monad-analytics/data
-ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictRealtime=yes
-RestrictNamespaces=yes
-LockPersonality=yes
-MemoryDenyWriteExecute=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
 
 # Resource limits
 LimitNOFILE=65536

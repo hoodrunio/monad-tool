@@ -254,8 +254,8 @@ install_service() {
     # Create and make the startup script executable
     chmod +x "$current_dir/scripts/start-service.sh"
     
-    # Update ExecStart to use the wrapper script
-    sed -i "s|ExecStart=/usr/bin/node dist/index.js|ExecStart=$current_dir/scripts/start-service.sh|g" \
+    # Update ExecStart to use the wrapper script with explicit bash
+    sed -i "s|ExecStart=/usr/bin/node dist/index.js|ExecStart=/bin/bash $current_dir/scripts/start-service.sh|g" \
         "/tmp/monad-analytics.service"
     
     # Update user and group in service file
