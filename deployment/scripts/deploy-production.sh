@@ -101,7 +101,7 @@ check_requirements() {
     log_info "Configured npm to allow root user execution"
     
     # Check for other required commands
-    local required_commands=("systemctl" "git" "curl")
+    local required_commands=("systemctl" "git" "curl" "docker" "docker-compose")
     for cmd in "${required_commands[@]}"; do
         if ! command -v "$cmd" &> /dev/null; then
             log_error "Required command '$cmd' not found"
@@ -137,6 +137,16 @@ install_dependencies() {
             htop \
             iotop \
             nethogs
+        
+        # Install Docker if not already present
+        if ! command -v docker &> /dev/null; then
+            log_info "Installing Docker..."
+            apt-get install -y docker.io docker-compose
+            systemctl start docker
+            systemctl enable docker
+        else
+            log_info "Docker already installed, skipping..."
+        fi
     else
         sudo apt-get update
         
@@ -149,6 +159,16 @@ install_dependencies() {
             htop \
             iotop \
             nethogs
+        
+        # Install Docker if not already present
+        if ! command -v docker &> /dev/null; then
+            log_info "Installing Docker..."
+            sudo apt-get install -y docker.io docker-compose
+            sudo systemctl start docker
+            sudo systemctl enable docker
+        else
+            log_info "Docker already installed, skipping..."
+        fi
     fi
     
     log_success "System dependencies installed"
@@ -178,6 +198,13 @@ deploy_application() {
         fi
         log_info "Stopped existing service"
     fi
+    
+    # Start Docker containers (ClickHouse and Redis)
+    log_info "Starting Docker containers..."
+    docker-compose up -d clickhouse redis
+    
+    # Wait for containers to be ready
+    sleep 10
     
     # Clean previous build
     rm -rf dist node_modules
@@ -209,9 +236,55 @@ configure_environment() {
 install_service() {
     log_info "Installing systemd service..."
     
+    local current_dir=$(pwd)
+    
+    # Update service file with current directory and correct Node.js path
+    sed "s|WorkingDirectory=/opt/monad-analytics|WorkingDirectory=$current_dir|g" \
+        "deployment/systemd/monad-analytics.service" > "/tmp/monad-analytics.service"
+    
+    sed -i "s|EnvironmentFile=-/opt/monad-analytics/.env|EnvironmentFile=-$current_dir/.env|g" \
+        "/tmp/monad-analytics.service"
+    
+    sed -i "s|ReadWritePaths=/opt/monad-analytics/logs /opt/monad-analytics/data|ReadWritePaths=$current_dir/logs $current_dir/data|g" \
+        "/tmp/monad-analytics.service"
+    
+    # Create and make the startup script executable
+    chmod +x "$current_dir/scripts/start-service.sh"
+    
+    # Update ExecStart to use the wrapper script
+    sed -i "s|ExecStart=/usr/bin/node dist/index.js|ExecStart=$current_dir/scripts/start-service.sh|g" \
+        "/tmp/monad-analytics.service"
+    
+    # Update user and group in service file
+    local current_user=""
+    local current_group=""
+    
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        # If running with sudo, use the original user
+        current_user="$SUDO_USER"
+        current_group=$(id -gn "$SUDO_USER")
+    else
+        # If running as root or regular user
+        current_user=$(whoami)
+        current_group=$(id -gn)
+    fi
+    
+    # Replace existing User and Group lines, or add them if they don't exist
+    if grep -q "^User=" "/tmp/monad-analytics.service"; then
+        sed -i "s/^User=.*/User=$current_user/" "/tmp/monad-analytics.service"
+    else
+        sed -i "/^\[Service\]/a User=$current_user" "/tmp/monad-analytics.service"
+    fi
+    
+    if grep -q "^Group=" "/tmp/monad-analytics.service"; then
+        sed -i "s/^Group=.*/Group=$current_group/" "/tmp/monad-analytics.service"
+    else
+        sed -i "/^User=$current_user/a Group=$current_group" "/tmp/monad-analytics.service"
+    fi
+    
     if [[ $EUID -eq 0 ]]; then
-        # Copy service file
-        cp "deployment/systemd/monad-analytics.service" "/etc/systemd/system/"
+        # Copy updated service file
+        cp "/tmp/monad-analytics.service" "/etc/systemd/system/monad-analytics.service"
         
         # Reload systemd
         systemctl daemon-reload
@@ -219,8 +292,8 @@ install_service() {
         # Enable service
         systemctl enable "$SERVICE_NAME"
     else
-        # Copy service file
-        sudo cp "deployment/systemd/monad-analytics.service" "/etc/systemd/system/"
+        # Copy updated service file
+        sudo cp "/tmp/monad-analytics.service" "/etc/systemd/system/monad-analytics.service"
         
         # Reload systemd
         sudo systemctl daemon-reload
@@ -228,6 +301,9 @@ install_service() {
         # Enable service
         sudo systemctl enable "$SERVICE_NAME"
     fi
+    
+    # Clean up temporary file
+    rm -f "/tmp/monad-analytics.service"
     
     log_success "Systemd service installed and enabled"
 }

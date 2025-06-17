@@ -3,12 +3,9 @@ Description=Monad Validator Analytics and Monitoring System
 Documentation=https://github.com/hoodrunio/monad-tool
 After=network.target network-online.target
 Wants=network-online.target
-Requires=clickhouse-server.service redis.service
 
 [Service]
 Type=simple
-User=monad
-Group=monad
 WorkingDirectory=/opt/monad-analytics
 ExecStart=/usr/bin/node dist/index.js
 ExecReload=/bin/kill -HUP $MAINPID
