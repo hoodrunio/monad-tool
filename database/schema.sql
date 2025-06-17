@@ -25,7 +25,7 @@ CREATE TABLE raw_logs (
 ) ENGINE = ReplacingMergeTree(parsed_at)
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (timestamp, log_source, ingestion_id)
-TTL timestamp + INTERVAL 7 DAY
+TTL toDateTime(timestamp) + INTERVAL 7 DAY
 SETTINGS index_granularity = 8192;
 
 -- =============================================
@@ -94,7 +94,7 @@ CREATE TABLE validator_events (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (timestamp, validator_id, event_type, round_number)
-TTL timestamp + INTERVAL 30 DAY
+TTL toDateTime(timestamp) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
 -- Performance indexes for common query patterns
@@ -138,7 +138,7 @@ CREATE TABLE qc_participation (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (timestamp, round_number)
-TTL timestamp + INTERVAL 90 DAY
+TTL toDateTime(timestamp) + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
 
 -- Indexes for QC analysis
@@ -219,7 +219,7 @@ CREATE TABLE validator_performance_agg (
 ) ENGINE = AggregatingMergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (timestamp, time_window, validator_id)
-TTL timestamp + INTERVAL 90 DAY
+TTL toDateTime(timestamp) + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
 
 -- Network-wide aggregations
@@ -249,7 +249,7 @@ CREATE TABLE network_metrics_agg (
 ) ENGINE = AggregatingMergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (timestamp, time_window)
-TTL timestamp + INTERVAL 90 DAY
+TTL toDateTime(timestamp) + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
 
 -- =============================================
@@ -281,7 +281,7 @@ CREATE TABLE geographic_metrics (
 ) ENGINE = AggregatingMergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (timestamp, time_window, geographic_region)
-TTL timestamp + INTERVAL 90 DAY
+TTL toDateTime(timestamp) + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
 
 -- =============================================
