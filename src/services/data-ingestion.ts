@@ -2,6 +2,7 @@
 // Orchestrates log processing, database storage, and caching for real-time analytics
 
 import { EventEmitter } from 'events';
+import { v4 as uuidv4 } from 'uuid';
 import { LogProcessor } from '../log-processor/processor';
 import { MonadClickHouseClient, ClickHouseConfig } from '../database/clickhouse-client';
 import { MonadRedisClient, RedisConfig } from '../cache/redis-client';
@@ -241,7 +242,7 @@ export class DataIngestionService extends EventEmitter {
             participantCount: null,
             participationRate: null,
             metadata: JSON.stringify(processed.raw || {}),
-            ingestionId: `ingestion_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+            ingestionId: uuidv4()
           };
           
           if (log.target === 'monad_consensus_state') {
