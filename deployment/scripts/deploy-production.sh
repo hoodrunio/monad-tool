@@ -136,7 +136,8 @@ install_dependencies() {
             logrotate \
             htop \
             iotop \
-            nethogs
+            nethogs \
+            nginx
         
         # Install Docker if not already present
         if ! command -v docker &> /dev/null; then
@@ -158,7 +159,8 @@ install_dependencies() {
             logrotate \
             htop \
             iotop \
-            nethogs
+            nethogs \
+            nginx
         
         # Install Docker if not already present
         if ! command -v docker &> /dev/null; then
@@ -169,9 +171,28 @@ install_dependencies() {
         else
             log_info "Docker already installed, skipping..."
         fi
+        
+        # Add current user to docker group for non-root access
+        if [[ -n "${SUDO_USER:-}" ]]; then
+            sudo usermod -aG docker "$SUDO_USER"
+            log_info "Added user $SUDO_USER to docker group"
+        else
+            current_user=$(whoami)
+            if [[ "$current_user" != "root" ]]; then
+                sudo usermod -aG docker "$current_user"
+                log_info "Added user $current_user to docker group"
+            fi
+        fi
     fi
     
     log_success "System dependencies installed"
+    
+    # Check if user was added to docker group and suggest relogin
+    if [[ -n "${SUDO_USER:-}" ]] && groups "$SUDO_USER" | grep -q docker; then
+        log_warning "User $SUDO_USER was added to docker group. You may need to log out and back in for changes to take effect."
+    elif [[ $(whoami) != "root" ]] && groups "$(whoami)" | grep -q docker; then
+        log_warning "User $(whoami) was added to docker group. You may need to log out and back in for changes to take effect."
+    fi
 }
 
 # Create directories
@@ -309,6 +330,46 @@ install_service() {
     rm -f "/tmp/monad-analytics.service"
     
     log_success "Systemd service installed and enabled"
+}
+
+# Configure nginx
+configure_nginx() {
+    log_info "Configuring nginx..."
+    
+    local current_dir=$(pwd)
+    
+    # Copy nginx configuration
+    if [[ $EUID -eq 0 ]]; then
+        cp "$current_dir/deployment/nginx/monad-analytics.conf" "/etc/nginx/sites-available/"
+        ln -sf "/etc/nginx/sites-available/monad-analytics.conf" "/etc/nginx/sites-enabled/"
+        
+        # Remove default nginx site
+        rm -f "/etc/nginx/sites-enabled/default"
+        
+        # Test nginx configuration
+        nginx -t
+        
+        # Start and enable nginx
+        systemctl start nginx
+        systemctl enable nginx
+        systemctl reload nginx
+    else
+        sudo cp "$current_dir/deployment/nginx/monad-analytics.conf" "/etc/nginx/sites-available/"
+        sudo ln -sf "/etc/nginx/sites-available/monad-analytics.conf" "/etc/nginx/sites-enabled/"
+        
+        # Remove default nginx site
+        sudo rm -f "/etc/nginx/sites-enabled/default"
+        
+        # Test nginx configuration
+        sudo nginx -t
+        
+        # Start and enable nginx
+        sudo systemctl start nginx
+        sudo systemctl enable nginx
+        sudo systemctl reload nginx
+    fi
+    
+    log_success "Nginx configured and started"
 }
 
 # Setup log rotation
@@ -466,16 +527,23 @@ show_deployment_info() {
     echo "=========================="
     echo "Service Name: $SERVICE_NAME"
     echo "Install Directory: $current_dir"
-    echo "API URL: http://localhost:3000"
-    echo "Health Check: http://localhost:3000/health"
+    echo "API URL (Local): http://localhost:3000"
+    echo "API URL (Public): http://your-domain.com"
+    echo "Health Check: http://your-domain.com/health"
     echo ""
     echo "Monad Services Configuration:"
     echo "  BFT Service: monad-bft.service"
     echo "  Ledger Service: monad-ledger-tail.service"
     echo ""
+    echo "Nginx Configuration:"
+    echo "  Config File: /etc/nginx/sites-available/monad-analytics.conf"
+    echo "  Remember to update 'your-domain.com' with your actual domain!"
+    echo ""
     echo "Useful Commands:"
     echo "  sudo systemctl status $SERVICE_NAME"
     echo "  sudo systemctl restart $SERVICE_NAME"
+    echo "  sudo systemctl status nginx"
+    echo "  sudo systemctl reload nginx"
     echo "  sudo journalctl -u $SERVICE_NAME -f"
     echo "  sudo journalctl -u monad-bft -f"
     echo "  sudo journalctl -u monad-ledger-tail -f"
