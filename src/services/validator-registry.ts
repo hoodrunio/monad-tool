@@ -18,7 +18,7 @@ export class ValidatorRegistry {
   private currentEpoch: number = 1;
   private isInitialized: boolean = false;
 
-  constructor(private validatorsFilePath: string = 'examples/validators.toml') {}
+  constructor(private validatorsFilePath: string = 'validators/validators.toml') {}
 
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
