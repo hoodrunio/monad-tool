@@ -26,17 +26,55 @@ import {
   NetworkDiscoveryResult
 } from '../utils';
 
+// Import validator registry for mapping bitvec positions to actual validators
+import { validatorRegistry, ValidatorRegistry } from '../services/validator-registry';
+
 export class MonadLogProcessor {
   private qcParser: QCParticipationParserImpl;
   private enhancedDnsProcessor: EnhancedDNSProcessor;
   private voteChainBuilder: VoteChainBuilderImpl;
   private config: ProcessingConfig;
+  private validatorRegistry: ValidatorRegistry;
+  private isRegistryInitialized: boolean = false;
 
   constructor(config: ProcessingConfig) {
     this.config = config;
-    this.qcParser = new QCParticipationParserImpl();
+    this.validatorRegistry = validatorRegistry;
+    this.qcParser = new QCParticipationParserImpl(this.validatorRegistry);
     this.enhancedDnsProcessor = createEnhancedDNSProcessor();
     this.voteChainBuilder = new VoteChainBuilderImpl();
+  }
+
+  private async ensureValidatorRegistryInitialized(): Promise<void> {
+    if (!this.isRegistryInitialized) {
+      await this.validatorRegistry.initialize();
+      this.isRegistryInitialized = true;
+    }
+  }
+
+  private detectEpochFromLogs(logs: RawLog[]): number {
+    // Try to detect epoch from log fields first
+    for (const log of logs) {
+      if (log.fields.epoch && !isNaN(parseInt(log.fields.epoch))) {
+        return parseInt(log.fields.epoch);
+      }
+    }
+
+    // Try to detect epoch from validator IDs
+    for (const log of logs) {
+      const validatorId = this.extractValidatorId(log.fields, log.target);
+      if (validatorId && validatorId !== 'unknown') {
+        const detectedEpoch = this.validatorRegistry.detectEpochFromLogs(validatorId);
+        if (detectedEpoch) {
+          console.log(`Detected epoch ${detectedEpoch} from validator ${validatorId}`);
+          return detectedEpoch;
+        }
+      }
+    }
+
+    // Default to epoch 1 if no detection possible
+    console.warn('Could not detect epoch from logs, defaulting to epoch 1');
+    return 1;
   }
 
   // =============================================
@@ -55,6 +93,11 @@ export class MonadLogProcessor {
     };
 
     try {
+      // Initialize validator registry and detect current epoch
+      await this.ensureValidatorRegistryInitialized();
+      const detectedEpoch = this.detectEpochFromLogs(logs);
+      this.validatorRegistry.setCurrentEpoch(detectedEpoch);
+      
       const consensusLogs = logs.filter(log => log.target === 'monad_consensus_state');
       const ledgerLogs = logs.filter(log => log.target === 'ledger_tail');
       
@@ -183,7 +226,9 @@ export class MonadLogProcessor {
     // Extract QC participation data for specific events
     if (eventType === EventType.QC_COMMIT_TRIGGERED && fields.qc) {
       try {
-        const qcData = this.qcParser.extractParticipation(fields.qc);
+        await this.ensureValidatorRegistryInitialized();
+        const epoch = enhanced.epochNumber || 1;
+        const qcData = this.qcParser.extractParticipation(fields.qc, epoch);
         enhanced.participantCount = qcData.participatingValidators;
         enhanced.participationRate = qcData.participationRate;
       } catch (error) {
@@ -383,7 +428,8 @@ export class MonadLogProcessor {
   }
 
   extractQCParticipation(qcData: string): QCParticipationData {
-    return this.qcParser.extractParticipation(qcData);
+    // For legacy support, use default epoch
+    return this.qcParser.extractParticipation(qcData, 1);
   }
 
   parseValidatorInfrastructure(dns: string): ValidatorInfrastructure {
@@ -414,11 +460,14 @@ export class MonadLogProcessor {
   private async extractQCParticipationBatch(logs: RawLog[]): Promise<QCParticipationData[]> {
     const qcData: QCParticipationData[] = [];
     
+    await this.ensureValidatorRegistryInitialized();
+    
     for (const log of logs) {
       const fields = log.fields;
       if (fields.qc && fields.message === 'QC commit triggered') {
         try {
-          const participation = this.qcParser.extractParticipation(fields.qc);
+          const epoch = parseInt(fields.epoch) || 1;
+          const participation = this.qcParser.extractParticipation(fields.qc, epoch);
           qcData.push(participation);
         } catch (error) {
           console.warn(`Failed to extract QC participation: ${error}`);
@@ -518,6 +567,8 @@ export class MonadLogProcessor {
 // =============================================
 
 class QCParticipationParserImpl implements QCParticipationParser {
+  constructor(private validatorRegistry: ValidatorRegistry) {}
+
   parseBitVec(bitVecString: string): number[] {
     const match = bitVecString.match(/\[([0-9, ]+)\]/);
     if (!match) return [];
@@ -525,7 +576,7 @@ class QCParticipationParserImpl implements QCParticipationParser {
     return match[1].split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
   }
 
-  extractParticipation(qcString: string): QCParticipationData {
+  extractParticipation(qcString: string, epoch?: number): QCParticipationData {
     try {
       const bitsMatch = qcString.match(/bits: (\d+)/);
       const totalValidators = bitsMatch ? parseInt(bitsMatch[1]) : 169;
@@ -542,9 +593,10 @@ class QCParticipationParserImpl implements QCParticipationParser {
         participatingValidators,
         participationBitmap: bitmap.join(''),
         participationRate,
-        validatorParticipation: this.mapValidatorPositions(bitmap, []),
+        validatorParticipation: this.mapValidatorPositions(bitmap, epoch),
         blsSignature,
-        qcAssemblyTimeMs: 0
+        qcAssemblyTimeMs: 0,
+        epoch
       };
     } catch (error) {
       throw new Error(`Failed to parse QC participation: ${error}`);
@@ -555,16 +607,26 @@ class QCParticipationParserImpl implements QCParticipationParser {
     return total > 0 ? participating / total : 0;
   }
 
-  mapValidatorPositions(bitmap: number[], validatorIds: string[]): Array<{
+  mapValidatorPositions(bitmap: number[], epoch?: number): Array<{
     validatorId: string;
+    nodeId: string;
     participated: boolean;
     position: number;
+    stake: number;
   }> {
-    return bitmap.map((bit, index) => ({
-      validatorId: validatorIds[index] || `validator_${index}`,
-      participated: bit === 1,
-      position: index
-    }));
+    try {
+      return this.validatorRegistry.mapBitVecToValidators(bitmap, epoch);
+    } catch (error) {
+      console.warn(`Failed to map validators from registry: ${error}`);
+      // Fallback to placeholder validators
+      return bitmap.map((bit, index) => ({
+        validatorId: `validator_${index}`,
+        nodeId: `validator_${index}`,
+        participated: bit === 1,
+        position: index,
+        stake: 0
+      }));
+    }
   }
 }
 

@@ -60,12 +60,15 @@ export interface QCParticipationData {
   participationRate: number;
   validatorParticipation: Array<{
     validatorId: string;
+    nodeId: string; // Actual validator address from registry
     participated: boolean;
     position: number;
+    stake: number; // Validator stake amount
   }>;
   blsSignature: string;
   signatureVerificationTimeNs?: number;
   qcAssemblyTimeMs: number;
+  epoch?: number; // Track which epoch this QC data belongs to
 }
 
 export interface QCData {
@@ -265,12 +268,14 @@ export interface EnhancedLogProcessor {
 
 export interface QCParticipationParser {
   parseBitVec(bitVecString: string): number[];
-  extractParticipation(qcString: string): QCParticipationData;
+  extractParticipation(qcString: string, epoch?: number): QCParticipationData;
   calculateParticipationRate(participating: number, total: number): number;
-  mapValidatorPositions(bitmap: number[], validatorIds: string[]): Array<{
+  mapValidatorPositions(bitmap: number[], epoch?: number): Array<{
     validatorId: string;
+    nodeId: string;
     participated: boolean;
     position: number;
+    stake: number;
   }>;
 }
 
