@@ -101,7 +101,9 @@ export class ValidatorDNSMapperService {
     validators: Array<{ nodeId: string; dnsAddress?: string }>
   ): Promise<ValidatorDNSInfo[]> {
     const results: ValidatorDNSInfo[] = [];
-    const batchSize = 3; // Smaller batches to be conservative with external APIs
+    const batchSize = 1; // Process one at a time to avoid rate limits
+    
+    console.log(`Processing ${validators.length} unique validator DNS addresses individually with delays`);
 
     for (let i = 0; i < validators.length; i += batchSize) {
       const batch = validators.slice(i, i + batchSize);
@@ -117,9 +119,9 @@ export class ValidatorDNSMapperService {
         }
       });
 
-      // Add delay between batches to respect rate limits
+      // Add longer delay between requests to respect rate limits better
       if (i + batchSize < validators.length) {
-        await this.delay(2000); // 2 second delay
+        await this.delay(3000); // 3 second delay between individual requests
       }
     }
 

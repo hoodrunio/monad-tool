@@ -49,9 +49,12 @@ export class MonadLogProcessor {
   }
 
   async initialize(): Promise<void> {
-    await this.validatorRegistry.initialize();
-    await this.dnsMapper.initialize();
-    console.log('✅ Enhanced processor initialized with DNS optimization');
+    if (!this.isRegistryInitialized) {
+      await this.validatorRegistry.initialize();
+      await this.dnsMapper.initialize();
+      this.isRegistryInitialized = true;
+      console.log('✅ Enhanced processor initialized with DNS optimization');
+    }
   }
 
   private detectEpochFromLogs(logs: RawLog[]): number {
@@ -95,8 +98,9 @@ export class MonadLogProcessor {
     };
 
     try {
-      // Initialize validator registry and detect current epoch
+      // Ensure initialization (will only run once due to isRegistryInitialized check)
       await this.initialize();
+      
       const detectedEpoch = this.detectEpochFromLogs(logs);
       this.validatorRegistry.setCurrentEpoch(detectedEpoch);
       
@@ -228,7 +232,6 @@ export class MonadLogProcessor {
     // Extract QC participation data for specific events
     if (eventType === EventType.QC_COMMIT_TRIGGERED && fields.qc) {
       try {
-        await this.initialize();
         const epoch = enhanced.epochNumber || 1;
         const qcData = this.qcParser.extractParticipation(fields.qc, epoch);
         enhanced.participantCount = qcData.participatingValidators;
@@ -276,9 +279,8 @@ export class MonadLogProcessor {
     
     // Process unique DNS addresses in batch if any new ones found
     if (uniqueDNSValidators.length > 0) {
-      console.log(`Processing ${uniqueDNSValidators.length} validator DNS addresses in batches of 2`);
-      await this.dnsMapper.batchProcessValidatorDNS(uniqueDNSValidators);
-      console.log(`Successfully processed ${uniqueDNSValidators.length}/${uniqueDNSValidators.length} validator DNS addresses`);
+      const processed = await this.dnsMapper.batchProcessValidatorDNS(uniqueDNSValidators);
+      console.log(`Successfully processed ${processed.length}/${uniqueDNSValidators.length} new validator DNS addresses`);
     }
 
     // Process logs with cached DNS info
@@ -451,11 +453,6 @@ export class MonadLogProcessor {
 
   private async extractQCParticipationBatch(logs: RawLog[]): Promise<QCParticipationData[]> {
     const qcData: QCParticipationData[] = [];
-    
-    if (!this.isRegistryInitialized) {
-      await this.initialize();
-      this.isRegistryInitialized = true;
-    }
     
     for (const log of logs) {
       try {

@@ -24,6 +24,12 @@ export class IntelligentDNSParser {
     maxCallsPerWindow: number;
     windowSize: number;
   };
+  private requestQueue: Array<{
+    ip: string;
+    resolve: (value: any) => void;
+    reject: (error: any) => void;
+  }> = [];
+  private isProcessingQueue: boolean = false;
   
   constructor() {
     this.initializePatterns();
@@ -207,19 +213,73 @@ export class IntelligentDNSParser {
     isp?: string;
     coordinates?: { lat: number; lng: number };
   }> {
-    try {
-      // Check circuit breaker
-      if (this.isCircuitBreakerOpen()) {
-        throw new Error('Circuit breaker is open');
-      }
+    // Check circuit breaker first
+    if (this.isCircuitBreakerOpen()) {
+      throw new Error('Circuit breaker is open');
+    }
 
-      // Check rate limit
+    // Use queuing for rate limiting instead of immediate rejection
+    return new Promise((resolve, reject) => {
+      this.requestQueue.push({ ip, resolve, reject });
+      this.processQueue();
+    });
+  }
+
+  /**
+   * Process the request queue with proper rate limiting
+   */
+  private async processQueue(): Promise<void> {
+    if (this.isProcessingQueue || this.requestQueue.length === 0) {
+      return;
+    }
+
+    this.isProcessingQueue = true;
+
+    while (this.requestQueue.length > 0) {
+      // Check if we can make a request
       if (!this.canMakeAPICall()) {
-        throw new Error('Rate limit exceeded');
+        // Wait until we can make the next request
+        const waitTime = this.getWaitTime();
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
       }
 
+      // Check circuit breaker again
+      if (this.isCircuitBreakerOpen()) {
+        // Reject all queued requests
+        while (this.requestQueue.length > 0) {
+          const request = this.requestQueue.shift()!;
+          request.reject(new Error('Circuit breaker is open'));
+        }
+        break;
+      }
+
+      const request = this.requestQueue.shift()!;
+      
+      try {
+        const result = await this.makeGeolocationRequest(request.ip);
+        request.resolve(result);
+      } catch (error) {
+        request.reject(error);
+      }
+    }
+
+    this.isProcessingQueue = false;
+  }
+
+  /**
+   * Make the actual geolocation API request
+   */
+  private async makeGeolocationRequest(ip: string): Promise<{
+    country?: string;
+    region?: string;
+    city?: string;
+    datacenter?: string;
+    isp?: string;
+    coordinates?: { lat: number; lng: number };
+  }> {
+    try {
       // Using ip-api.com with proper fields specification
-      // Using generated numeric value for fields to save bandwidth: 61439 covers all needed fields
       const response = await fetch(`http://ip-api.com/json/${ip}?fields=61439`, {
         signal: AbortSignal.timeout(10000)
       });
@@ -234,7 +294,7 @@ export class IntelligentDNSParser {
         throw new Error(data.message || 'Geolocation lookup failed');
       }
 
-      // Success - reset circuit breaker
+      // Success - reset circuit breaker and record API call
       this.resetCircuitBreaker();
       this.recordAPICall();
       
@@ -249,11 +309,13 @@ export class IntelligentDNSParser {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       
-      // Record failure for circuit breaker
-      this.recordFailure();
+      // Record failure for circuit breaker (only if not already open)
+      if (!this.circuitBreaker.isOpen) {
+        this.recordFailure();
+      }
       
       console.warn(`IP geolocation failed for ${ip}:`, errorMessage);
-      return {};
+      throw error;
     }
   }
 
@@ -279,6 +341,11 @@ export class IntelligentDNSParser {
    * Record a failure for circuit breaker
    */
   private recordFailure(): void {
+    // Don't increment failures if circuit breaker is already open
+    if (this.circuitBreaker.isOpen) {
+      return;
+    }
+
     this.circuitBreaker.failureCount++;
     this.circuitBreaker.lastFailure = Date.now();
 
@@ -464,5 +531,27 @@ export class IntelligentDNSParser {
     this.knownTLDs.add('club');
     this.knownTLDs.add('land');
     this.knownTLDs.add('rocks');
+  }
+
+  /**
+   * Calculate how long to wait before making the next request
+   */
+  private getWaitTime(): number {
+    const now = Date.now();
+    const timeSinceLastCall = now - this.rateLimiter.lastCall;
+    const minDelay = 1500; // 1.5 seconds minimum between calls
+    
+    if (timeSinceLastCall < minDelay) {
+      return minDelay - timeSinceLastCall;
+    }
+    
+    // Check if we need to wait for the rate limit window to reset
+    const timeInCurrentWindow = now - this.rateLimiter.windowStart;
+    if (timeInCurrentWindow < this.rateLimiter.windowSize && 
+        this.rateLimiter.callCount >= this.rateLimiter.maxCallsPerWindow) {
+      return this.rateLimiter.windowSize - timeInCurrentWindow;
+    }
+    
+    return 0;
   }
 } 
