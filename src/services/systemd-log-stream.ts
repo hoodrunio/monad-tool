@@ -239,26 +239,75 @@ export class SystemdLogStream extends EventEmitter {
 
   private tagLineWithService(logLine: string, serviceName: string): string {
     try {
-      // If it's already JSON, add service tag
+      // If it's already JSON from journalctl, convert to RawLog format
       if (logLine.trim().startsWith('{')) {
-        const logObject = JSON.parse(logLine);
-        logObject._service = serviceName;
-        return JSON.stringify(logObject);
+        const journalEntry = JSON.parse(logLine);
+        
+        // Check if this is a journalctl JSON entry with MESSAGE field
+        if (journalEntry.MESSAGE) {
+          // Try to parse the MESSAGE field as JSON (actual log content)
+          try {
+            const actualLog = JSON.parse(journalEntry.MESSAGE);
+            
+            // Convert to RawLog format expected by MonadLogProcessor
+            return JSON.stringify({
+              timestamp: actualLog.timestamp || new Date(parseInt(journalEntry.__REALTIME_TIMESTAMP || '0') / 1000).toISOString(),
+              level: actualLog.level || 'INFO',
+              fields: actualLog.fields || {},
+              target: actualLog.target || this.getTargetFromService(serviceName)
+            });
+          } catch (e) {
+            // MESSAGE is not JSON, treat as plain text message
+            return JSON.stringify({
+              timestamp: new Date(parseInt(journalEntry.__REALTIME_TIMESTAMP || '0') / 1000).toISOString(),
+              level: 'INFO',
+              fields: {
+                message: journalEntry.MESSAGE
+              },
+              target: this.getTargetFromService(serviceName)
+            });
+          }
+        } else {
+          // Already in the expected format, just add service info if needed
+          const logObject = { ...journalEntry };
+          if (!logObject.target) {
+            logObject.target = this.getTargetFromService(serviceName);
+          }
+          return JSON.stringify(logObject);
+        }
       } else {
-        // For non-JSON lines, create a wrapper object
+        // For non-JSON lines, create RawLog format
         return JSON.stringify({
-          message: logLine,
-          _service: serviceName,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          level: 'INFO',
+          fields: {
+            message: logLine
+          },
+          target: this.getTargetFromService(serviceName)
         });
       }
     } catch (error) {
-      // If parsing fails, create a simple wrapper
+      // If parsing fails, create a simple RawLog format
       return JSON.stringify({
-        message: logLine,
-        _service: serviceName,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        level: 'INFO',
+        fields: {
+          message: logLine
+        },
+        target: this.getTargetFromService(serviceName)
       });
+    }
+  }
+
+  private getTargetFromService(serviceName: string): string {
+    // Map service names to expected targets
+    switch (serviceName) {
+      case 'monad-bft':
+        return 'monad_consensus_state';
+      case 'monad-ledger-tail':
+        return 'ledger_tail';
+      default:
+        return serviceName.replace('-', '_');
     }
   }
 
