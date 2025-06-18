@@ -77,11 +77,12 @@ export class NetworkDiscoveryService {
 
     return {
       provider,
-      totalValidators: validators.length,
+      validatorCount: validators.length,
       activeValidators: activeValidators.length,
-      averageUptime: this.calculateAverageUptime(validators),
-      locations,
+      avgPerformance: this.calculateAverageUptime(validators),
+      regions: locations,
       datacenters,
+      riskScore: this.calculateProviderRisk(validators),
       lastUpdated: new Date()
     };
   }
@@ -223,12 +224,56 @@ export class NetworkDiscoveryService {
     const geographicDistribution = this.getGeographicDistribution(parseResults);
     const datacenterDistribution = this.getDatacenterDistribution(parseResults);
 
+    // Calculate diversity score (Shannon entropy)
+    const diversityScore = this.calculateDiversityScore(providerDistribution);
+    
+    // Calculate centralization risk
+    const centralizationAnalysis = this.analyzeCentralizationRisks({
+      totalValidators: parseResults.length,
+      uniqueProviders,
+      providerDistribution,
+      geographicDistribution,
+      datacenterDistribution,
+      providerMetrics: {},
+      diversityScore,
+      centralizationRisk: 'low'
+    });
+
+    // Create provider metrics
+    const providerMetrics: Record<string, ProviderMetrics> = {};
+    uniqueProviders.forEach(provider => {
+      const providerValidators = parseResults.filter(r => r.provider === provider);
+      const validatorInfos: ValidatorInfo[] = providerValidators.map(r => ({
+        validatorId: r.hostname.split('.')[0],
+        dnsAddress: r.originalAddress,
+        provider: r.provider,
+        locationInfo: r.locationInfo,
+        lastSeen: new Date(),
+        status: 'active'
+      }));
+      
+      // Create metrics synchronously based on current data
+      providerMetrics[provider] = {
+        provider,
+        validatorCount: validatorInfos.length,
+        activeValidators: validatorInfos.filter(v => v.status === 'active').length,
+        avgPerformance: this.calculateAverageUptime(validatorInfos),
+        regions: [...new Set(validatorInfos.map(v => `${v.locationInfo.city}, ${v.locationInfo.country}`))],
+        datacenters: [...new Set(validatorInfos.map(v => v.locationInfo.datacenter))],
+        riskScore: this.calculateProviderRisk(validatorInfos),
+        lastUpdated: new Date()
+      };
+    });
+
     return {
       totalValidators: parseResults.length,
       uniqueProviders,
       providerDistribution,
       geographicDistribution,
-      datacenterDistribution
+      datacenterDistribution,
+      providerMetrics,
+      diversityScore,
+      centralizationRisk: centralizationAnalysis.overallRisk
     };
   }
 
@@ -250,6 +295,40 @@ export class NetworkDiscoveryService {
     // For now, return a placeholder
     const activeCount = validators.filter(v => v.status === 'active').length;
     return validators.length > 0 ? activeCount / validators.length : 0;
+  }
+
+  private calculateProviderRisk(validators: ValidatorInfo[]): number {
+    // Calculate risk based on concentration and geographic distribution
+    const totalValidators = validators.length;
+    if (totalValidators === 0) return 0;
+    
+    // Higher validator count means higher risk if concentrated
+    const concentrationRisk = Math.min(totalValidators / 50, 1); // Risk increases with count
+    
+    // Geographic diversity reduces risk
+    const uniqueLocations = new Set(validators.map(v => `${v.locationInfo.city}, ${v.locationInfo.country}`));
+    const diversityBonus = Math.min(uniqueLocations.size / 10, 1);
+    
+    // Final risk score (0-1, where 1 is highest risk)
+    return Math.max(0, concentrationRisk - diversityBonus * 0.5);
+  }
+
+  private calculateDiversityScore(distribution: Map<string, number>): number {
+    // Calculate Shannon diversity index
+    const total = Array.from(distribution.values()).reduce((sum, count) => sum + count, 0);
+    if (total === 0) return 0;
+    
+    let diversity = 0;
+    distribution.forEach(count => {
+      if (count > 0) {
+        const proportion = count / total;
+        diversity -= proportion * Math.log2(proportion);
+      }
+    });
+    
+    // Normalize to 0-1 scale
+    const maxDiversity = Math.log2(distribution.size);
+    return maxDiversity > 0 ? diversity / maxDiversity : 0;
   }
 
   private generateCacheKey(dnsAddresses: string[]): string {

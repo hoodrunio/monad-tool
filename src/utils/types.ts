@@ -50,6 +50,9 @@ export interface NetworkDiscoveryResult {
   providerDistribution: Map<string, number>;
   geographicDistribution: Map<string, number>;
   datacenterDistribution: Map<string, number>;
+  providerMetrics: Record<string, ProviderMetrics>;
+  diversityScore: number;
+  centralizationRisk: 'low' | 'medium' | 'high';
 }
 
 export interface DNSCacheEntry {
@@ -61,10 +64,11 @@ export interface DNSCacheEntry {
 
 export interface ProviderMetrics {
   provider: string;
-  totalValidators: number;
+  validatorCount: number;
   activeValidators: number;
-  averageUptime: number;
-  locations: string[];
+  avgPerformance: number;
+  regions: string[];
   datacenters: string[];
+  riskScore: number;
   lastUpdated: Date;
 } 

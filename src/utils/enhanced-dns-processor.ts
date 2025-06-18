@@ -212,6 +212,48 @@ export class EnhancedDNSProcessor {
   }
 
   /**
+   * Get validator infrastructure details by ID
+   */
+  async getValidatorInfrastructure(validatorId: string): Promise<ValidatorInfo | null> {
+    return this.validatorRegistry.get(validatorId) || null;
+  }
+
+  /**
+   * Search validators by criteria
+   */
+  async searchValidators(criteria: {
+    provider?: string;
+    location?: string;
+    datacenter?: string;
+  }): Promise<ValidatorInfo[]> {
+    const results: ValidatorInfo[] = [];
+    
+    for (const validator of this.validatorRegistry.values()) {
+      let matches = true;
+      
+      if (criteria.provider && !validator.provider.toLowerCase().includes(criteria.provider.toLowerCase())) {
+        matches = false;
+      }
+      
+      if (criteria.location && 
+          !validator.locationInfo.city.toLowerCase().includes(criteria.location.toLowerCase()) &&
+          !validator.locationInfo.country.toLowerCase().includes(criteria.location.toLowerCase())) {
+        matches = false;
+      }
+      
+      if (criteria.datacenter && !validator.locationInfo.datacenter.toLowerCase().includes(criteria.datacenter.toLowerCase())) {
+        matches = false;
+      }
+      
+      if (matches) {
+        results.push(validator);
+      }
+    }
+    
+    return results;
+  }
+
+  /**
    * Get DNS cache statistics
    */
   getCacheStats(): {
@@ -227,7 +269,7 @@ export class EnhancedDNSProcessor {
   /**
    * Clear DNS cache
    */
-  clearCache(): void {
+  async clearCache(): Promise<void> {
     this.cacheManager.clear();
   }
 
