@@ -19,12 +19,18 @@ import {
   ProcessingConfig,
   EnhancedLogProcessor,
   QCParticipationParser,
-  DNSIntelligenceParser,
   VoteChainBuilder,
-  DNSParseResult,
   GeographicRegionMapping,
   ProviderMapping
 } from './types';
+
+// Import new enhanced DNS utilities
+import { 
+  EnhancedDNSProcessor,
+  createEnhancedDNSProcessor,
+  DNSParseResult as NewDNSParseResult,
+  LocationInfo
+} from '../utils';
 
 export class MonadLogProcessor implements EnhancedLogProcessor {
   private qcParser: QCParticipationParserImpl;
