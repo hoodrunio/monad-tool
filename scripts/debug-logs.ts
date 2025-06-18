@@ -115,50 +115,51 @@ async function debugLogProcessing() {
     // Create sample RawLog objects from the journalctl data
     const testLogs: any[] = [];
     
+    // Process monad-bft logs (consensus)
     for (const line of bftLogLines.slice(0, 2)) {
       try {
         const log = JSON.parse(line);
         
-        // Try different ways to extract the actual log content
-        let logContent: any = null;
-        
-        // Method 1: Check if MESSAGE contains JSON
+        // Check if MESSAGE contains JSON
         if (log.MESSAGE && log.MESSAGE.includes('{')) {
           try {
-            logContent = JSON.parse(log.MESSAGE);
+            const logContent = JSON.parse(log.MESSAGE);
+            testLogs.push({
+              timestamp: logContent.timestamp || new Date().toISOString(),
+              level: logContent.level || 'INFO',
+              fields: logContent.fields || {},
+              target: 'monad_consensus_state'
+            });
           } catch (e) {
             // Not JSON in MESSAGE
           }
         }
+      } catch (e: any) {
+        console.log(`    Error processing BFT line: ${e.message}`);
+      }
+    }
+    
+    // Process monad-ledger-tail logs (ledger)
+    for (const line of ledgerLogLines.slice(0, 3)) {
+      try {
+        const log = JSON.parse(line);
         
-        // Method 2: Check if the log itself has the expected structure
-        if (!logContent && log.fields) {
-          logContent = log;
-        }
-        
-        // Method 3: Try to construct from systemd log format
-        if (!logContent) {
-          logContent = {
-            timestamp: log.__REALTIME_TIMESTAMP ? new Date(parseInt(log.__REALTIME_TIMESTAMP) / 1000).toISOString() : new Date().toISOString(),
-            level: 'INFO',
-            fields: {
-              message: log.MESSAGE || '',
-              // Try to extract other fields
-            },
-            target: 'monad_consensus_state'
-          };
-        }
-        
-        if (logContent) {
-          testLogs.push({
-            timestamp: logContent.timestamp || new Date().toISOString(),
-            level: logContent.level || 'INFO',
-            fields: logContent.fields || {},
-            target: 'monad_consensus_state'
-          });
+        // Check if MESSAGE contains JSON
+        if (log.MESSAGE && log.MESSAGE.includes('{')) {
+          try {
+            const logContent = JSON.parse(log.MESSAGE);
+            testLogs.push({
+              timestamp: logContent.timestamp || new Date().toISOString(),
+              level: logContent.level || 'INFO',
+              fields: logContent.fields || {},
+              target: 'ledger_tail'
+            });
+          } catch (e) {
+            // Not JSON in MESSAGE
+          }
         }
       } catch (e: any) {
-        console.log(`    Error processing line: ${e.message}`);
+        console.log(`    Error processing ledger line: ${e.message}`);
       }
     }
     
