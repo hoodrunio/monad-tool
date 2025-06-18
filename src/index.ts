@@ -4,6 +4,7 @@ import { DataIngestionService, IngestionConfig } from './services/data-ingestion
 import { SystemdLogStream, SystemdLogStreamConfig } from './services/systemd-log-stream';
 import { AnalyticsAPIServer } from './api/server';
 import { logger } from './utils/logger';
+import { memoryMonitor } from './utils/memory-monitor';
 
 // Global error handlers for unhandled rejections
 process.on('unhandledRejection', (reason, promise) => {
@@ -26,6 +27,9 @@ async function main() {
   logger.info('🚀 Starting Monad Validator Analytics System');
 
   try {
+    // Start memory monitoring
+    memoryMonitor.startMonitoring();
+    
     // Load configuration
     const config = loadConfiguration();
     

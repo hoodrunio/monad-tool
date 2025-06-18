@@ -28,6 +28,7 @@ import {
 
 // Import validator registry for mapping bitvec positions to actual validators
 import { validatorRegistry, ValidatorRegistry } from '../services/validator-registry';
+import { memoryMonitor } from '../utils/memory-monitor';
 
 export class MonadLogProcessor {
   private qcParser: QCParticipationParserImpl;
@@ -99,6 +100,15 @@ export class MonadLogProcessor {
     };
 
     try {
+      // Check memory safety before processing
+      if (!memoryMonitor.isMemorySafe()) {
+        console.warn('⚠️ Memory usage high, waiting for safe conditions...');
+        const isSafe = await memoryMonitor.waitForMemorySafe(10000);
+        if (!isSafe) {
+          throw new Error('Memory usage too high, aborting batch processing');
+        }
+      }
+      
       // Initialize validator registry and detect current epoch
       await this.ensureValidatorRegistryInitialized();
       const detectedEpoch = this.detectEpochFromLogs(logs);

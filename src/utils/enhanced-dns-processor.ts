@@ -52,40 +52,47 @@ export class EnhancedDNSProcessor {
   }
 
   /**
-   * Process multiple validator DNS addresses in batch
+   * Process multiple validator DNS addresses in batch with memory-safe approach
    */
   async processBatchValidatorDNS(
     validators: Array<{ dnsAddress: string; validatorId?: string }>
   ): Promise<DNSParseResult[]> {
     const results: DNSParseResult[] = [];
-    const batchSize = 5; // Process in small batches to avoid overwhelming external services
+    const batchSize = 2; // Smaller batch size to prevent memory issues
+    const maxConcurrent = 3; // Maximum concurrent operations
+    
+    console.info(`Processing ${validators.length} validator DNS addresses in batches of ${batchSize}`);
     
     for (let i = 0; i < validators.length; i += batchSize) {
       const batch = validators.slice(i, i + batchSize);
       
-      const batchPromises = batch.map(async validator => {
+      // Process batch with conservative approach
+      for (const validator of batch) {
         try {
-          return await this.processValidatorDNS(validator.dnsAddress, validator.validatorId);
+          const result = await this.processValidatorDNS(validator.dnsAddress, validator.validatorId);
+          if (result) {
+            results.push(result);
+          }
+          
+          // Small delay between each DNS lookup to prevent overwhelming external services
+          await this.delay(250);
         } catch (error) {
-          console.warn(`Failed to process DNS ${validator.dnsAddress}:`, error);
-          return null;
+          console.info(`Failed to process DNS ${validator.dnsAddress}:`, error instanceof Error ? error.message : 'Unknown error');
         }
-      });
+      }
       
-      const batchResults = await Promise.allSettled(batchPromises);
-      
-      batchResults.forEach(result => {
-        if (result.status === 'fulfilled' && result.value) {
-          results.push(result.value);
-        }
-      });
-      
-      // Add delay between batches
+      // Longer delay between batches
       if (i + batchSize < validators.length) {
-        await this.delay(1000);
+        await this.delay(2000);
+        
+        // Force garbage collection hint
+        if (global.gc) {
+          global.gc();
+        }
       }
     }
     
+    console.info(`Successfully processed ${results.length}/${validators.length} validator DNS addresses`);
     return results;
   }
 

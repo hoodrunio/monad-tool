@@ -2,12 +2,92 @@ import { execSync } from 'child_process';
 import { DNSParseResult, LocationInfo, GeolocationResponse } from './types';
 
 /**
+ * Circuit breaker for external API calls
+ */
+class CircuitBreaker {
+  private failures = 0;
+  private lastFailTime = 0;
+  private state: 'closed' | 'open' | 'half-open' = 'closed';
+  
+  constructor(
+    private maxFailures = 5,
+    private resetTimeoutMs = 60000 // 1 minute
+  ) {}
+  
+  async execute<T>(fn: () => Promise<T>): Promise<T | null> {
+    if (this.state === 'open') {
+      if (Date.now() - this.lastFailTime > this.resetTimeoutMs) {
+        this.state = 'half-open';
+      } else {
+        throw new Error('Circuit breaker is open');
+      }
+    }
+    
+    try {
+      const result = await fn();
+      if (this.state === 'half-open') {
+        this.reset();
+      }
+      return result;
+    } catch (error) {
+      this.recordFailure();
+      throw error;
+    }
+  }
+  
+  private recordFailure() {
+    this.failures++;
+    this.lastFailTime = Date.now();
+    if (this.failures >= this.maxFailures) {
+      this.state = 'open';
+    }
+  }
+  
+  private reset() {
+    this.failures = 0;
+    this.state = 'closed';
+  }
+}
+
+/**
+ * Rate limiter for API requests
+ */
+class RateLimiter {
+  private requests: number[] = [];
+  
+  constructor(
+    private maxRequests = 10,
+    private windowMs = 60000 // 1 minute window
+  ) {}
+  
+  async checkLimit(): Promise<void> {
+    const now = Date.now();
+    // Remove requests outside the window
+    this.requests = this.requests.filter(time => now - time < this.windowMs);
+    
+    if (this.requests.length >= this.maxRequests) {
+      const oldestRequest = Math.min(...this.requests);
+      const waitTime = this.windowMs - (now - oldestRequest);
+      if (waitTime > 0) {
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      }
+    }
+    
+    this.requests.push(now);
+  }
+}
+
+/**
  * Intelligent DNS Parser for Monad Validator URLs
  * Extracts provider names and uses external services for location/datacenter info
  */
 export class IntelligentDNSParser {
   private providerPatterns: Map<string, RegExp> = new Map();
   private knownTLDs: Set<string> = new Set();
+  private circuitBreaker = new CircuitBreaker(3, 30000); // More conservative settings
+  private rateLimiter = new RateLimiter(5, 60000); // 5 requests per minute
+  private geolocationCache = new Map<string, any>();
+  private pendingRequests = new Map<string, Promise<any>>();
   
   constructor() {
     this.initializePatterns();
@@ -23,8 +103,8 @@ export class IntelligentDNSParser {
     // Extract provider name using intelligent parsing
     const provider = this.extractProviderName(hostname);
     
-    // Get location info from external DNS services
-    const locationInfo = await this.getLocationInfo(hostname);
+    // Get location info from external DNS services with fallback
+    const locationInfo = await this.getLocationInfoSafe(hostname);
     
     // Extract network information
     const networkInfo = this.extractNetworkInfo(hostname);
@@ -115,6 +195,71 @@ export class IntelligentDNSParser {
   }
 
   /**
+   * Get location info with circuit breaker and fallback
+   */
+  private async getLocationInfoSafe(hostname: string): Promise<LocationInfo> {
+    try {
+      // Use nslookup and dig to get IP and then lookup location
+      const ip = await this.resolveHostnameToIP(hostname);
+      if (!ip) {
+        return this.getUnknownLocationInfo();
+      }
+      
+      // Check cache first
+      if (this.geolocationCache.has(ip)) {
+        const cached = this.geolocationCache.get(ip);
+        return {
+          ip,
+          country: cached.country || 'unknown',
+          region: cached.region || 'unknown',
+          city: cached.city || 'unknown',
+          datacenter: cached.datacenter || this.extractDatacenterFromHostname(hostname),
+          isp: cached.isp || 'unknown',
+          coordinates: cached.coordinates
+        };
+      }
+      
+      // Check for pending request to avoid duplicate calls
+      if (this.pendingRequests.has(ip)) {
+        const geoInfo = await this.pendingRequests.get(ip);
+        return {
+          ip,
+          country: geoInfo.country || 'unknown',
+          region: geoInfo.region || 'unknown',
+          city: geoInfo.city || 'unknown',
+          datacenter: geoInfo.datacenter || this.extractDatacenterFromHostname(hostname),
+          isp: geoInfo.isp || 'unknown',
+          coordinates: geoInfo.coordinates
+        };
+      }
+      
+      // Get geographic information using IP geolocation with circuit breaker
+      const geoInfoPromise = this.getIPGeolocationSafe(ip);
+      this.pendingRequests.set(ip, geoInfoPromise);
+      
+      try {
+        const geoInfo = await geoInfoPromise;
+        this.geolocationCache.set(ip, geoInfo);
+        
+        return {
+          ip,
+          country: geoInfo.country || 'unknown',
+          region: geoInfo.region || 'unknown',
+          city: geoInfo.city || 'unknown',
+          datacenter: geoInfo.datacenter || this.extractDatacenterFromHostname(hostname),
+          isp: geoInfo.isp || 'unknown',
+          coordinates: geoInfo.coordinates
+        };
+      } finally {
+        this.pendingRequests.delete(ip);
+      }
+    } catch (error) {
+      console.warn(`Failed to get location info for ${hostname}:`, error);
+      return this.getUnknownLocationInfo();
+    }
+  }
+
+  /**
    * Get location and datacenter information from external DNS services
    */
   private async getLocationInfo(hostname: string): Promise<LocationInfo> {
@@ -159,6 +304,73 @@ export class IntelligentDNSParser {
     } catch (error) {
       console.warn(`nslookup failed for ${hostname}:`, error);
       return null;
+    }
+  }
+
+  /**
+   * Get IP geolocation information with circuit breaker and rate limiting
+   */
+  private async getIPGeolocationSafe(ip: string): Promise<{
+    country?: string;
+    region?: string;
+    city?: string;
+    datacenter?: string;
+    isp?: string;
+    coordinates?: { lat: number; lng: number };
+  }> {
+    try {
+      // Apply rate limiting
+      await this.rateLimiter.checkLimit();
+      
+      // Use circuit breaker for external API call
+      const result = await this.circuitBreaker.execute(async () => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+        
+        try {
+          // Using a free geolocation service (in production, use a paid service)
+          const response = await fetch(
+            `http://ip-api.com/json/${ip}?fields=status,country,regionName,city,isp,org,lat,lon`,
+            { 
+              signal: controller.signal,
+              headers: {
+                'User-Agent': 'monad-analytics/1.0'
+              }
+            }
+          );
+          
+          clearTimeout(timeoutId);
+          
+          if (!response.ok) {
+            throw new Error(`Geolocation API failed: ${response.status}`);
+          }
+          
+          const data = await response.json() as GeolocationResponse;
+          
+          if (data.status !== 'success') {
+            throw new Error('Geolocation lookup failed');
+          }
+          
+          return {
+            country: data.country,
+            region: data.regionName,
+            city: data.city,
+            isp: data.isp,
+            datacenter: this.extractDatacenterFromISP(data.org || data.isp),
+            coordinates: data.lat && data.lon ? { lat: data.lat, lng: data.lon } : undefined
+          };
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      });
+      
+      return result || {};
+    } catch (error) {
+      // Log at info level to reduce noise
+      console.info(`IP geolocation failed for ${ip}:`, error instanceof Error ? error.message : 'Unknown error');
+      
+      // Return fallback data based on IP ranges if possible
+      return this.getFallbackGeolocation(ip);
     }
   }
 
@@ -296,6 +508,63 @@ export class IntelligentDNSParser {
     if (hostname.includes('amazonaws.com') || hostname.includes('googleusercontent.com')) return 'cloud-provider';
     if (hostname.split('.').length >= 3) return 'subdomain-analysis';
     return 'domain-extraction';
+  }
+
+  /**
+   * Get fallback geolocation data based on IP ranges
+   */
+  private getFallbackGeolocation(ip: string): {
+    country?: string;
+    region?: string;
+    city?: string;
+    datacenter?: string;
+    isp?: string;
+    coordinates?: { lat: number; lng: number };
+  } {
+    // Basic IP range analysis for common cloud providers
+    const ipParts = ip.split('.').map(Number);
+    
+    // AWS IP ranges (simplified detection)
+    if ((ipParts[0] === 52 || ipParts[0] === 54 || ipParts[0] === 3) && ipParts[1] >= 0) {
+      return {
+        country: 'US',
+        region: 'unknown',
+        city: 'unknown',
+        datacenter: 'AWS',
+        isp: 'Amazon Web Services'
+      };
+    }
+    
+    // Google Cloud IP ranges
+    if ((ipParts[0] === 35 || ipParts[0] === 34) && ipParts[1] >= 0) {
+      return {
+        country: 'US',
+        region: 'unknown',
+        city: 'unknown',
+        datacenter: 'Google Cloud',
+        isp: 'Google'
+      };
+    }
+    
+    // DigitalOcean ranges
+    if (ipParts[0] === 159 || ipParts[0] === 138) {
+      return {
+        country: 'US',
+        region: 'unknown',
+        city: 'unknown',
+        datacenter: 'DigitalOcean',
+        isp: 'DigitalOcean'
+      };
+    }
+    
+    // Default fallback
+    return {
+      country: 'unknown',
+      region: 'unknown', 
+      city: 'unknown',
+      datacenter: 'unknown',
+      isp: 'unknown'
+    };
   }
 
   /**
