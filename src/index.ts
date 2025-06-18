@@ -5,7 +5,24 @@ import { SystemdLogStream, SystemdLogStreamConfig } from './services/systemd-log
 import { AnalyticsAPIServer } from './api/server';
 import { logger } from './utils/logger';
 
+// Global error handlers for unhandled rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Promise Rejection at:', promise);
+  console.error('❌ Reason:', reason);
+  logger.error('❌ Unhandled Rejection at:', { promise, reason, stack: reason instanceof Error ? reason.stack : undefined });
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  logger.error('❌ Uncaught Exception:', { error: error.message, stack: error.stack });
+  process.exit(1);
+});
+
 async function main() {
+  const nodeVersion = process.version;
+  const nodePath = process.execPath;
+  console.log(`Starting Monad Analytics with Node.js ${nodeVersion} from ${nodePath}`);
+
   logger.info('🚀 Starting Monad Validator Analytics System');
 
   try {
@@ -176,23 +193,13 @@ function setupGracefulShutdown(
   // Handle shutdown signals
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
   process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-  
-  // Handle uncaught exceptions and unhandled rejections
-  process.on('uncaughtException', (error) => {
-    logger.error('❌ Uncaught Exception:', error);
-    process.exit(1);
-  });
-  
-  process.on('unhandledRejection', (reason, promise) => {
-    logger.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-    process.exit(1);
-  });
 }
 
 // Start the application
 if (require.main === module) {
   main().catch((error) => {
-    console.error('Fatal error:', error);
+    console.error('❌ Fatal error starting application:', error);
+    logger.error('❌ Fatal error starting application:', error);
     process.exit(1);
   });
 } 

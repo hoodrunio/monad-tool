@@ -47,8 +47,14 @@ export class MonadLogProcessor {
 
   private async ensureValidatorRegistryInitialized(): Promise<void> {
     if (!this.isRegistryInitialized) {
-      await this.validatorRegistry.initialize();
-      this.isRegistryInitialized = true;
+      try {
+        await this.validatorRegistry.initialize();
+        this.isRegistryInitialized = true;
+        console.log('✅ Validator registry initialization completed successfully');
+      } catch (error) {
+        console.error('❌ Failed to initialize validator registry:', error);
+        throw error;
+      }
     }
   }
 
@@ -111,21 +117,52 @@ export class MonadLogProcessor {
       
       // Extract QC participation data
       if (this.config.enableQCParsing) {
-        result.qcParticipation = await this.extractQCParticipationBatch(consensusLogs);
+        try {
+          result.qcParticipation = await this.extractQCParticipationBatch(consensusLogs);
+        } catch (qcError) {
+          console.error('❌ QC participation extraction failed:', qcError);
+          result.errors.push({
+            logContent: 'QC participation extraction',
+            error: qcError instanceof Error ? qcError.message : String(qcError),
+            timestamp: new Date(),
+            ingestionId
+          });
+        }
       }
       
       // Build vote chains
       if (this.config.enableVoteChainAnalysis) {
-        const voteEvents = this.extractVoteEvents(consensusEvents);
-        result.voteChains = this.buildVoteChain(voteEvents);
+        try {
+          const voteEvents = this.extractVoteEvents(consensusEvents);
+          result.voteChains = this.buildVoteChain(voteEvents);
+        } catch (voteError) {
+          console.error('❌ Vote chain building failed:', voteError);
+          result.errors.push({
+            logContent: 'Vote chain building',
+            error: voteError instanceof Error ? voteError.message : String(voteError),
+            timestamp: new Date(),
+            ingestionId
+          });
+        }
       }
       
       // Extract validator infrastructure using enhanced DNS processor
       if (this.config.enableGeographicIntelligence) {
-        result.validatorInfrastructure = await this.extractValidatorInfrastructureEnhanced(result.events);
+        try {
+          result.validatorInfrastructure = await this.extractValidatorInfrastructureEnhanced(result.events);
+        } catch (infraError) {
+          console.error('❌ Validator infrastructure extraction failed:', infraError);
+          result.errors.push({
+            logContent: 'Validator infrastructure extraction',
+            error: infraError instanceof Error ? infraError.message : String(infraError),
+            timestamp: new Date(),
+            ingestionId
+          });
+        }
       }
 
     } catch (error) {
+      console.error('❌ Critical error in processBatch:', error);
       result.errors.push({
         logContent: JSON.stringify(logs.slice(0, 3)),
         error: error instanceof Error ? error.message : String(error),
@@ -578,6 +615,11 @@ class QCParticipationParserImpl implements QCParticipationParser {
         epoch
       };
     } catch (error) {
+      console.error(`Critical QC participation parsing error: ${error}`, {
+        qcString: qcString.substring(0, 200) + '...', // Log first 200 chars for debugging
+        epoch,
+        errorDetails: error
+      });
       throw new Error(`Failed to parse QC participation: ${error}`);
     }
   }
@@ -593,7 +635,12 @@ class QCParticipationParserImpl implements QCParticipationParser {
     position: number;
     stake: number;
   }> {
-    return this.validatorRegistry.mapBitVecToValidators(bitmap, epoch);
+    try {
+      return this.validatorRegistry.mapBitVecToValidators(bitmap, epoch);
+    } catch (error) {
+      console.error(`Critical error in validator mapping: ${error}`);
+      throw error; // Re-throw to maintain error visibility
+    }
   }
 }
 
