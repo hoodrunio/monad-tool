@@ -2,16 +2,12 @@
 // Orchestrates log processing, database storage, and caching for real-time analytics
 
 import { EventEmitter } from 'events';
-import { v4 as uuidv4 } from 'uuid';
-import { LogProcessor } from '../log-processor/processor';
 import { MonadLogProcessor } from '../log-processor/enhanced-processor';
 import { MonadClickHouseClient, ClickHouseConfig } from '../database/clickhouse-client';
 import { MonadRedisClient, RedisConfig } from '../cache/redis-client';
 import { 
   RawLog, 
   ProcessingConfig, 
-  LogProcessingResult,
-  ProcessingMetrics
 } from '../log-processor/types';
 
 export interface IngestionConfig {
