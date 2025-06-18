@@ -190,12 +190,16 @@ export class ValidatorRegistry {
     return bitmap.map((bit, index) => {
       const validator = validatorSet.validators[index];
       
+      if (!validator) {
+        throw new Error(`No validator found at position ${index} for epoch ${targetEpoch}`);
+      }
+      
       return {
-        validatorId: validator?.node_id || `unknown_validator_${index}`,
-        nodeId: validator?.node_id || `unknown_validator_${index}`,
+        validatorId: validator.node_id,
+        nodeId: validator.node_id,
         participated: bit === 1,
         position: index,
-        stake: validator?.stake || 0
+        stake: validator.stake
       };
     });
   }

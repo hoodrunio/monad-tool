@@ -309,10 +309,6 @@ export interface ProcessingConfig {
   maxConcurrentBatches: number;
 }
 
-export interface ValidatorRegistry {
-  [validatorId: string]: ValidatorInfrastructure;
-}
-
 export interface GeographicMapping {
   [region: string]: {
     fullName: string;

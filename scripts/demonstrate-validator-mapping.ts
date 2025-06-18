@@ -2,14 +2,14 @@
 
 import { validatorRegistry } from '../src/services/validator-registry';
 
-// Simulate the old method (placeholders)
+// ❌ OLD METHOD (deprecated) - kept for demonstration only
 function oldMapValidatorPositions(bitmap: number[]): Array<{
   validatorId: string;
   participated: boolean;
   position: number;
 }> {
   return bitmap.map((bit, index) => ({
-    validatorId: `validator_${index}`,
+    validatorId: `validator_${index}`, // ← DEPRECATED: placeholder names
     participated: bit === 1,
     position: index
   }));

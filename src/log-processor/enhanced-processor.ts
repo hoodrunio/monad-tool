@@ -411,27 +411,6 @@ export class MonadLogProcessor {
     return this.enhancedDnsProcessor.getCacheStats();
   }
 
-  // =============================================
-  // LEGACY COMPATIBILITY METHODS
-  // =============================================
-
-  parseConsensusEvents(logs: RawLog[]): ConsensusEvent[] {
-    // Sync version for compatibility - returns empty array
-    // Use parseConsensusEventsAsync for enhanced functionality
-    return [];
-  }
-
-  parseLedgerEvents(logs: RawLog[]): LedgerEvent[] {
-    // Sync version for compatibility - returns empty array
-    // Use parseLedgerEventsAsync for enhanced functionality
-    return [];
-  }
-
-  extractQCParticipation(qcData: string): QCParticipationData {
-    // For legacy support, use default epoch
-    return this.qcParser.extractParticipation(qcData, 1);
-  }
-
   parseValidatorInfrastructure(dns: string): ValidatorInfrastructure {
     const hostname = dns.split(':')[0];
     const port = dns.includes(':') ? parseInt(dns.split(':')[1]) : 8000;
@@ -614,19 +593,7 @@ class QCParticipationParserImpl implements QCParticipationParser {
     position: number;
     stake: number;
   }> {
-    try {
-      return this.validatorRegistry.mapBitVecToValidators(bitmap, epoch);
-    } catch (error) {
-      console.warn(`Failed to map validators from registry: ${error}`);
-      // Fallback to placeholder validators
-      return bitmap.map((bit, index) => ({
-        validatorId: `validator_${index}`,
-        nodeId: `validator_${index}`,
-        participated: bit === 1,
-        position: index,
-        stake: 0
-      }));
-    }
+    return this.validatorRegistry.mapBitVecToValidators(bitmap, epoch);
   }
 }
 
