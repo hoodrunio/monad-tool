@@ -28,6 +28,7 @@ import {
 
 // Import validator registry for mapping bitvec positions to actual validators
 import { validatorRegistry, ValidatorRegistry } from '../services/validator-registry';
+import { ValidatorDNSMapperService } from '../services/validator-dns-mapper';
 
 export class MonadLogProcessor {
   private qcParser: QCParticipationParserImpl;
@@ -35,6 +36,7 @@ export class MonadLogProcessor {
   private voteChainBuilder: VoteChainBuilderImpl;
   private config: ProcessingConfig;
   private validatorRegistry: ValidatorRegistry;
+  private dnsMapper: ValidatorDNSMapperService;
   private isRegistryInitialized: boolean = false;
 
   constructor(config: ProcessingConfig) {
@@ -43,13 +45,13 @@ export class MonadLogProcessor {
     this.qcParser = new QCParticipationParserImpl(this.validatorRegistry);
     this.enhancedDnsProcessor = createEnhancedDNSProcessor();
     this.voteChainBuilder = new VoteChainBuilderImpl();
+    this.dnsMapper = new ValidatorDNSMapperService(this.validatorRegistry);
   }
 
-  private async ensureValidatorRegistryInitialized(): Promise<void> {
-    if (!this.isRegistryInitialized) {
-      await this.validatorRegistry.initialize();
-      this.isRegistryInitialized = true;
-    }
+  async initialize(): Promise<void> {
+    await this.validatorRegistry.initialize();
+    await this.dnsMapper.initialize();
+    console.log('✅ Enhanced processor initialized with DNS optimization');
   }
 
   private detectEpochFromLogs(logs: RawLog[]): number {
@@ -94,7 +96,7 @@ export class MonadLogProcessor {
 
     try {
       // Initialize validator registry and detect current epoch
-      await this.ensureValidatorRegistryInitialized();
+      await this.initialize();
       const detectedEpoch = this.detectEpochFromLogs(logs);
       this.validatorRegistry.setCurrentEpoch(detectedEpoch);
       
@@ -226,7 +228,7 @@ export class MonadLogProcessor {
     // Extract QC participation data for specific events
     if (eventType === EventType.QC_COMMIT_TRIGGERED && fields.qc) {
       try {
-        await this.ensureValidatorRegistryInitialized();
+        await this.initialize();
         const epoch = enhanced.epochNumber || 1;
         const qcData = this.qcParser.extractParticipation(fields.qc, epoch);
         enhanced.participantCount = qcData.participatingValidators;
@@ -269,6 +271,17 @@ export class MonadLogProcessor {
   async parseLedgerEventsAsync(logs: RawLog[]): Promise<LedgerEvent[]> {
     const events: LedgerEvent[] = [];
     
+    // Extract unique DNS addresses to process
+    const uniqueDNSValidators = this.dnsMapper.extractUniqueDNSFromLogs(logs);
+    
+    // Process unique DNS addresses in batch if any new ones found
+    if (uniqueDNSValidators.length > 0) {
+      console.log(`Processing ${uniqueDNSValidators.length} validator DNS addresses in batches of 2`);
+      await this.dnsMapper.batchProcessValidatorDNS(uniqueDNSValidators);
+      console.log(`Successfully processed ${uniqueDNSValidators.length}/${uniqueDNSValidators.length} validator DNS addresses`);
+    }
+
+    // Process logs with cached DNS info
     for (const log of logs) {
       try {
         const event = await this.parseLedgerEventAsync(log);
@@ -276,10 +289,10 @@ export class MonadLogProcessor {
           events.push(event);
         }
       } catch (error) {
-        console.warn(`Failed to parse ledger event: ${error}`);
+        console.warn('Failed to parse ledger event:', error);
       }
     }
-    
+
     return events;
   }
 
@@ -439,18 +452,21 @@ export class MonadLogProcessor {
   private async extractQCParticipationBatch(logs: RawLog[]): Promise<QCParticipationData[]> {
     const qcData: QCParticipationData[] = [];
     
-    await this.ensureValidatorRegistryInitialized();
+    if (!this.isRegistryInitialized) {
+      await this.initialize();
+      this.isRegistryInitialized = true;
+    }
     
     for (const log of logs) {
-      const fields = log.fields;
-      if (fields.qc && fields.message === 'QC commit triggered') {
-        try {
+      try {
+        const fields = log.fields;
+        if (fields.qc && fields.message === 'QC_COMMIT_TRIGGERED') {
           const epoch = parseInt(fields.epoch) || 1;
           const participation = this.qcParser.extractParticipation(fields.qc, epoch);
           qcData.push(participation);
-        } catch (error) {
-          console.warn(`Failed to extract QC participation: ${error}`);
         }
+      } catch (error) {
+        console.warn(`Failed to extract QC participation: ${error}`);
       }
     }
     

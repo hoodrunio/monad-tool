@@ -1,6 +1,14 @@
 import { execSync } from 'child_process';
 import { DNSParseResult, LocationInfo, GeolocationResponse } from './types';
 
+interface CircuitBreakerState {
+  isOpen: boolean;
+  failureCount: number;
+  lastFailure: number;
+  threshold: number;
+  timeout: number;
+}
+
 /**
  * Intelligent DNS Parser for Monad Validator URLs
  * Extracts provider names and uses external services for location/datacenter info
@@ -8,10 +16,36 @@ import { DNSParseResult, LocationInfo, GeolocationResponse } from './types';
 export class IntelligentDNSParser {
   private providerPatterns: Map<string, RegExp> = new Map();
   private knownTLDs: Set<string> = new Set();
+  private circuitBreaker: CircuitBreakerState;
+  private rateLimiter: {
+    lastCall: number;
+    callCount: number;
+    windowStart: number;
+    maxCallsPerWindow: number;
+    windowSize: number;
+  };
   
   constructor() {
     this.initializePatterns();
     this.initializeKnownTLDs();
+    
+    // Initialize circuit breaker
+    this.circuitBreaker = {
+      isOpen: false,
+      failureCount: 0,
+      lastFailure: 0,
+      threshold: 5, // Open after 5 failures
+      timeout: 30000 // 30 seconds timeout
+    };
+    
+    // Initialize rate limiter for ip-api.com (45 requests per minute)
+    this.rateLimiter = {
+      lastCall: 0,
+      callCount: 0,
+      windowStart: Date.now(),
+      maxCallsPerWindow: 40, // Leave some buffer below the 45 limit
+      windowSize: 60000 // 1 minute window
+    };
   }
 
   /**
@@ -163,8 +197,7 @@ export class IntelligentDNSParser {
   }
 
   /**
-   * Get IP geolocation information
-   * Note: In production, this should use a proper geolocation service
+   * Get IP geolocation information with circuit breaker and rate limiting
    */
   private async getIPGeolocation(ip: string): Promise<{
     country?: string;
@@ -175,8 +208,21 @@ export class IntelligentDNSParser {
     coordinates?: { lat: number; lng: number };
   }> {
     try {
-      // Using a free geolocation service (in production, use a paid service)
-      const response = await fetch(`http://ip-api.com/json/${ip}?fields=status,country,regionName,city,isp,org,lat,lon`);
+      // Check circuit breaker
+      if (this.isCircuitBreakerOpen()) {
+        throw new Error('Circuit breaker is open');
+      }
+
+      // Check rate limit
+      if (!this.canMakeAPICall()) {
+        throw new Error('Rate limit exceeded');
+      }
+
+      // Using ip-api.com with proper fields specification
+      // Using generated numeric value for fields to save bandwidth: 61439 covers all needed fields
+      const response = await fetch(`http://ip-api.com/json/${ip}?fields=61439`, {
+        signal: AbortSignal.timeout(10000)
+      });
       
       if (!response.ok) {
         throw new Error(`Geolocation API failed: ${response.status}`);
@@ -185,21 +231,103 @@ export class IntelligentDNSParser {
       const data = await response.json() as GeolocationResponse;
       
       if (data.status !== 'success') {
-        throw new Error('Geolocation lookup failed');
+        throw new Error(data.message || 'Geolocation lookup failed');
       }
+
+      // Success - reset circuit breaker
+      this.resetCircuitBreaker();
+      this.recordAPICall();
       
       return {
         country: data.country,
         region: data.regionName,
         city: data.city,
         isp: data.isp,
-        datacenter: this.extractDatacenterFromISP(data.org || data.isp),
+        datacenter: this.extractDatacenterFromISP(data.org || data.isp || ''),
         coordinates: data.lat && data.lon ? { lat: data.lat, lng: data.lon } : undefined
       };
     } catch (error) {
-      console.warn(`IP geolocation failed for ${ip}:`, error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // Record failure for circuit breaker
+      this.recordFailure();
+      
+      console.warn(`IP geolocation failed for ${ip}:`, errorMessage);
       return {};
     }
+  }
+
+  /**
+   * Check if circuit breaker is open
+   */
+  private isCircuitBreakerOpen(): boolean {
+    if (!this.circuitBreaker.isOpen) {
+      return false;
+    }
+
+    // Check if timeout has passed
+    if (Date.now() - this.circuitBreaker.lastFailure > this.circuitBreaker.timeout) {
+      this.circuitBreaker.isOpen = false;
+      this.circuitBreaker.failureCount = 0;
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Record a failure for circuit breaker
+   */
+  private recordFailure(): void {
+    this.circuitBreaker.failureCount++;
+    this.circuitBreaker.lastFailure = Date.now();
+
+    if (this.circuitBreaker.failureCount >= this.circuitBreaker.threshold) {
+      this.circuitBreaker.isOpen = true;
+      console.warn(`Circuit breaker opened after ${this.circuitBreaker.failureCount} failures`);
+    }
+  }
+
+  /**
+   * Reset circuit breaker after successful call
+   */
+  private resetCircuitBreaker(): void {
+    this.circuitBreaker.failureCount = 0;
+    this.circuitBreaker.isOpen = false;
+  }
+
+  /**
+   * Check if we can make an API call within rate limits
+   */
+  private canMakeAPICall(): boolean {
+    const now = Date.now();
+    
+    // Reset window if needed
+    if (now - this.rateLimiter.windowStart > this.rateLimiter.windowSize) {
+      this.rateLimiter.windowStart = now;
+      this.rateLimiter.callCount = 0;
+    }
+
+    // Check if we're within rate limits
+    if (this.rateLimiter.callCount >= this.rateLimiter.maxCallsPerWindow) {
+      return false;
+    }
+
+    // Enforce minimum delay between calls
+    const timeSinceLastCall = now - this.rateLimiter.lastCall;
+    if (timeSinceLastCall < 1500) { // 1.5 seconds between calls
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Record successful API call for rate limiting
+   */
+  private recordAPICall(): void {
+    this.rateLimiter.lastCall = Date.now();
+    this.rateLimiter.callCount++;
   }
 
   /**

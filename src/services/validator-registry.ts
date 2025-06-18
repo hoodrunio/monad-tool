@@ -6,6 +6,7 @@ export interface Validator {
   stake: number;
   cert_pubkey: string;
   position: number;
+  dns_address?: string; // Adding DNS address mapping
 }
 
 export interface ValidatorSet {
@@ -19,11 +20,20 @@ export interface EpochInterval {
   validatorSetEpoch: number;
 }
 
+export interface DNSMapping {
+  node_id: string;
+  dns_address: string;
+  provider?: string;
+  location?: string;
+  last_updated: Date;
+}
+
 export class ValidatorRegistry {
   private validatorSets: Map<number, ValidatorSet> = new Map();
   private epochIntervals: EpochInterval[] = [];
   private currentEpoch: number = 1;
   private isInitialized: boolean = false;
+  private dnsMappings: Map<string, DNSMapping> = new Map(); // node_id -> DNS mapping
 
   constructor(private validatorsFilePath: string = 'validators/validators.toml') {}
 
@@ -355,10 +365,86 @@ export class ValidatorRegistry {
 
   // Method to simulate loading new validator sets from updated TOML
   async reload(): Promise<void> {
+    this.isInitialized = false;
     this.validatorSets.clear();
     this.epochIntervals = [];
-    this.isInitialized = false;
+    this.dnsMappings.clear();
     await this.initialize();
+  }
+
+  // DNS Mapping Methods
+  
+  /**
+   * Get DNS address for a validator node ID
+   */
+  getValidatorDNS(nodeId: string): string | null {
+    const mapping = this.dnsMappings.get(nodeId);
+    return mapping ? mapping.dns_address : null;
+  }
+
+  /**
+   * Set DNS address for a validator node ID
+   */
+  setValidatorDNS(nodeId: string, dnsAddress: string, provider?: string, location?: string): void {
+    this.dnsMappings.set(nodeId, {
+      node_id: nodeId,
+      dns_address: dnsAddress,
+      provider,
+      location,
+      last_updated: new Date()
+    });
+  }
+
+  /**
+   * Get all DNS mappings
+   */
+  getAllDNSMappings(): DNSMapping[] {
+    return Array.from(this.dnsMappings.values());
+  }
+
+  /**
+   * Check if validator has known DNS mapping
+   */
+  hasValidatorDNS(nodeId: string): boolean {
+    return this.dnsMappings.has(nodeId);
+  }
+
+  /**
+   * Bulk update DNS mappings from external source
+   */
+  updateDNSMappings(mappings: DNSMapping[]): void {
+    for (const mapping of mappings) {
+      this.dnsMappings.set(mapping.node_id, {
+        ...mapping,
+        last_updated: new Date()
+      });
+    }
+  }
+
+  /**
+   * Get DNS mappings statistics
+   */
+  getDNSMappingStats(): {
+    totalMapped: number;
+    totalValidators: number;
+    coveragePercentage: number;
+    lastUpdated: Date | null;
+  } {
+    const totalValidators = this.getAllValidators().length;
+    const totalMapped = this.dnsMappings.size;
+    const mappings = Array.from(this.dnsMappings.values());
+    const lastUpdated = mappings.length > 0 
+      ? mappings.reduce((latest, mapping) => 
+          mapping.last_updated > latest ? mapping.last_updated : latest, 
+          mappings[0].last_updated)
+      : null;
+
+    return {
+      totalMapped,
+      totalValidators,
+      coveragePercentage: totalValidators > 0 ? (totalMapped / totalValidators) * 100 : 0,
+      lastUpdated
+    };
   }
 }
 
