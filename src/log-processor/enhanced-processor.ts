@@ -313,13 +313,16 @@ export class MonadLogProcessor {
     let datacenterCode = 'unknown';
 
     if (validatorDns) {
-      try {
-        const dnsInfo = await this.enhancedDnsProcessor.processValidatorDNS(validatorDns);
-        geographicRegion = `${dnsInfo.locationInfo.city}, ${dnsInfo.locationInfo.country}`;
-        infrastructureProvider = dnsInfo.provider;
-        datacenterCode = dnsInfo.locationInfo.datacenter;
-      } catch (error) {
-        console.warn(`Failed to process DNS for ledger event ${validatorDns}:`, error);
+      // Use cached DNS information instead of processing each event individually
+      const validatorId = this.extractValidatorId(fields, log.target);
+      const cachedDnsInfo = await this.dnsMapper.getValidatorDNS(validatorId, validatorDns);
+      
+      if (cachedDnsInfo) {
+        geographicRegion = cachedDnsInfo.location || 'unknown';
+        infrastructureProvider = cachedDnsInfo.provider || 'unknown';
+        datacenterCode = 'unknown'; // Will be enhanced later
+      } else {
+        // Fallback to domain-based provider extraction without external API calls
         infrastructureProvider = this.extractProviderFromDomain(validatorDns);
       }
     }

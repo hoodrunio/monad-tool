@@ -1,5 +1,7 @@
 import { execSync } from 'child_process';
 import { DNSParseResult, LocationInfo, GeolocationResponse } from './types';
+import * as http from 'http';
+import * as url from 'url';
 
 interface CircuitBreakerState {
   isOpen: boolean;
@@ -30,6 +32,7 @@ export class IntelligentDNSParser {
     reject: (error: any) => void;
   }> = [];
   private isProcessingQueue: boolean = false;
+  private maxConcurrentRequests: number = 1; // Limit to 1 concurrent request to prevent memory issues
   
   constructor() {
     this.initializePatterns();
@@ -280,7 +283,7 @@ export class IntelligentDNSParser {
   }
 
   /**
-   * Make the actual geolocation API request
+   * Make the actual geolocation API request using Node.js http module to avoid WebAssembly memory issues
    */
   private async makeGeolocationRequest(ip: string): Promise<{
     country?: string;
@@ -290,45 +293,81 @@ export class IntelligentDNSParser {
     isp?: string;
     coordinates?: { lat: number; lng: number };
   }> {
-    try {
-      // Using ip-api.com with proper fields specification
-      const response = await fetch(`http://ip-api.com/json/${ip}?fields=61439`, {
-        signal: AbortSignal.timeout(10000)
+    return new Promise((resolve, reject) => {
+      const apiUrl = `http://ip-api.com/json/${ip}?fields=61439`;
+      const parsedUrl = url.parse(apiUrl);
+      
+      const requestOptions = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || 80,
+        path: parsedUrl.path,
+        method: 'GET',
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Monad-Analytics/1.0',
+          'Accept': 'application/json',
+          'Connection': 'close' // Ensure connection is closed after request
+        }
+      };
+
+      const req = http.request(requestOptions, (res) => {
+        let data = '';
+        
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        
+        res.on('end', () => {
+          try {
+            if (res.statusCode !== 200) {
+              reject(new Error(`Geolocation API failed: ${res.statusCode}`));
+              return;
+            }
+            
+            const response = JSON.parse(data) as GeolocationResponse;
+            
+            if (response.status !== 'success') {
+              reject(new Error(response.message || 'Geolocation lookup failed'));
+              return;
+            }
+
+            // Success - reset circuit breaker and record API call
+            this.resetCircuitBreaker();
+            this.recordAPICall();
+            
+            resolve({
+              country: response.country,
+              region: response.regionName,
+              city: response.city,
+              isp: response.isp,
+              datacenter: this.extractDatacenterFromISP(response.org || response.isp || ''),
+              coordinates: response.lat && response.lon ? { lat: response.lat, lng: response.lon } : undefined
+            });
+          } catch (error) {
+            reject(new Error('Failed to parse geolocation response'));
+          }
+        });
       });
       
-      if (!response.ok) {
-        throw new Error(`Geolocation API failed: ${response.status}`);
-      }
+      req.on('error', (error) => {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        
+        // Record failure for circuit breaker (only if not already open)
+        if (!this.circuitBreaker.isOpen) {
+          this.recordFailure();
+        }
+        
+        console.warn(`IP geolocation failed for ${ip}:`, errorMessage);
+        reject(error);
+      });
       
-      const data = await response.json() as GeolocationResponse;
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Request timeout'));
+      });
       
-      if (data.status !== 'success') {
-        throw new Error(data.message || 'Geolocation lookup failed');
-      }
-
-      // Success - reset circuit breaker and record API call
-      this.resetCircuitBreaker();
-      this.recordAPICall();
-      
-      return {
-        country: data.country,
-        region: data.regionName,
-        city: data.city,
-        isp: data.isp,
-        datacenter: this.extractDatacenterFromISP(data.org || data.isp || ''),
-        coordinates: data.lat && data.lon ? { lat: data.lat, lng: data.lon } : undefined
-      };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      
-      // Record failure for circuit breaker (only if not already open)
-      if (!this.circuitBreaker.isOpen) {
-        this.recordFailure();
-      }
-      
-      console.warn(`IP geolocation failed for ${ip}:`, errorMessage);
-      throw error;
-    }
+      req.end();
+    });
   }
 
   /**

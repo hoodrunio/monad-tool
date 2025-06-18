@@ -55,8 +55,17 @@ export class ValidatorDNSMapperService {
       }
 
       if (!dnsAddress) {
-        console.warn(`No DNS address available for validator ${nodeId}`);
         return null;
+      }
+
+      // If we have cached data but it's expired, and circuit breaker might be open, 
+      // return the cached data anyway rather than triggering new DNS requests
+      if (cached && cached.dnsAddress === dnsAddress) {
+        // Update last seen and return existing data during potential circuit breaker periods
+        cached.lastSeen = new Date();
+        cached.processedCount++;
+        console.log(`Using expired cache for ${nodeId} to avoid DNS processing`);
+        return cached;
       }
 
       // Only process DNS if we don't have recent cache or it's a new address
@@ -72,7 +81,7 @@ export class ValidatorDNSMapperService {
           location = parseResult.locationInfo.country;
         } catch (error) {
           // If DNS parsing fails, use fallback values
-          console.warn(`DNS parsing failed for ${dnsAddress}, using fallbacks:`, error);
+          console.warn(`DNS parsing failed for ${dnsAddress}, using fallbacks`);
           provider = 'unknown';
           location = 'unknown';
         }
