@@ -93,6 +93,9 @@ export class DataIngestionService extends EventEmitter {
         throw new Error('Failed to connect to Redis');
       }
       
+      // Initialize the log processor ONCE during service startup
+      await this.logProcessor.initialize();
+      
       // Warm up cache
       await this.redisClient.warmupCache();
       

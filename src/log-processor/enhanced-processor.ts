@@ -98,9 +98,6 @@ export class MonadLogProcessor {
     };
 
     try {
-      // Ensure initialization (will only run once due to isRegistryInitialized check)
-      await this.initialize();
-      
       const detectedEpoch = this.detectEpochFromLogs(logs);
       this.validatorRegistry.setCurrentEpoch(detectedEpoch);
       

@@ -39,26 +39,26 @@ export class ValidatorDNSMapperService {
    * Get or resolve DNS information for a validator
    */
   async getValidatorDNS(nodeId: string, dnsAddress?: string): Promise<ValidatorDNSInfo | null> {
-    // Check if we have cached info that's still fresh
-    const cached = this.validatorDNSInfo.get(nodeId);
-    if (cached && this.isCacheValid(cached)) {
-      cached.processedCount++;
-      cached.lastSeen = new Date();
-      return cached;
-    }
-
-    // If no DNS address provided, try to get from registry
-    if (!dnsAddress) {
-      const registryDNS = this.validatorRegistry.getValidatorDNS(nodeId);
-      dnsAddress = registryDNS || undefined;
-    }
-
-    if (!dnsAddress) {
-      console.warn(`No DNS address available for validator ${nodeId}`);
-      return null;
-    }
-
     try {
+      // Check if we have cached info that's still fresh
+      const cached = this.validatorDNSInfo.get(nodeId);
+      if (cached && this.isCacheValid(cached)) {
+        cached.processedCount++;
+        cached.lastSeen = new Date();
+        return cached;
+      }
+
+      // If no DNS address provided, try to get from registry
+      if (!dnsAddress) {
+        const registryDNS = this.validatorRegistry.getValidatorDNS(nodeId);
+        dnsAddress = registryDNS || undefined;
+      }
+
+      if (!dnsAddress) {
+        console.warn(`No DNS address available for validator ${nodeId}`);
+        return null;
+      }
+
       // Only process DNS if we don't have recent cache or it's a new address
       const shouldProcessDNS = !cached || cached.dnsAddress !== dnsAddress;
       
@@ -66,9 +66,16 @@ export class ValidatorDNSMapperService {
       let location: string | undefined;
 
       if (shouldProcessDNS) {
-        const parseResult = await this.dnsParser.parse(dnsAddress);
-        provider = parseResult.provider;
-        location = parseResult.locationInfo.country;
+        try {
+          const parseResult = await this.dnsParser.parse(dnsAddress);
+          provider = parseResult.provider;
+          location = parseResult.locationInfo.country;
+        } catch (error) {
+          // If DNS parsing fails, use fallback values
+          console.warn(`DNS parsing failed for ${dnsAddress}, using fallbacks:`, error);
+          provider = 'unknown';
+          location = 'unknown';
+        }
       } else {
         provider = cached.provider;
         location = cached.location;

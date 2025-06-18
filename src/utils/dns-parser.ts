@@ -235,36 +235,48 @@ export class IntelligentDNSParser {
 
     this.isProcessingQueue = true;
 
-    while (this.requestQueue.length > 0) {
-      // Check if we can make a request
-      if (!this.canMakeAPICall()) {
-        // Wait until we can make the next request
-        const waitTime = this.getWaitTime();
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        continue;
-      }
-
-      // Check circuit breaker again
-      if (this.isCircuitBreakerOpen()) {
-        // Reject all queued requests
-        while (this.requestQueue.length > 0) {
-          const request = this.requestQueue.shift()!;
-          request.reject(new Error('Circuit breaker is open'));
+    try {
+      while (this.requestQueue.length > 0) {
+        // Check if we can make a request
+        if (!this.canMakeAPICall()) {
+          // Wait until we can make the next request
+          const waitTime = this.getWaitTime();
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          continue;
         }
-        break;
-      }
 
-      const request = this.requestQueue.shift()!;
+        // Check circuit breaker again
+        if (this.isCircuitBreakerOpen()) {
+          // Reject all queued requests
+          while (this.requestQueue.length > 0) {
+            const request = this.requestQueue.shift()!;
+            request.reject(new Error('Circuit breaker is open'));
+          }
+          break;
+        }
+
+        const request = this.requestQueue.shift()!;
+        
+        try {
+          const result = await this.makeGeolocationRequest(request.ip);
+          request.resolve(result);
+        } catch (error) {
+          // Return empty object instead of rejecting to prevent unhandled rejections
+          request.resolve({});
+        }
+      }
+    } catch (error) {
+      // Handle any unexpected errors in queue processing
+      console.error('Error processing request queue:', error);
       
-      try {
-        const result = await this.makeGeolocationRequest(request.ip);
-        request.resolve(result);
-      } catch (error) {
-        request.reject(error);
+      // Reject all remaining requests
+      while (this.requestQueue.length > 0) {
+        const request = this.requestQueue.shift()!;
+        request.resolve({}); // Return empty object instead of rejecting
       }
+    } finally {
+      this.isProcessingQueue = false;
     }
-
-    this.isProcessingQueue = false;
   }
 
   /**

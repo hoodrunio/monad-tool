@@ -38,7 +38,9 @@ export class ValidatorRegistry {
   constructor(private validatorsFilePath: string = 'validators/validators.toml') {}
 
   async initialize(): Promise<void> {
-    if (this.isInitialized) return;
+    if (this.isInitialized) {
+      return; // Already initialized, skip
+    }
     
     try {
       await this.loadValidatorsFromToml();

@@ -180,12 +180,14 @@ function setupGracefulShutdown(
   // Handle uncaught exceptions and unhandled rejections
   process.on('uncaughtException', (error) => {
     logger.error('❌ Uncaught Exception:', error);
+    console.error('❌ Uncaught Exception:', error);
     process.exit(1);
   });
   
   process.on('unhandledRejection', (reason, promise) => {
-    logger.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-    process.exit(1);
+    logger.error('❌ Unhandled Rejection at:', { promise: {}, reason: {}, stack: reason instanceof Error ? reason.stack : 'No stack trace' });
+    console.error('❌ Unhandled Promise Rejection:', reason);
+    // Don't exit the process, just log it
   });
 }
 
