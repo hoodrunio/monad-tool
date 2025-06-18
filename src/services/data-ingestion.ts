@@ -4,6 +4,7 @@
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
 import { LogProcessor } from '../log-processor/processor';
+import { MonadLogProcessor } from '../log-processor/enhanced-processor';
 import { MonadClickHouseClient, ClickHouseConfig } from '../database/clickhouse-client';
 import { MonadRedisClient, RedisConfig } from '../cache/redis-client';
 import { 
@@ -39,7 +40,7 @@ export interface IngestionMetrics {
 }
 
 export class DataIngestionService extends EventEmitter {
-  private logProcessor: LogProcessor;
+  private logProcessor: MonadLogProcessor;
   private clickhouseClient: MonadClickHouseClient;
   private redisClient: MonadRedisClient;
   private config: IngestionConfig;
@@ -52,7 +53,7 @@ export class DataIngestionService extends EventEmitter {
   constructor(config: IngestionConfig) {
     super();
     this.config = config;
-    this.logProcessor = new LogProcessor();
+    this.logProcessor = new MonadLogProcessor(config.processing);
     this.clickhouseClient = new MonadClickHouseClient(config.clickhouse);
     this.redisClient = new MonadRedisClient(config.redis);
     
@@ -213,75 +214,67 @@ export class DataIngestionService extends EventEmitter {
       console.log(`Processing batch ${batchId} with ${logs.length} logs`);
       
       // Process logs through the enhanced processor
-      const consensusEvents = [];
-      const ledgerEvents = [];
+      const result = await this.logProcessor.processBatch(logs);
       
-      for (const log of logs) {
-        const processed = this.logProcessor.parseLog(JSON.stringify(log));
-        if (processed) {
-          // Convert basic parsed event to proper typed event
-          const typedEvent = {
-            ...processed,
-            timestamp: new Date(processed.timestamp),
-            eventType: processed.eventType,
-            validatorId: processed.validatorId || 'unknown',
-            roundNumber: processed.roundNumber || 0,
-            epochNumber: processed.epochNumber || 1,
-            blockNumber: processed.blockNumber || null,
-            blockId: processed.blockId || null,
-            parentVoteId: null,
-            parentRound: null,
-            nextLeaderId: null,
-            blockTimestampMs: null,
-            processingTimestampMs: Date.now(),
-            processingDelayMs: 0,
-            transactionCount: 0,
-            stateRootAction: '',
-            sequenceNumber: null,
-            validatorDns: '',
-            geographicRegion: 'unknown',
-            infrastructureProvider: 'unknown',
-            datacenterCode: 'unknown',
-            isSuccessful: true,
-            participantCount: null,
-            participationRate: null,
-            metadata: JSON.stringify(processed.raw || {}),
-            ingestionId: uuidv4()
-          };
-          
-          if (log.target === 'monad_consensus_state') {
-            consensusEvents.push(typedEvent);
-          } else if (log.target === 'ledger_tail') {
-            ledgerEvents.push(typedEvent);
-          }
+      // Store consensus events
+      if (result.events.length > 0) {
+        // Separate consensus and ledger events based on event source/type mapping
+        const consensusEvents = result.events.filter(e => {
+          // Check if this is a ConsensusEvent by verifying required fields
+          return 'isSuccessful' in e && 'metadata' in e;
+        }) as any[]; // Cast to match database interface expectations
+        
+        const ledgerEvents = result.events.filter(e => {
+          // Check if this is a LedgerEvent by verifying it has blockTimestampMs as required field
+          return !('isSuccessful' in e) && 'blockTimestampMs' in e;
+        }) as any[]; // Cast to match database interface expectations
+        
+        if (consensusEvents.length > 0) {
+          await this.clickhouseClient.insertValidatorEvents(consensusEvents);
+        }
+        
+        if (ledgerEvents.length > 0) {
+          await this.clickhouseClient.insertLedgerEvents(ledgerEvents);
         }
       }
       
-      // Store in ClickHouse
-      if (consensusEvents.length > 0) {
-        await this.clickhouseClient.insertValidatorEvents(consensusEvents);
+      // Store QC participation data if available
+      if (result.qcParticipation.length > 0) {
+        await this.clickhouseClient.insertQCParticipation(result.qcParticipation);
       }
       
-      if (ledgerEvents.length > 0) {
-        await this.clickhouseClient.insertLedgerEvents(ledgerEvents);
+      // Store validator infrastructure data if available
+      if (result.validatorInfrastructure.length > 0) {
+        await this.clickhouseClient.insertValidatorInfrastructure(result.validatorInfrastructure);
       }
       
       // Update cache invalidation patterns
-      await this.invalidateRelevantCache(consensusEvents.concat(ledgerEvents));
+      await this.invalidateRelevantCache(result.events);
       
       // Update metrics
       const processingTime = Date.now() - startTime;
       this.updateMetrics(logs.length, processingTime, true);
       
+      // Log any processing errors
+      if (result.errors.length > 0) {
+        console.warn(`Batch ${batchId} had ${result.errors.length} processing errors:`);
+        result.errors.forEach(error => {
+          console.warn(`  - ${error.error}`);
+        });
+      }
+      
       // Emit processed event for real-time updates
       this.emit('batchProcessed', {
         batchId,
         logsProcessed: logs.length,
-        eventsGenerated: consensusEvents.length + ledgerEvents.length,
-        processingTimeMs: processingTime
+        eventsGenerated: result.events.length,
+        qcDataGenerated: result.qcParticipation.length,
+        validatorInfraGenerated: result.validatorInfrastructure.length,
+        processingTimeMs: processingTime,
+        errorCount: result.errors.length
       });
       
-      console.log(`Batch ${batchId} processed successfully in ${processingTime}ms`);
+      console.log(`Batch ${batchId} processed successfully in ${processingTime}ms - Generated ${result.events.length} events`);
       
     } catch (error) {
       const processingTime = Date.now() - startTime;
