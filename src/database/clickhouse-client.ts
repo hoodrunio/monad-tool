@@ -229,6 +229,7 @@ export class MonadClickHouseClient {
   async insertValidatorInfrastructure(validators: ValidatorInfrastructure[]): Promise<void> {
     if (validators.length === 0) return;
 
+    const now = new Date();
     const data = validators.map(validator => ({
       validator_id: validator.validatorId,
       dns_name: validator.dnsName,
@@ -238,8 +239,8 @@ export class MonadClickHouseClient {
       provider_type: validator.providerType,
       endpoint_host: validator.endpointHost,
       endpoint_port: validator.endpointPort,
-      first_seen: new Date(),
-      last_active: new Date(),
+      first_seen: this.formatTimestamp(now),
+      last_active: this.formatTimestamp(now),
       is_active: 1,
       activity_score: 100.0,
       version: Date.now()

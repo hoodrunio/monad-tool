@@ -230,22 +230,42 @@ export class DataIngestionService extends EventEmitter {
         }) as any[]; // Cast to match database interface expectations
         
         if (consensusEvents.length > 0) {
-          await this.clickhouseClient.insertValidatorEvents(consensusEvents);
+          try {
+            await this.clickhouseClient.insertValidatorEvents(consensusEvents);
+          } catch (error) {
+            console.error(`Failed to insert consensus events:`, error);
+            console.error(`Consensus events sample:`, JSON.stringify(consensusEvents.slice(0, 2), null, 2));
+          }
         }
         
         if (ledgerEvents.length > 0) {
-          await this.clickhouseClient.insertLedgerEvents(ledgerEvents);
+          try {
+            await this.clickhouseClient.insertLedgerEvents(ledgerEvents);
+          } catch (error) {
+            console.error(`Failed to insert ledger events:`, error);
+            console.error(`Ledger events sample:`, JSON.stringify(ledgerEvents.slice(0, 2), null, 2));
+          }
         }
       }
       
       // Store QC participation data if available
       if (result.qcParticipation.length > 0) {
-        await this.clickhouseClient.insertQCParticipation(result.qcParticipation);
+        try {
+          await this.clickhouseClient.insertQCParticipation(result.qcParticipation);
+        } catch (error) {
+          console.error(`Failed to insert QC participation data:`, error);
+          console.error(`QC data sample:`, JSON.stringify(result.qcParticipation.slice(0, 2), null, 2));
+        }
       }
       
       // Store validator infrastructure data if available
       if (result.validatorInfrastructure.length > 0) {
-        await this.clickhouseClient.insertValidatorInfrastructure(result.validatorInfrastructure);
+        try {
+          await this.clickhouseClient.insertValidatorInfrastructure(result.validatorInfrastructure);
+        } catch (error) {
+          console.error(`Failed to insert validator infrastructure data:`, error);
+          console.error(`Validator data sample:`, JSON.stringify(result.validatorInfrastructure.slice(0, 2), null, 2));
+        }
       }
       
       // Update cache invalidation patterns
