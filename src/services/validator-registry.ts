@@ -95,7 +95,7 @@ export class ValidatorRegistry {
       const nodeIdMatch = line.match(/^node_id = "(.+)"$/);
       if (nodeIdMatch) {
         currentValidator = { 
-          node_id: nodeIdMatch[1],
+          node_id: this.normalizeValidatorId(nodeIdMatch[1]),
           position: position++
         };
         continue;
@@ -223,11 +223,11 @@ export class ValidatorRegistry {
       return null;
     }
 
-    return validatorSet.validators.find(v => v.node_id === nodeId) || null;
+    return validatorSet.validators.find(v => v.node_id === this.normalizeValidatorId(nodeId)) || null;
   }
 
   getValidatorPosition(nodeId: string, epoch?: number): number {
-    const validator = this.getValidatorById(nodeId, epoch);
+    const validator = this.getValidatorById(this.normalizeValidatorId(nodeId), epoch);
     return validator ? validator.position : -1;
   }
 
@@ -257,17 +257,18 @@ export class ValidatorRegistry {
     validatorCount: number;
     interval: EpochInterval | null;
   } {
-    const targetEpoch = epoch ?? this.currentEpoch;
-    const resolvedEpoch = this.resolveValidatorSetEpoch(targetEpoch);
-    const validatorCount = this.getValidatorCount(targetEpoch);
+    const requestedEpoch = epoch ?? this.currentEpoch;
+    const resolvedEpoch = this.resolveValidatorSetEpoch(requestedEpoch);
+    const validatorCount = this.getValidatorCount(requestedEpoch);
     
-    const interval = this.epochIntervals.find(i => 
-      targetEpoch >= i.startEpoch && 
-      (i.endEpoch === null || targetEpoch <= i.endEpoch)
-    ) || null;
+    // Find the interval that covers this epoch
+    const interval = this.epochIntervals.find(interval => {
+      return requestedEpoch >= interval.startEpoch && 
+             (interval.endEpoch === null || requestedEpoch <= interval.endEpoch);
+    }) || null;
 
     return {
-      requestedEpoch: targetEpoch,
+      requestedEpoch,
       resolvedEpoch,
       validatorCount,
       interval
@@ -290,44 +291,50 @@ export class ValidatorRegistry {
     const validatorSet = this.validatorSets.get(resolvedEpoch);
     
     if (!validatorSet) {
-      throw new Error(`Validator set for resolved epoch ${resolvedEpoch} (from epoch ${targetEpoch}) not found`);
+      console.warn(`Validator set for resolved epoch ${resolvedEpoch} (from epoch ${targetEpoch}) not found for bitmap mapping`);
+      return [];
     }
 
-    if (bitmap.length !== validatorSet.validators.length) {
-      console.warn(
-        `BitVec length (${bitmap.length}) doesn't match validator count (${validatorSet.validators.length}) for epoch ${targetEpoch} (resolved to epoch ${resolvedEpoch})`
-      );
-    }
-
-    return bitmap.map((bit, index) => {
+    return bitmap.map((participated, index) => {
       const validator = validatorSet.validators[index];
       
+      if (!validator) {
+        console.warn(`Validator at position ${index} not found in epoch ${resolvedEpoch}`);
+        return {
+          validatorId: `unknown_${index}`,
+          nodeId: `unknown_${index}`,
+          participated: participated === 1,
+          position: index,
+          stake: 0
+        };
+      }
+
       return {
-        validatorId: validator?.node_id || `unknown_validator_${index}`,
-        nodeId: validator?.node_id || `unknown_validator_${index}`,
-        participated: bit === 1,
-        position: index,
-        stake: validator?.stake || 0
+        validatorId: validator.node_id, // Already normalized during parsing
+        nodeId: validator.node_id,
+        participated: participated === 1,
+        position: validator.position,
+        stake: validator.stake
       };
     });
   }
 
   // Method to detect current epoch from log data - enhanced
   detectEpochFromLogs(validatorId: string): number | null {
-    // Check which validator sets contain this validator
+    const normalizedId = this.normalizeValidatorId(validatorId);
     const foundEpochs: number[] = [];
     
     for (const [epoch, validatorSet] of this.validatorSets) {
-      if (validatorSet.validators.some(v => v.node_id === validatorId)) {
+      if (validatorSet.validators.some(v => v.node_id === normalizedId)) {
         foundEpochs.push(epoch);
       }
     }
-
+    
     if (foundEpochs.length === 0) {
       return null;
     }
-
-    // If validator is in multiple epochs, return the most recent one
+    
+    // Return the latest epoch where this validator is found
     return Math.max(...foundEpochs);
   }
 
@@ -380,7 +387,7 @@ export class ValidatorRegistry {
    * Get DNS address for a validator node ID
    */
   getValidatorDNS(nodeId: string): string | null {
-    const mapping = this.dnsMappings.get(nodeId);
+    const mapping = this.dnsMappings.get(this.normalizeValidatorId(nodeId));
     return mapping ? mapping.dns_address : null;
   }
 
@@ -388,8 +395,8 @@ export class ValidatorRegistry {
    * Set DNS address for a validator node ID
    */
   setValidatorDNS(nodeId: string, dnsAddress: string, provider?: string, location?: string): void {
-    this.dnsMappings.set(nodeId, {
-      node_id: nodeId,
+    this.dnsMappings.set(this.normalizeValidatorId(nodeId), {
+      node_id: this.normalizeValidatorId(nodeId),
       dns_address: dnsAddress,
       provider,
       location,
@@ -408,7 +415,7 @@ export class ValidatorRegistry {
    * Check if validator has known DNS mapping
    */
   hasValidatorDNS(nodeId: string): boolean {
-    return this.dnsMappings.has(nodeId);
+    return this.dnsMappings.has(this.normalizeValidatorId(nodeId));
   }
 
   /**
@@ -416,7 +423,7 @@ export class ValidatorRegistry {
    */
   updateDNSMappings(mappings: DNSMapping[]): void {
     for (const mapping of mappings) {
-      this.dnsMappings.set(mapping.node_id, {
+      this.dnsMappings.set(this.normalizeValidatorId(mapping.node_id), {
         ...mapping,
         last_updated: new Date()
       });
@@ -447,6 +454,13 @@ export class ValidatorRegistry {
       coveragePercentage: totalValidators > 0 ? (totalMapped / totalValidators) * 100 : 0,
       lastUpdated
     };
+  }
+
+  /**
+   * Normalize validator ID by removing 0x prefix if present
+   */
+  private normalizeValidatorId(validatorId: string): string {
+    return validatorId.startsWith('0x') ? validatorId.slice(2) : validatorId;
   }
 }
 

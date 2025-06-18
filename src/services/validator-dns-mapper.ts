@@ -28,6 +28,13 @@ export class ValidatorDNSMapperService {
   }
 
   /**
+   * Normalize validator ID by removing 0x prefix if present
+   */
+  private normalizeValidatorId(validatorId: string): string {
+    return validatorId.startsWith('0x') ? validatorId.slice(2) : validatorId;
+  }
+
+  /**
    * Initialize DNS mappings from existing data and validators.toml
    */
   async initialize(): Promise<void> {
@@ -39,9 +46,11 @@ export class ValidatorDNSMapperService {
    * Get or resolve DNS information for a validator
    */
   async getValidatorDNS(nodeId: string, dnsAddress?: string): Promise<ValidatorDNSInfo | null> {
+    const normalizedNodeId = this.normalizeValidatorId(nodeId);
+    
     try {
       // Check if we have cached info that's still fresh
-      const cached = this.validatorDNSInfo.get(nodeId);
+      const cached = this.validatorDNSInfo.get(normalizedNodeId);
       if (cached && this.isCacheValid(cached)) {
         cached.processedCount++;
         cached.lastSeen = new Date();
@@ -50,7 +59,7 @@ export class ValidatorDNSMapperService {
 
       // If no DNS address provided, try to get from registry
       if (!dnsAddress) {
-        const registryDNS = this.validatorRegistry.getValidatorDNS(nodeId);
+        const registryDNS = this.validatorRegistry.getValidatorDNS(normalizedNodeId);
         dnsAddress = registryDNS || undefined;
       }
 
@@ -64,7 +73,7 @@ export class ValidatorDNSMapperService {
         // Update last seen and return existing data during potential circuit breaker periods
         cached.lastSeen = new Date();
         cached.processedCount++;
-        console.log(`Using expired cache for ${nodeId} to avoid DNS processing`);
+        console.log(`Using expired cache for ${normalizedNodeId} to avoid DNS processing`);
         return cached;
       }
 
@@ -91,7 +100,7 @@ export class ValidatorDNSMapperService {
       }
 
       const dnsInfo: ValidatorDNSInfo = {
-        nodeId,
+        nodeId: normalizedNodeId,
         dnsAddress,
         provider,
         location,
@@ -100,12 +109,12 @@ export class ValidatorDNSMapperService {
       };
 
       // Update caches
-      this.validatorDNSInfo.set(nodeId, dnsInfo);
-      this.validatorRegistry.setValidatorDNS(nodeId, dnsAddress, provider, location);
+      this.validatorDNSInfo.set(normalizedNodeId, dnsInfo);
+      this.validatorRegistry.setValidatorDNS(normalizedNodeId, dnsAddress, provider, location);
 
       return dnsInfo;
     } catch (error) {
-      console.warn(`Failed to process DNS for validator ${nodeId}:`, error);
+      console.warn(`Failed to process DNS for validator ${normalizedNodeId}:`, error);
       return null;
     }
   }
@@ -152,7 +161,7 @@ export class ValidatorDNSMapperService {
     
     for (const log of logs) {
       if (log.parsed?.dns_address && log.parsed?.validator_id) {
-        const nodeId = log.parsed.validator_id;
+        const nodeId = this.normalizeValidatorId(log.parsed.validator_id);
         const dnsAddress = log.parsed.dns_address;
         
         // Only add if we haven't seen this DNS address recently
@@ -198,9 +207,10 @@ export class ValidatorDNSMapperService {
    * Force refresh DNS info for a validator
    */
   async forceRefreshValidator(nodeId: string, dnsAddress: string): Promise<ValidatorDNSInfo | null> {
+    const normalizedNodeId = this.normalizeValidatorId(nodeId);
     // Remove from cache to force fresh lookup
-    this.validatorDNSInfo.delete(nodeId);
-    return await this.getValidatorDNS(nodeId, dnsAddress);
+    this.validatorDNSInfo.delete(normalizedNodeId);
+    return await this.getValidatorDNS(normalizedNodeId, dnsAddress);
   }
 
   /**

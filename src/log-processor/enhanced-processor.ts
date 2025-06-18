@@ -41,7 +41,7 @@ export class MonadLogProcessor {
 
   constructor(config: ProcessingConfig) {
     this.config = config;
-    this.validatorRegistry = validatorRegistry;
+    this.validatorRegistry = new ValidatorRegistry();
     this.qcParser = new QCParticipationParserImpl(this.validatorRegistry);
     this.enhancedDnsProcessor = createEnhancedDNSProcessor();
     this.voteChainBuilder = new VoteChainBuilderImpl();
@@ -58,26 +58,29 @@ export class MonadLogProcessor {
   }
 
   private detectEpochFromLogs(logs: RawLog[]): number {
-    // Try to detect epoch from log fields first
+    // Try to detect epoch from any validator IDs in the logs
     for (const log of logs) {
-      if (log.fields.epoch && !isNaN(parseInt(log.fields.epoch))) {
-        return parseInt(log.fields.epoch);
-      }
-    }
-
-    // Try to detect epoch from validator IDs
-    for (const log of logs) {
-      const validatorId = this.extractValidatorId(log.fields, log.target);
-      if (validatorId && validatorId !== 'unknown') {
+      const validatorId = this.extractValidatorId(log.fields, log.target); // Already normalized
+      if (validatorId !== 'unknown') {
         const detectedEpoch = this.validatorRegistry.detectEpochFromLogs(validatorId);
-        if (detectedEpoch) {
+        if (detectedEpoch !== null) {
           console.log(`Detected epoch ${detectedEpoch} from validator ${validatorId}`);
           return detectedEpoch;
         }
       }
     }
-
-    // Default to epoch 1 if no detection possible
+    
+    // Try to detect from epoch field in logs
+    for (const log of logs) {
+      if (log.fields.epoch) {
+        const epoch = parseInt(log.fields.epoch);
+        if (!isNaN(epoch) && epoch > 0) {
+          console.log(`Detected epoch ${epoch} from log fields`);
+          return epoch;
+        }
+      }
+    }
+    
     console.warn('Could not detect epoch from logs, defaulting to epoch 1');
     return 1;
   }
@@ -491,16 +494,21 @@ export class MonadLogProcessor {
   }
 
   private extractValidatorId(fields: any, target: string): string {
-    if (fields.author) return fields.author;
-    if (fields.validator_id) return fields.validator_id;
-    if (fields.pid) return fields.pid;
+    // Extract validator ID from different possible fields
+    let validatorId = '';
     
-    if (target === 'monad_consensus_state' && fields.proposal) {
-      const authorMatch = fields.proposal.match(/author: ([a-f0-9]{64})/);
-      if (authorMatch) return authorMatch[1];
+    if (fields.validator_id) {
+      validatorId = fields.validator_id;
+    } else if (fields.node_id) {
+      validatorId = fields.node_id;
+    } else if (fields.validator) {
+      validatorId = fields.validator;
+    } else {
+      validatorId = 'unknown';
     }
     
-    return 'unknown';
+    // Normalize by removing 0x prefix if present
+    return this.normalizeValidatorId(validatorId);
   }
 
   private extractValidatorDns(fields: any): string {
@@ -551,6 +559,13 @@ export class MonadLogProcessor {
 
   destroy(): void {
     this.enhancedDnsProcessor.destroy();
+  }
+
+  /**
+   * Normalize validator ID by removing 0x prefix if present
+   */
+  private normalizeValidatorId(validatorId: string): string {
+    return validatorId.startsWith('0x') ? validatorId.slice(2) : validatorId;
   }
 }
 
