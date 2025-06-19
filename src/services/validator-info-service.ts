@@ -128,6 +128,8 @@ export class ValidatorInfoService {
 
     if (uncachedValidators.length === 0) {
       console.log('✅ All validators already cached, skipping DNS processing');
+      // Even if all are cached, check for partial data that needs retry
+      await this.retryPartialGeolocationData();
       return;
     }
 
@@ -139,6 +141,9 @@ export class ValidatorInfoService {
     
     // Build cache and save to database
     await this.buildValidatorInfoCache();
+    
+    // Check for partial geolocation data and retry
+    await this.retryPartialGeolocationData();
     
     console.log('✅ Pre-processing completed');
   }
@@ -560,6 +565,192 @@ export class ValidatorInfoService {
    */
   private normalizeNodeId(nodeId: string): string {
     return nodeId.startsWith('0x') ? nodeId.slice(2) : nodeId;
+  }
+
+  /**
+   * Retry DNS resolution for validators with partial geolocation data
+   * (region/country != unknown but datacenter == unknown)
+   */
+  async retryPartialGeolocationData(): Promise<void> {
+    console.log('🔄 Checking for validators with partial geolocation data...');
+    
+    const validatorsToRetry: string[] = [];
+    
+    // Check all cached validator info for partial data
+    for (const [cacheKey, info] of this.validatorInfoCache.entries()) {
+      if (this.hasPartialGeolocationData(info)) {
+        validatorsToRetry.push(info.nodeId);
+      }
+    }
+    
+    // Also check validators from DNS mapper that might not be in our cache
+    const allDNSInfo = this.dnsMapper.getAllDNSInfo();
+    for (const dnsInfo of allDNSInfo) {
+      if (this.hasPartialGeolocationDataFromDNS(dnsInfo)) {
+        const normalizedId = this.normalizeNodeId(dnsInfo.nodeId);
+        if (!validatorsToRetry.includes(normalizedId)) {
+          validatorsToRetry.push(normalizedId);
+        }
+      }
+    }
+    
+    if (validatorsToRetry.length === 0) {
+      console.log('✅ No validators found with partial geolocation data');
+      return;
+    }
+    
+    console.log(`🔄 Found ${validatorsToRetry.length} validators with partial geolocation data, retrying DNS resolution...`);
+    
+    // Force refresh DNS info for validators with partial data
+    let successCount = 0;
+    let improvedCount = 0;
+    
+    for (const nodeId of validatorsToRetry) {
+      try {
+        console.log(`🔄 Retrying DNS resolution for validator ${nodeId.substring(0, 8)}...`);
+        
+        // Get current state before retry
+        const beforeInfo = this.getValidatorInfoSync(nodeId);
+        const beforeDatacenter = beforeInfo?.datacenter || 'unknown';
+        
+        // Force refresh DNS info
+        const refreshedInfo = await this.refreshValidator(nodeId);
+        
+        if (refreshedInfo) {
+          successCount++;
+          
+          // Check if datacenter info was improved
+          if (beforeDatacenter === 'unknown' && refreshedInfo.datacenter !== 'unknown') {
+            improvedCount++;
+            console.log(`✅ Improved datacenter info for ${nodeId.substring(0, 8)}: ${refreshedInfo.datacenter}`);
+          }
+        }
+        
+        // Add small delay to avoid overwhelming external APIs
+        await this.delay(1000);
+        
+      } catch (error) {
+        console.warn(`⚠️ Failed to retry DNS for validator ${nodeId.substring(0, 8)}:`, error);
+        // Continue with other validators
+      }
+    }
+    
+    console.log(`✅ Partial geolocation retry completed: ${successCount}/${validatorsToRetry.length} successful, ${improvedCount} improved`);
+    
+    // Update cache to database after improvements
+    if (improvedCount > 0) {
+      await this.buildValidatorInfoCache();
+    }
+  }
+
+  /**
+   * Check if validator has partial geolocation data
+   * Returns true if region/country is known but datacenter is unknown
+   */
+  private hasPartialGeolocationData(info: CompleteValidatorInfo): boolean {
+    const hasKnownRegion = Boolean(info.country && info.country !== 'unknown');
+    const hasUnknownDatacenter = Boolean(!info.datacenter || info.datacenter === 'unknown');
+    
+    return hasKnownRegion && hasUnknownDatacenter;
+  }
+
+  /**
+   * Check if DNS info has partial geolocation data
+   */
+  private hasPartialGeolocationDataFromDNS(dnsInfo: ValidatorDNSInfo): boolean {
+    const hasKnownRegion = Boolean(dnsInfo.country && dnsInfo.country !== 'unknown');
+    const hasUnknownDatacenter = Boolean(!dnsInfo.datacenter || dnsInfo.datacenter === 'unknown');
+    
+    return hasKnownRegion && hasUnknownDatacenter;
+  }
+
+  /**
+   * Utility delay function
+   */
+  private async delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Manually trigger retry of partial geolocation data
+   * Public method that can be called from scripts or other services
+   */
+  async retryPartialValidators(): Promise<{ found: number; improved: number; successful: number }> {
+    console.log('🔄 Manual retry of validators with partial geolocation data requested...');
+    
+    const validatorsToRetry: string[] = [];
+    
+    // Check all cached validator info for partial data
+    for (const [cacheKey, info] of this.validatorInfoCache.entries()) {
+      if (this.hasPartialGeolocationData(info)) {
+        validatorsToRetry.push(info.nodeId);
+      }
+    }
+    
+    // Also check validators from DNS mapper that might not be in our cache
+    const allDNSInfo = this.dnsMapper.getAllDNSInfo();
+    for (const dnsInfo of allDNSInfo) {
+      if (this.hasPartialGeolocationDataFromDNS(dnsInfo)) {
+        const normalizedId = this.normalizeNodeId(dnsInfo.nodeId);
+        if (!validatorsToRetry.includes(normalizedId)) {
+          validatorsToRetry.push(normalizedId);
+        }
+      }
+    }
+    
+    if (validatorsToRetry.length === 0) {
+      console.log('✅ No validators found with partial geolocation data');
+      return { found: 0, improved: 0, successful: 0 };
+    }
+    
+    console.log(`🔄 Found ${validatorsToRetry.length} validators with partial geolocation data, retrying DNS resolution...`);
+    
+    // Force refresh DNS info for validators with partial data
+    let successCount = 0;
+    let improvedCount = 0;
+    
+    for (const nodeId of validatorsToRetry) {
+      try {
+        console.log(`🔄 Retrying DNS resolution for validator ${nodeId.substring(0, 8)}...`);
+        
+        // Get current state before retry
+        const beforeInfo = this.getValidatorInfoSync(nodeId);
+        const beforeDatacenter = beforeInfo?.datacenter || 'unknown';
+        
+        // Force refresh DNS info
+        const refreshedInfo = await this.refreshValidator(nodeId);
+        
+        if (refreshedInfo) {
+          successCount++;
+          
+          // Check if datacenter info was improved
+          if (beforeDatacenter === 'unknown' && refreshedInfo.datacenter !== 'unknown') {
+            improvedCount++;
+            console.log(`✅ Improved datacenter info for ${nodeId.substring(0, 8)}: ${refreshedInfo.datacenter}`);
+          }
+        }
+        
+        // Add small delay to avoid overwhelming external APIs
+        await this.delay(1000);
+        
+      } catch (error) {
+        console.warn(`⚠️ Failed to retry DNS for validator ${nodeId.substring(0, 8)}:`, error);
+        // Continue with other validators
+      }
+    }
+    
+    console.log(`✅ Manual partial geolocation retry completed: ${successCount}/${validatorsToRetry.length} successful, ${improvedCount} improved`);
+    
+    // Update cache to database after improvements
+    if (improvedCount > 0) {
+      await this.buildValidatorInfoCache();
+    }
+    
+    return { 
+      found: validatorsToRetry.length, 
+      improved: improvedCount, 
+      successful: successCount 
+    };
   }
 }
 
