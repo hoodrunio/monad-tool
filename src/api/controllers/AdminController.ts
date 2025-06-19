@@ -169,7 +169,7 @@ export class AdminController {
     try {
       const tableStats = await this.clickhouseClient.getTableStats();
       
-      // Get additional database metrics
+      // Get additional database metrics including new tables
       const query = `
         SELECT 
           formatReadableSize(sum(bytes_on_disk)) as total_size,
@@ -180,16 +180,38 @@ export class AdminController {
           AND active = 1
       `;
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      // Get specific stats for our main tables
+      const specificTablesQuery = `
+        SELECT 
+          table,
+          formatReadableSize(sum(bytes_on_disk)) as table_size,
+          sum(rows) as table_rows,
+          count(*) as part_count
+        FROM system.parts 
+        WHERE database = 'monad_analytics'
+          AND active = 1
+          AND table IN ('block_proposals', 'qc_participation', 'raw_logs')
+        GROUP BY table
+        ORDER BY sum(bytes_on_disk) DESC
+      `;
+
+      const [result, specificResult] = await Promise.all([
+        this.clickhouseClient['client'].query({ query, format: 'JSONEachRow' }),
+        this.clickhouseClient['client'].query({ query: specificTablesQuery, format: 'JSONEachRow' })
+      ]);
 
       const dbMetrics = await result.json() as any[];
+      const specificStats = await specificResult.json() as any[];
       
       res.json({
         database_metrics: dbMetrics[0],
         table_stats: tableStats,
+        focused_tables: {
+          block_proposals: specificStats.find(s => s.table === 'block_proposals') || { table_size: '0 B', table_rows: 0, part_count: 0 },
+          qc_participation: specificStats.find(s => s.table === 'qc_participation') || { table_size: '0 B', table_rows: 0, part_count: 0 },
+          raw_logs: specificStats.find(s => s.table === 'raw_logs') || { table_size: '0 B', table_rows: 0, part_count: 0 }
+        },
+        schema_version: 'v2_focused_tables',
         timestamp: new Date().toISOString()
       });
     } catch (error) {
@@ -204,7 +226,18 @@ export class AdminController {
 
   async optimizeDatabase(req: Request, res: Response): Promise<void> {
     try {
-      const tableName = req.query.table as string || 'validator_events';
+      const tableName = req.query.table as string || 'block_proposals';
+      
+      // Validate table name to prevent SQL injection
+      const validTables = ['block_proposals', 'qc_participation', 'raw_logs'];
+      if (!validTables.includes(tableName)) {
+        res.status(400).json({
+          error: 'Invalid table name',
+          message: `Table must be one of: ${validTables.join(', ')}`,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
       
       // Run OPTIMIZE TABLE command for better performance
       const query = `OPTIMIZE TABLE ${tableName} FINAL`;
@@ -219,6 +252,7 @@ export class AdminController {
       res.json({
         success: true,
         message: `Table ${tableName} optimized successfully`,
+        available_tables: validTables,
         timestamp: new Date().toISOString()
       });
     } catch (error) {
@@ -314,20 +348,41 @@ export class AdminController {
 
       switch (operation) {
         case 'optimize_db':
-          await this.clickhouseClient['client'].query({
-            query: 'OPTIMIZE TABLE validator_events FINAL',
-            format: 'JSONEachRow'
-          });
-          result.message = 'Database optimized successfully';
+          // Optimize all main tables
+          await Promise.all([
+            this.clickhouseClient['client'].query({
+              query: 'OPTIMIZE TABLE block_proposals FINAL',
+              format: 'JSONEachRow'
+            }),
+            this.clickhouseClient['client'].query({
+              query: 'OPTIMIZE TABLE qc_participation FINAL',
+              format: 'JSONEachRow'
+            }),
+            this.clickhouseClient['client'].query({
+              query: 'OPTIMIZE TABLE raw_logs FINAL',
+              format: 'JSONEachRow'
+            })
+          ]);
+          result.message = 'All main tables optimized successfully (block_proposals, qc_participation, raw_logs)';
           break;
 
         case 'clear_old_data':
           const retentionDays = req.body.retention_days || 30;
-          await this.clickhouseClient['client'].query({
-            query: `ALTER TABLE validator_events DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`,
-            format: 'JSONEachRow'
-          });
-          result.message = `Old data cleared (older than ${retentionDays} days)`;
+          await Promise.all([
+            this.clickhouseClient['client'].query({
+              query: `ALTER TABLE block_proposals DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`,
+              format: 'JSONEachRow'
+            }),
+            this.clickhouseClient['client'].query({
+              query: `ALTER TABLE qc_participation DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`,
+              format: 'JSONEachRow'
+            }),
+            this.clickhouseClient['client'].query({
+              query: `ALTER TABLE raw_logs DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`,
+              format: 'JSONEachRow'
+            })
+          ]);
+          result.message = `Old data cleared from all tables (older than ${retentionDays} days)`;
           break;
 
         case 'warmup_cache':
@@ -336,8 +391,12 @@ export class AdminController {
           break;
 
         case 'vacuum_logs':
-          // This would implement log cleanup logic
-          result.message = 'Log vacuum completed successfully';
+          // Clean up any orphaned raw logs that weren't processed
+          await this.clickhouseClient['client'].query({
+            query: `ALTER TABLE raw_logs DELETE WHERE parsing_status = 'failed' AND parsed_at < now() - INTERVAL 7 DAY`,
+            format: 'JSONEachRow'
+          });
+          result.message = 'Failed raw logs cleaned up successfully';
           break;
       }
 

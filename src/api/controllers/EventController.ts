@@ -11,7 +11,7 @@ export class EventController {
   ) {}
 
   // =============================================
-  // RECENT EVENTS
+  // RECENT EVENTS (Combined from both tables)
   // =============================================
 
   async getRecentEvents(req: Request, res: Response): Promise<void> {
@@ -31,66 +31,126 @@ export class EventController {
         return;
       }
 
-      // Build query with optional filters
       let whereClause = 'WHERE 1=1';
-      const params: string[] = [];
-      
-      if (eventType) {
-        whereClause += ` AND event_type = ?`;
-        params.push(eventType);
-      }
       
       if (validatorId) {
-        whereClause += ` AND validator_id = ?`;
-        params.push(validatorId);
+        whereClause += ` AND validator_id = '${validatorId}'`;
       }
       
       if (minRound) {
-        whereClause += ` AND round_number >= ?`;
-        params.push(minRound.toString());
+        whereClause += ` AND round >= ${minRound}`;
       }
 
-      let query = `
-        SELECT 
-          timestamp,
-          event_type,
-          validator_id,
-          round_number,
-          epoch_number,
-          block_number,
-          is_successful,
-          processing_delay_ms,
-          geographic_region,
-          infrastructure_provider
-        FROM validator_events
-        ${whereClause}
-        ORDER BY timestamp DESC 
-        LIMIT ${limit}
-      `;
+      let blockEvents: any[] = [];
+      let qcEvents: any[] = [];
 
-      // For ClickHouse, we'll use string interpolation for simplicity
-      // In production, you'd want proper parameterized queries
-      if (eventType) {
-        query = query.replace('event_type = ?', `event_type = '${eventType}'`);
-      }
-      if (validatorId) {
-        query = query.replace('validator_id = ?', `validator_id = '${validatorId}'`);
-      }
-      if (minRound) {
-        query = query.replace('round_number >= ?', `round_number >= ${minRound}`);
+      // Get block proposal events
+      if (!eventType || eventType === 'block_proposal' || eventType === 'block_skipped') {
+        const blockQuery = `
+          SELECT 
+            timestamp,
+            'block_proposal' as event_type,
+            validator_id,
+            round,
+            epoch,
+            seq_num,
+            status,
+            num_tx,
+            block_id,
+            provider,
+            location
+          FROM block_proposals
+          ${whereClause}
+          ${eventType === 'block_skipped' ? 'AND status = \'skipped\'' : ''}
+          ${eventType === 'block_proposal' ? 'AND status = \'proposed\'' : ''}
+          ORDER BY timestamp DESC 
+          LIMIT ${Math.min(limit, 500)}
+        `;
+
+        const blockResult = await this.clickhouseClient['client'].query({
+          query: blockQuery,
+          format: 'JSONEachRow'
+        });
+
+        blockEvents = await blockResult.json() as any[];
       }
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      // Get QC participation events
+      if (!eventType || eventType === 'qc_participation') {
+        const qcQuery = `
+          SELECT 
+            timestamp,
+            'qc_participation' as event_type,
+            validator_id,
+            round,
+            epoch,
+            seq_num,
+            participated,
+            validator_index,
+            participation_rate,
+            provider,
+            location
+          FROM qc_participation
+          ${whereClause}
+          ORDER BY timestamp DESC 
+          LIMIT ${Math.min(limit, 500)}
+        `;
 
-      const events = await result.json() as any[];
+        const qcResult = await this.clickhouseClient['client'].query({
+          query: qcQuery,
+          format: 'JSONEachRow'
+        });
+
+        qcEvents = await qcResult.json() as any[];
+      }
+
+      // Combine and sort events
+      const allEvents = [
+        ...blockEvents.map(e => ({
+          timestamp: e.timestamp,
+          event_type: e.status === 'proposed' ? 'block_proposal' : 'block_skipped',
+          validator_id: e.validator_id,
+          round_number: parseInt(e.round),
+          epoch_number: parseInt(e.epoch),
+          sequence_number: parseInt(e.seq_num),
+          details: {
+            status: e.status,
+            num_tx: e.num_tx,
+            block_id: e.block_id
+          },
+          infrastructure: {
+            provider: e.provider,
+            location: e.location
+          }
+        })),
+        ...qcEvents.map(e => ({
+          timestamp: e.timestamp,
+          event_type: 'qc_participation',
+          validator_id: e.validator_id,
+          round_number: parseInt(e.round),
+          epoch_number: parseInt(e.epoch),
+          sequence_number: parseInt(e.seq_num),
+          details: {
+            participated: e.participated === 1,
+            validator_index: e.validator_index,
+            participation_rate: parseFloat(e.participation_rate)
+          },
+          infrastructure: {
+            provider: e.provider,
+            location: e.location
+          }
+        }))
+      ];
+
+      // Sort by timestamp and limit
+      const sortedEvents = allEvents
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, limit);
       
       res.json({
-        events,
+        events: sortedEvents,
         metadata: {
-          count: events.length,
+          count: sortedEvents.length,
           limit,
           filters: {
             eventType: eventType || null,
@@ -131,35 +191,66 @@ export class EventController {
           break;
       }
 
-      const query = `
+      // Get block proposal statistics
+      const blockStatsQuery = `
         SELECT 
-          event_type,
+          CASE 
+            WHEN status = 'proposed' THEN 'block_proposal'
+            WHEN status = 'skipped' THEN 'block_skipped'
+            ELSE 'unknown'
+          END as event_type,
           COUNT(*) as count,
           COUNT(DISTINCT validator_id) as unique_validators,
-          AVG(processing_delay_ms) as avg_delay,
-          COUNT(CASE WHEN is_successful = 1 THEN 1 END) as successful_count,
-          COUNT(CASE WHEN is_successful = 1 THEN 1 END) / COUNT(*) * 100 as success_rate,
+          0 as avg_delay,  -- Not available for block proposals
+          COUNT(*) as successful_count,  -- All block events are "successful" in terms of being recorded
+          100.0 as success_rate,
           MIN(timestamp) as first_occurrence,
           MAX(timestamp) as last_occurrence
-        FROM validator_events
+        FROM block_proposals
         WHERE timestamp >= now() - INTERVAL ${intervalClause}
-        GROUP BY event_type
-        ORDER BY count DESC
+        GROUP BY status
       `;
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      // Get QC participation statistics
+      const qcStatsQuery = `
+        SELECT 
+          'qc_participation' as event_type,
+          COUNT(*) as count,
+          COUNT(DISTINCT validator_id) as unique_validators,
+          0 as avg_delay,  -- Not available for QC participation
+          COUNT(CASE WHEN participated = 1 THEN 1 END) as successful_count,
+          (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as success_rate,
+          MIN(timestamp) as first_occurrence,
+          MAX(timestamp) as last_occurrence
+        FROM qc_participation
+        WHERE timestamp >= now() - INTERVAL ${intervalClause}
+      `;
 
-      const eventTypes = await result.json() as any[];
+      const [blockResult, qcResult] = await Promise.all([
+        this.clickhouseClient['client'].query({ query: blockStatsQuery, format: 'JSONEachRow' }),
+        this.clickhouseClient['client'].query({ query: qcStatsQuery, format: 'JSONEachRow' })
+      ]);
+
+      const blockStats = await blockResult.json() as any[];
+      const qcStats = await qcResult.json() as any[];
+
+      const eventTypes = [...blockStats, ...qcStats].map(et => ({
+        event_type: et.event_type,
+        count: parseInt(et.count),
+        unique_validators: parseInt(et.unique_validators),
+        avg_delay: parseFloat(et.avg_delay || 0),
+        successful_count: parseInt(et.successful_count),
+        success_rate: parseFloat(et.success_rate),
+        first_occurrence: et.first_occurrence,
+        last_occurrence: et.last_occurrence
+      }));
       
       res.json({
         eventTypes,
         metadata: {
           timeWindow,
           totalTypes: eventTypes.length,
-          totalEvents: eventTypes.reduce((sum: number, et: any) => sum + et.count, 0)
+          totalEvents: eventTypes.reduce((sum, et) => sum + et.count, 0)
         },
         timestamp: new Date().toISOString()
       });
@@ -201,31 +292,86 @@ export class EventController {
           break;
       }
 
-      let whereClause = `WHERE timestamp >= now() - INTERVAL ${intervalClause}`;
-      if (eventType) {
-        whereClause += ` AND event_type = '${eventType}'`;
+      let blockTimelineQuery = '';
+      let qcTimelineQuery = '';
+
+      // Build block proposal timeline query
+      if (!eventType || (typeof eventType === 'string' && eventType.includes('block'))) {
+        let blockWhereClause = `WHERE timestamp >= now() - INTERVAL ${intervalClause}`;
+        if (eventType === 'block_proposal') {
+          blockWhereClause += ` AND status = 'proposed'`;
+        } else if (eventType === 'block_skipped') {
+          blockWhereClause += ` AND status = 'skipped'`;
+        }
+
+        blockTimelineQuery = `
+          SELECT 
+            ${timeGrouping} as time_bucket,
+            COUNT(*) as event_count,
+            COUNT(DISTINCT validator_id) as unique_validators,
+            1 as unique_event_types,
+            0 as avg_processing_delay,
+            COUNT(*) as successful_events
+          FROM block_proposals
+          ${blockWhereClause}
+          GROUP BY time_bucket
+        `;
       }
 
-      const query = `
-        SELECT 
-          ${timeGrouping} as time_bucket,
-          COUNT(*) as event_count,
-          COUNT(DISTINCT validator_id) as unique_validators,
-          COUNT(DISTINCT event_type) as unique_event_types,
-          AVG(processing_delay_ms) as avg_processing_delay,
-          COUNT(CASE WHEN is_successful = 1 THEN 1 END) as successful_events
-        FROM validator_events
-        ${whereClause}
-        GROUP BY time_bucket
-        ORDER BY time_bucket
-      `;
+      // Build QC participation timeline query
+      if (!eventType || eventType === 'qc_participation') {
+        qcTimelineQuery = `
+          SELECT 
+            ${timeGrouping} as time_bucket,
+            COUNT(*) as event_count,
+            COUNT(DISTINCT validator_id) as unique_validators,
+            1 as unique_event_types,
+            0 as avg_processing_delay,
+            COUNT(CASE WHEN participated = 1 THEN 1 END) as successful_events
+          FROM qc_participation
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY time_bucket
+        `;
+      }
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      let timeline: any[] = [];
 
-      const timeline = await result.json() as any[];
+      if (blockTimelineQuery && qcTimelineQuery) {
+        // Combine both queries
+        const combinedQuery = `
+          WITH block_timeline AS (${blockTimelineQuery}),
+               qc_timeline AS (${qcTimelineQuery})
+          SELECT 
+            COALESCE(b.time_bucket, q.time_bucket) as time_bucket,
+            COALESCE(b.event_count, 0) + COALESCE(q.event_count, 0) as event_count,
+            GREATEST(COALESCE(b.unique_validators, 0), COALESCE(q.unique_validators, 0)) as unique_validators,
+            COALESCE(b.unique_event_types, 0) + COALESCE(q.unique_event_types, 0) as unique_event_types,
+            0 as avg_processing_delay,
+            COALESCE(b.successful_events, 0) + COALESCE(q.successful_events, 0) as successful_events
+          FROM block_timeline b
+          FULL OUTER JOIN qc_timeline q ON b.time_bucket = q.time_bucket
+          ORDER BY time_bucket
+        `;
+
+        const result = await this.clickhouseClient['client'].query({
+          query: combinedQuery,
+          format: 'JSONEachRow'
+        });
+
+        timeline = await result.json() as any[];
+      } else if (blockTimelineQuery) {
+        const result = await this.clickhouseClient['client'].query({
+          query: blockTimelineQuery,
+          format: 'JSONEachRow'
+        });
+        timeline = await result.json() as any[];
+      } else if (qcTimelineQuery) {
+        const result = await this.clickhouseClient['client'].query({
+          query: qcTimelineQuery,
+          format: 'JSONEachRow'
+        });
+        timeline = await result.json() as any[];
+      }
       
       res.json({
         timeline,
@@ -274,10 +420,6 @@ export class EventController {
 
       let whereConditions: string[] = [];
       
-      if (eventType) {
-        whereConditions.push(`event_type = '${eventType}'`);
-      }
-      
       if (validatorId) {
         whereConditions.push(`validator_id = '${validatorId}'`);
       }
@@ -289,48 +431,139 @@ export class EventController {
       if (endTime) {
         whereConditions.push(`timestamp <= '${endTime}'`);
       }
-      
-      if (searchQuery) {
-        whereConditions.push(`(
-          metadata LIKE '%${searchQuery}%' OR 
-          validator_dns LIKE '%${searchQuery}%' OR
-          geographic_region LIKE '%${searchQuery}%'
-        )`);
+
+      let events: any[] = [];
+
+      // Search block proposals
+      if (!eventType || (typeof eventType === 'string' && eventType.includes('block'))) {
+        let blockWhereConditions = [...whereConditions];
+        
+        if (eventType === 'block_proposal') {
+          blockWhereConditions.push(`status = 'proposed'`);
+        } else if (eventType === 'block_skipped') {
+          blockWhereConditions.push(`status = 'skipped'`);
+        }
+
+        if (searchQuery) {
+          blockWhereConditions.push(`(
+            provider LIKE '%${searchQuery}%' OR 
+            location LIKE '%${searchQuery}%' OR
+            CAST(block_id AS String) LIKE '%${searchQuery}%'
+          )`);
+        }
+
+        const blockWhereClause = blockWhereConditions.length > 0 ? 
+          `WHERE ${blockWhereConditions.join(' AND ')}` : '';
+
+        const blockQuery = `
+          SELECT 
+            timestamp,
+            'block_proposal' as event_type,
+            validator_id,
+            round,
+            epoch,
+            seq_num,
+            status,
+            num_tx,
+            block_id,
+            provider,
+            location
+          FROM block_proposals
+          ${blockWhereClause}
+          ORDER BY timestamp DESC
+          LIMIT ${parseInt(limit as string)}
+          OFFSET ${parseInt(offset as string)}
+        `;
+
+        const blockResult = await this.clickhouseClient['client'].query({
+          query: blockQuery,
+          format: 'JSONEachRow'
+        });
+
+        const blockEvents = await blockResult.json() as any[];
+        events.push(...blockEvents.map(e => ({
+          timestamp: e.timestamp,
+          event_type: e.status === 'proposed' ? 'block_proposal' : 'block_skipped',
+          validator_id: e.validator_id,
+          round_number: parseInt(e.round),
+          epoch_number: parseInt(e.epoch),
+          sequence_number: parseInt(e.seq_num),
+          details: {
+            status: e.status,
+            num_tx: e.num_tx,
+            block_id: e.block_id
+          },
+          infrastructure: {
+            provider: e.provider,
+            location: e.location
+          }
+        })));
       }
 
-      const whereClause = whereConditions.length > 0 ? 
-        `WHERE ${whereConditions.join(' AND ')}` : '';
+      // Search QC participation
+      if (!eventType || eventType === 'qc_participation') {
+        let qcWhereConditions = [...whereConditions];
 
-      const query = `
-        SELECT 
-          timestamp,
-          event_type,
-          validator_id,
-          round_number,
-          epoch_number,
-          block_number,
-          is_successful,
-          processing_delay_ms,
-          geographic_region,
-          infrastructure_provider,
-          validator_dns,
-          metadata
-        FROM validator_events
-        ${whereClause}
-        ORDER BY timestamp DESC
-        LIMIT ${limit}
-        OFFSET ${offset}
-      `;
+        if (searchQuery) {
+          qcWhereConditions.push(`(
+            provider LIKE '%${searchQuery}%' OR 
+            location LIKE '%${searchQuery}%'
+          )`);
+        }
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+        const qcWhereClause = qcWhereConditions.length > 0 ? 
+          `WHERE ${qcWhereConditions.join(' AND ')}` : '';
 
-      const events = await result.json() as any[];
+        const qcQuery = `
+          SELECT 
+            timestamp,
+            'qc_participation' as event_type,
+            validator_id,
+            round,
+            epoch,
+            seq_num,
+            participated,
+            validator_index,
+            participation_rate,
+            provider,
+            location
+          FROM qc_participation
+          ${qcWhereClause}
+          ORDER BY timestamp DESC
+          LIMIT ${parseInt(limit as string)}
+          OFFSET ${parseInt(offset as string)}
+        `;
+
+        const qcResult = await this.clickhouseClient['client'].query({
+          query: qcQuery,
+          format: 'JSONEachRow'
+        });
+
+        const qcEvents = await qcResult.json() as any[];
+        events.push(...qcEvents.map(e => ({
+          timestamp: e.timestamp,
+          event_type: 'qc_participation',
+          validator_id: e.validator_id,
+          round_number: parseInt(e.round),
+          epoch_number: parseInt(e.epoch),
+          sequence_number: parseInt(e.seq_num),
+          details: {
+            participated: e.participated === 1,
+            validator_index: e.validator_index,
+            participation_rate: parseFloat(e.participation_rate)
+          },
+          infrastructure: {
+            provider: e.provider,
+            location: e.location
+          }
+        })));
+      }
+
+      // Sort events by timestamp
+      events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
       
       res.json({
-        events,
+        events: events.slice(0, parseInt(limit as string)),
         metadata: {
           searchQuery: searchQuery || null,
           filters: {
@@ -378,31 +611,71 @@ export class EventController {
           break;
       }
 
-      const query = `
+      // Get block proposal statistics
+      const blockStatsQuery = `
         SELECT 
-          COUNT(*) as total_events,
-          COUNT(DISTINCT event_type) as unique_event_types,
-          COUNT(DISTINCT validator_id) as active_validators,
-          COUNT(DISTINCT round_number) as unique_rounds,
-          AVG(processing_delay_ms) as avg_processing_delay,
-          MIN(processing_delay_ms) as min_processing_delay,
-          MAX(processing_delay_ms) as max_processing_delay,
-          COUNT(CASE WHEN is_successful = 1 THEN 1 END) as successful_events,
-          COUNT(CASE WHEN is_successful = 0 THEN 1 END) as failed_events,
-          COUNT(CASE WHEN is_successful = 1 THEN 1 END) / COUNT(*) * 100 as success_rate
-        FROM validator_events
+          COUNT(*) as total_block_events,
+          COUNT(DISTINCT validator_id) as active_validators_blocks,
+          COUNT(DISTINCT round) as unique_rounds_blocks,
+          COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_block_events,
+          COUNT(CASE WHEN status = 'skipped' THEN 1 END) as failed_block_events
+        FROM block_proposals
         WHERE timestamp >= now() - INTERVAL ${intervalClause}
       `;
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      // Get QC participation statistics
+      const qcStatsQuery = `
+        SELECT 
+          COUNT(*) as total_qc_events,
+          COUNT(DISTINCT validator_id) as active_validators_qc,
+          COUNT(DISTINCT round) as unique_rounds_qc,
+          COUNT(CASE WHEN participated = 1 THEN 1 END) as successful_qc_events,
+          COUNT(CASE WHEN participated = 0 THEN 1 END) as failed_qc_events,
+          AVG(participation_rate) as avg_network_participation_rate
+        FROM qc_participation
+        WHERE timestamp >= now() - INTERVAL ${intervalClause}
+      `;
 
-      const statistics = await result.json() as any[];
+      const [blockResult, qcResult] = await Promise.all([
+        this.clickhouseClient['client'].query({ query: blockStatsQuery, format: 'JSONEachRow' }),
+        this.clickhouseClient['client'].query({ query: qcStatsQuery, format: 'JSONEachRow' })
+      ]);
+
+      const [blockStats] = await blockResult.json() as any[];
+      const [qcStats] = await qcResult.json() as any[];
+
+      const totalEvents = (parseInt(blockStats?.total_block_events || 0)) + (parseInt(qcStats?.total_qc_events || 0));
+      const totalSuccessful = (parseInt(blockStats?.successful_block_events || 0)) + (parseInt(qcStats?.successful_qc_events || 0));
+      const totalFailed = (parseInt(blockStats?.failed_block_events || 0)) + (parseInt(qcStats?.failed_qc_events || 0));
+
+      const statistics = {
+        total_events: totalEvents,
+        unique_event_types: 3, // block_proposal, block_skipped, qc_participation
+        active_validators: Math.max(parseInt(blockStats?.active_validators_blocks || 0), parseInt(qcStats?.active_validators_qc || 0)),
+        unique_rounds: Math.max(parseInt(blockStats?.unique_rounds_blocks || 0), parseInt(qcStats?.unique_rounds_qc || 0)),
+        avg_processing_delay: 0, // Not available in new schema
+        min_processing_delay: 0, // Not available in new schema
+        max_processing_delay: 0, // Not available in new schema
+        successful_events: totalSuccessful,
+        failed_events: totalFailed,
+        success_rate: totalEvents > 0 ? (totalSuccessful / totalEvents) * 100 : 0,
+        block_proposal_stats: {
+          total_proposals: parseInt(blockStats?.total_block_events || 0),
+          successful_proposals: parseInt(blockStats?.successful_block_events || 0),
+          skipped_proposals: parseInt(blockStats?.failed_block_events || 0),
+          proposal_success_rate: parseInt(blockStats?.total_block_events || 0) > 0 ? 
+            (parseInt(blockStats?.successful_block_events || 0) / parseInt(blockStats?.total_block_events || 0)) * 100 : 0
+        },
+        qc_participation_stats: {
+          total_participations: parseInt(qcStats?.total_qc_events || 0),
+          successful_participations: parseInt(qcStats?.successful_qc_events || 0),
+          missed_participations: parseInt(qcStats?.failed_qc_events || 0),
+          avg_network_participation_rate: parseFloat(qcStats?.avg_network_participation_rate || 0)
+        }
+      };
       
       res.json({
-        statistics: statistics[0],
+        statistics,
         metadata: {
           timeWindow
         },

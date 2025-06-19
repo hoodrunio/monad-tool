@@ -48,34 +48,73 @@ export class NetworkController {
           break;
       }
 
-      // Get summary stats from database
-      const query = `
+      // Get block proposal summary
+      const blockSummaryQuery = `
         SELECT 
-          COUNT(*) as total_events,
-          COUNT(DISTINCT validator_id) as unique_validators,
-          COUNT(DISTINCT event_type) as event_types,
-          COUNT(DISTINCT toDate(timestamp)) as active_days,
-          AVG(processing_delay_ms) as avg_processing_delay,
-          MAX(timestamp) as latest_event,
-          MIN(timestamp) as earliest_event,
-          COUNT(CASE WHEN is_successful = 1 THEN 1 END) as successful_events,
-          COUNT(CASE WHEN is_successful = 1 THEN 1 END) / COUNT(*) * 100 as overall_success_rate
-        FROM validator_events
+          COUNT(*) as total_block_events,
+          COUNT(DISTINCT validator_id) as unique_validators_blocks,
+          COUNT(DISTINCT toDate(timestamp)) as active_days_blocks,
+          MAX(timestamp) as latest_block_event,
+          MIN(timestamp) as earliest_block_event,
+          COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_block_events,
+          (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate
+        FROM block_proposals
         WHERE timestamp >= now() - INTERVAL ${intervalClause}
       `;
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      // Get QC participation summary
+      const qcSummaryQuery = `
+        SELECT 
+          COUNT(*) as total_qc_events,
+          COUNT(DISTINCT validator_id) as unique_validators_qc,
+          COUNT(DISTINCT toDate(timestamp)) as active_days_qc,
+          MAX(timestamp) as latest_qc_event,
+          MIN(timestamp) as earliest_qc_event,
+          COUNT(CASE WHEN participated = 1 THEN 1 END) as successful_qc_events,
+          (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_success_rate,
+          AVG(participation_rate) as avg_network_participation_rate
+        FROM qc_participation
+        WHERE timestamp >= now() - INTERVAL ${intervalClause}
+      `;
 
-      const summary = await result.json() as any[];
+      const [blockResult, qcResult] = await Promise.all([
+        this.clickhouseClient['client'].query({ query: blockSummaryQuery, format: 'JSONEachRow' }),
+        this.clickhouseClient['client'].query({ query: qcSummaryQuery, format: 'JSONEachRow' })
+      ]);
+
+      const [blockSummary] = await blockResult.json() as any[];
+      const [qcSummary] = await qcResult.json() as any[];
+
+      const summary = {
+        total_events: (parseInt(blockSummary?.total_block_events || 0)) + (parseInt(qcSummary?.total_qc_events || 0)),
+        unique_validators: Math.max(parseInt(blockSummary?.unique_validators_blocks || 0), parseInt(qcSummary?.unique_validators_qc || 0)),
+        event_types: 3, // block_proposal, block_skipped, qc_participation
+        active_days: Math.max(parseInt(blockSummary?.active_days_blocks || 0), parseInt(qcSummary?.active_days_qc || 0)),
+        avg_processing_delay: 0, // Not available in new schema
+        latest_event: blockSummary?.latest_block_event > qcSummary?.latest_qc_event ? 
+          blockSummary?.latest_block_event : qcSummary?.latest_qc_event,
+        earliest_event: blockSummary?.earliest_block_event < qcSummary?.earliest_qc_event ? 
+          blockSummary?.earliest_block_event : qcSummary?.earliest_qc_event,
+        successful_events: (parseInt(blockSummary?.successful_block_events || 0)) + (parseInt(qcSummary?.successful_qc_events || 0)),
+        overall_success_rate: ((parseFloat(blockSummary?.block_success_rate || 0)) + (parseFloat(qcSummary?.qc_success_rate || 0))) / 2,
+        block_proposal_metrics: {
+          total_proposals: parseInt(blockSummary?.total_block_events || 0),
+          successful_proposals: parseInt(blockSummary?.successful_block_events || 0),
+          success_rate: parseFloat(blockSummary?.block_success_rate || 0)
+        },
+        qc_participation_metrics: {
+          total_participations: parseInt(qcSummary?.total_qc_events || 0),
+          successful_participations: parseInt(qcSummary?.successful_qc_events || 0),
+          success_rate: parseFloat(qcSummary?.qc_success_rate || 0),
+          avg_network_participation_rate: parseFloat(qcSummary?.avg_network_participation_rate || 0)
+        }
+      };
       
       // Cache result for 2 minutes
-      await this.redisClient['client'].setex(cacheKey, 120, JSON.stringify(summary[0]));
+      await this.redisClient['client'].setex(cacheKey, 120, JSON.stringify(summary));
       
       res.json({
-        summary: summary[0] || {},
+        summary,
         metadata: {
           timeWindow,
           source: 'database'
@@ -108,11 +147,11 @@ export class NetworkController {
 
       // Try cache first
       const cacheKey = `network_metrics:${timeWindow}:${granularity}`;
-      const cached = await this.redisClient.getNetworkMetrics(validatedTimeWindow);
+      const cached = await this.redisClient['client'].get(cacheKey);
       
       if (cached) {
         res.json({
-          metrics: cached,
+          metrics: JSON.parse(cached),
           metadata: {
             timeWindow,
             granularity,
@@ -123,11 +162,118 @@ export class NetworkController {
         return;
       }
 
-      // Query database for time-series metrics
-      const metrics = await this.clickhouseClient.getNetworkMetrics(validatedTimeWindow);
+      // Calculate interval and time grouping based on request
+      let intervalClause = '1 HOUR';
+      let timeGrouping = 'toStartOfMinute(timestamp)';
+      
+      switch (validatedTimeWindow) {
+        case '1m':
+          intervalClause = '1 MINUTE';
+          timeGrouping = 'toStartOfSecond(timestamp)';
+          break;
+        case '1h':
+          intervalClause = '1 HOUR';
+          timeGrouping = 'toStartOfMinute(timestamp)';
+          break;
+        case '24h':
+          intervalClause = '24 HOUR';
+          timeGrouping = 'toStartOfHour(timestamp)';
+          break;
+      }
+
+      // Get time-series block proposal metrics
+      const blockMetricsQuery = `
+        SELECT 
+          ${timeGrouping} as time_bucket,
+          COUNT(*) as total_block_events,
+          COUNT(DISTINCT validator_id) as active_validators,
+          COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_blocks,
+          COUNT(CASE WHEN status = 'skipped' THEN 1 END) as skipped_blocks,
+          (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate
+        FROM block_proposals
+        WHERE timestamp >= now() - INTERVAL ${intervalClause}
+        GROUP BY time_bucket
+        ORDER BY time_bucket
+      `;
+
+      // Get time-series QC participation metrics
+      const qcMetricsQuery = `
+        SELECT 
+          ${timeGrouping} as time_bucket,
+          COUNT(*) as total_qc_events,
+          COUNT(DISTINCT validator_id) as active_validators_qc,
+          COUNT(CASE WHEN participated = 1 THEN 1 END) as successful_participations,
+          COUNT(CASE WHEN participated = 0 THEN 1 END) as missed_participations,
+          (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_success_rate,
+          AVG(participation_rate) as avg_network_participation_rate
+        FROM qc_participation
+        WHERE timestamp >= now() - INTERVAL ${intervalClause}
+        GROUP BY time_bucket
+        ORDER BY time_bucket
+      `;
+
+      const [blockResult, qcResult] = await Promise.all([
+        this.clickhouseClient['client'].query({ query: blockMetricsQuery, format: 'JSONEachRow' }),
+        this.clickhouseClient['client'].query({ query: qcMetricsQuery, format: 'JSONEachRow' })
+      ]);
+
+      const blockMetrics = await blockResult.json() as any[];
+      const qcMetrics = await qcResult.json() as any[];
+
+      // Merge metrics by time bucket
+      const metricsMap = new Map<string, any>();
+      
+      blockMetrics.forEach(b => {
+        metricsMap.set(b.time_bucket, {
+          time_bucket: b.time_bucket,
+          total_events: parseInt(b.total_block_events),
+          active_validators: parseInt(b.active_validators),
+          block_metrics: {
+            total_blocks: parseInt(b.total_block_events),
+            successful_blocks: parseInt(b.successful_blocks),
+            skipped_blocks: parseInt(b.skipped_blocks),
+            success_rate: parseFloat(b.block_success_rate)
+          },
+          qc_metrics: {
+            total_participations: 0,
+            successful_participations: 0,
+            missed_participations: 0,
+            success_rate: 0,
+            avg_network_participation_rate: 0
+          }
+        });
+      });
+
+      qcMetrics.forEach(q => {
+        const existing = metricsMap.get(q.time_bucket) || {
+          time_bucket: q.time_bucket,
+          total_events: 0,
+          active_validators: 0,
+          block_metrics: {
+            total_blocks: 0,
+            successful_blocks: 0,
+            skipped_blocks: 0,
+            success_rate: 0
+          }
+        };
+        
+        existing.total_events += parseInt(q.total_qc_events);
+        existing.active_validators = Math.max(existing.active_validators, parseInt(q.active_validators_qc));
+        existing.qc_metrics = {
+          total_participations: parseInt(q.total_qc_events),
+          successful_participations: parseInt(q.successful_participations),
+          missed_participations: parseInt(q.missed_participations),
+          success_rate: parseFloat(q.qc_success_rate),
+          avg_network_participation_rate: parseFloat(q.avg_network_participation_rate)
+        };
+        
+        metricsMap.set(q.time_bucket, existing);
+      });
+
+      const metrics = Array.from(metricsMap.values()).sort((a, b) => a.time_bucket.localeCompare(b.time_bucket));
       
       // Cache result for 1 minute
-      await this.redisClient.cacheNetworkMetrics(validatedTimeWindow, metrics, 60);
+      await this.redisClient['client'].setex(cacheKey, 60, JSON.stringify(metrics));
       
       res.json({
         metrics,
@@ -135,7 +281,7 @@ export class NetworkController {
           timeWindow,
           granularity,
           source: 'database',
-          dataPoints: Array.isArray(metrics) ? metrics.length : 0
+          dataPoints: metrics.length
         },
         timestamp: new Date().toISOString()
       });
@@ -158,11 +304,11 @@ export class NetworkController {
       const timeWindow = (req.query.window as string) || '24h';
       
       // Try cache first
-      const cached = await this.redisClient.getGeographicDistribution();
+      const cached = await this.redisClient['client'].get('geographic_distribution');
       
       if (cached) {
         res.json({
-          distribution: cached,
+          distribution: JSON.parse(cached),
           metadata: {
             timeWindow,
             source: 'cache'
@@ -172,18 +318,114 @@ export class NetworkController {
         return;
       }
 
-      // Query database for geographic distribution
-      const distribution = await this.clickhouseClient.getGeographicDistribution();
+      // Get interval for query
+      let intervalClause = '24 HOUR';
+      switch (timeWindow) {
+        case '1h':
+          intervalClause = '1 HOUR';
+          break;
+        case '24h':
+          intervalClause = '24 HOUR';
+          break;
+        case '7d':
+          intervalClause = '7 DAY';
+          break;
+      }
+
+      // Get geographic distribution from block proposals
+      const blockGeoQuery = `
+        SELECT 
+          location,
+          COUNT(DISTINCT validator_id) as validator_count,
+          COUNT(*) as total_events,
+          COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_events,
+          (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as success_rate
+        FROM block_proposals
+        WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          AND location IS NOT NULL 
+          AND location != ''
+        GROUP BY location
+      `;
+
+      // Get geographic distribution from QC participation (for cross-validation)
+      const qcGeoQuery = `
+        SELECT 
+          location,
+          COUNT(DISTINCT validator_id) as validator_count,
+          COUNT(*) as total_events,
+          COUNT(CASE WHEN participated = 1 THEN 1 END) as successful_events,
+          (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as success_rate
+        FROM qc_participation
+        WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          AND location IS NOT NULL 
+          AND location != ''
+        GROUP BY location
+      `;
+
+      const [blockResult, qcResult] = await Promise.all([
+        this.clickhouseClient['client'].query({ query: blockGeoQuery, format: 'JSONEachRow' }),
+        this.clickhouseClient['client'].query({ query: qcGeoQuery, format: 'JSONEachRow' })
+      ]);
+
+      const blockGeoData = await blockResult.json() as any[];
+      const qcGeoData = await qcResult.json() as any[];
+
+      // Combine geographic data from both sources
+      const geoMap = new Map<string, any>();
+      
+      blockGeoData.forEach(b => {
+        geoMap.set(b.location, {
+          location: b.location,
+          validator_count: parseInt(b.validator_count),
+          block_events: parseInt(b.total_events),
+          block_success_rate: parseFloat(b.success_rate),
+          qc_events: 0,
+          qc_success_rate: 0,
+          total_events: parseInt(b.total_events)
+        });
+      });
+
+      qcGeoData.forEach(q => {
+        const existing = geoMap.get(q.location) || {
+          location: q.location,
+          validator_count: parseInt(q.validator_count),
+          block_events: 0,
+          block_success_rate: 0,
+          total_events: 0
+        };
+        
+        existing.validator_count = Math.max(existing.validator_count, parseInt(q.validator_count));
+        existing.qc_events = parseInt(q.total_events);
+        existing.qc_success_rate = parseFloat(q.success_rate);
+        existing.total_events += parseInt(q.total_events);
+        
+        geoMap.set(q.location, existing);
+      });
+
+      const distribution = Array.from(geoMap.values())
+        .map(d => ({
+          location: d.location,
+          validator_count: d.validator_count,
+          total_events: d.total_events,
+          block_events: d.block_events,
+          qc_events: d.qc_events,
+          block_success_rate: d.block_success_rate,
+          qc_success_rate: d.qc_success_rate,
+          overall_success_rate: d.total_events > 0 ? 
+            ((d.block_events * d.block_success_rate / 100) + (d.qc_events * d.qc_success_rate / 100)) / d.total_events * 100 : 0
+        }))
+        .sort((a, b) => b.validator_count - a.validator_count);
       
       // Cache result for 5 minutes
-      await this.redisClient.cacheGeographicDistribution(distribution, 300);
+      await this.redisClient['client'].setex('geographic_distribution', 300, JSON.stringify(distribution));
       
       res.json({
         distribution,
         metadata: {
           timeWindow,
           source: 'database',
-          regions: Array.isArray(distribution) ? distribution.length : 0
+          regions: distribution.length,
+          total_validators: distribution.reduce((sum, d) => sum + d.validator_count, 0)
         },
         timestamp: new Date().toISOString()
       });

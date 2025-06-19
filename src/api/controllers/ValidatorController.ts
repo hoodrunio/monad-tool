@@ -51,11 +51,11 @@ export class ValidatorController {
 
       // Try cache first
       const cacheKey = `validator_rankings:${timeWindow}:${limit}:${sortBy}`;
-      const cached = await this.redisClient.getValidatorRankings(cacheKey);
+      const cached = await this.redisClient['client'].get(cacheKey);
       
       if (cached) {
         res.json({
-          data: cached,
+          data: JSON.parse(cached),
           metadata: {
             timeWindow,
             limit,
@@ -68,11 +68,11 @@ export class ValidatorController {
         return;
       }
 
-      // Query from pre-computed rankings cache
-      const rankings = await this.getValidatorRankingsFromCache(timeWindow, limit, sortBy);
+      // Calculate rankings from raw data
+      const rankings = await this.calculateValidatorRankings(timeWindow, limit, sortBy);
       
       // Cache result for 2 minutes (rankings update frequently)
-      await this.redisClient.cacheValidatorRankings(cacheKey, rankings, 120);
+      await this.redisClient['client'].setex(cacheKey, 120, JSON.stringify(rankings));
       
       res.json({
         data: rankings,
@@ -113,44 +113,49 @@ export class ValidatorController {
         return;
       }
 
-      // Get validator details from separate metrics
-      const query = `
+      const timeWindow = this.getIntervalClause('24h');
+      
+      // Get block proposal metrics
+      const blockProposalQuery = `
         SELECT 
           validator_id,
-          
-          -- Separate Metrics (24-hour averages)
-          AVG(block_proposal_ratio) as avg_block_proposal_ratio,
-          AVG(qc_participation_rate) as avg_qc_participation_rate,
-          AVG(uptime_score) as avg_uptime_score,
-          
-          -- Supporting Data
-          SUM(blocks_proposed) as total_blocks_proposed,
-          SUM(blocks_skipped) as total_blocks_skipped,
-          SUM(qc_participations) as total_qc_participations,
-          SUM(total_qc_opportunities) as total_qc_opportunities,
-          
-          -- Infrastructure
+          COUNT(*) as total_proposals,
+          COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_proposals,
+          COUNT(CASE WHEN status = 'skipped' THEN 1 END) as skipped_proposals,
+          (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio,
           any(provider) as provider,
           any(location) as location,
-          
-          -- Activity
-          MIN(hour) as first_seen_24h,
-          MAX(hour) as last_activity
-          
-        FROM validator_metrics_hourly
+          MIN(timestamp) as first_seen,
+          MAX(timestamp) as last_activity
+        FROM block_proposals
         WHERE validator_id = '${validatorId}'
-          AND hour >= now() - INTERVAL 24 HOUR
+          AND timestamp >= now() - INTERVAL ${timeWindow}
         GROUP BY validator_id
       `;
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      // Get QC participation metrics
+      const qcParticipationQuery = `
+        SELECT 
+          validator_id,
+          COUNT(*) as total_qc_opportunities,
+          COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
+          (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate,
+          AVG(participation_rate) as avg_network_participation_rate
+        FROM qc_participation
+        WHERE validator_id = '${validatorId}'
+          AND timestamp >= now() - INTERVAL ${timeWindow}
+        GROUP BY validator_id
+      `;
 
-      const details = await result.json() as any[];
+      const [blockResult, qcResult] = await Promise.all([
+        this.clickhouseClient['client'].query({ query: blockProposalQuery, format: 'JSONEachRow' }),
+        this.clickhouseClient['client'].query({ query: qcParticipationQuery, format: 'JSONEachRow' })
+      ]);
+
+      const [blockData] = await blockResult.json() as any[];
+      const [qcData] = await qcResult.json() as any[];
       
-      if (details.length === 0) {
+      if (!blockData && !qcData) {
         res.status(404).json({
           error: 'Validator not found',
           message: `No data found for validator ${validatorId} in the last 24 hours`,
@@ -159,31 +164,38 @@ export class ValidatorController {
         return;
       }
 
-      const validator = details[0];
+      // Calculate combined uptime score
+      const blockRatio = parseFloat(blockData?.block_proposal_ratio || 0);
+      const qcRate = parseFloat(qcData?.qc_participation_rate || 0);
+      const uptimeScore = blockRatio * 0.3 + qcRate * 0.7;
 
       // Format response with separate metrics
       res.json({
-        validator_id: validator.validator_id,
+        validator_id: validatorId,
         metrics: {
-          block_proposal_ratio: parseFloat(validator.avg_block_proposal_ratio || 0),
-          qc_participation_rate: parseFloat(validator.avg_qc_participation_rate || 0),
-          uptime_score: parseFloat(validator.avg_uptime_score || 0)
+          block_proposal_ratio: blockRatio,
+          qc_participation_rate: qcRate,
+          uptime_score: uptimeScore
         },
         details: {
-          total_blocks_proposed: parseInt(validator.total_blocks_proposed || 0),
-          total_blocks_skipped: parseInt(validator.total_blocks_skipped || 0),
-          total_qc_participations: parseInt(validator.total_qc_participations || 0),
-          total_qc_opportunities: parseInt(validator.total_qc_opportunities || 0),
-          block_opportunities: parseInt(validator.total_blocks_proposed || 0) + parseInt(validator.total_blocks_skipped || 0),
-          qc_opportunities: parseInt(validator.total_qc_opportunities || 0)
+          block_proposals: {
+            total_opportunities: parseInt(blockData?.total_proposals || 0),
+            successful_proposals: parseInt(blockData?.successful_proposals || 0),
+            skipped_proposals: parseInt(blockData?.skipped_proposals || 0)
+          },
+          qc_participation: {
+            total_opportunities: parseInt(qcData?.total_qc_opportunities || 0),
+            participations: parseInt(qcData?.qc_participations || 0),
+            avg_network_participation_rate: parseFloat(qcData?.avg_network_participation_rate || 0)
+          }
         },
         infrastructure: {
-          provider: validator.provider || 'unknown',
-          location: validator.location || 'unknown'
+          provider: blockData?.provider || 'unknown',
+          location: blockData?.location || 'unknown'
         },
         activity: {
-          first_seen_24h: validator.first_seen_24h,
-          last_activity: validator.last_activity
+          first_seen: blockData?.first_seen || null,
+          last_activity: blockData?.last_activity || null
         },
         metadata: {
           time_window: '24h',
@@ -230,12 +242,12 @@ export class ValidatorController {
 
       // Try cache first
       const cacheKey = `validator_history:${validatorId}:${hours}`;
-      const cached = await this.redisClient.getValidatorHistory(validatorId, hours);
+      const cached = await this.redisClient['client'].get(cacheKey);
       
       if (cached) {
         res.json({
           validatorId,
-          history: cached,
+          history: JSON.parse(cached),
           metadata: {
             hours,
             source: 'cache'
@@ -245,49 +257,15 @@ export class ValidatorController {
         return;
       }
 
-      // Query hourly metrics
-      const query = `
-        SELECT 
-          hour,
-          block_proposal_ratio,
-          qc_participation_rate,
-          uptime_score,
-          blocks_proposed,
-          blocks_skipped,
-          qc_participations,
-          total_qc_opportunities
-        FROM validator_metrics_hourly
-        WHERE validator_id = '${validatorId}'
-          AND hour >= now() - INTERVAL ${hours} HOUR
-        ORDER BY hour
-      `;
-
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
-
-      const history = await result.json() as any[];
+      // Get hourly aggregated data
+      const history = await this.getValidatorHourlyHistory(validatorId, hours);
       
       // Cache result for 5 minutes
-      await this.redisClient.cacheValidatorHistory(validatorId, hours, history, 300);
+      await this.redisClient['client'].setex(cacheKey, 300, JSON.stringify(history));
       
       res.json({
         validatorId,
-        history: history.map(h => ({
-          hour: h.hour,
-          metrics: {
-            block_proposal_ratio: parseFloat(h.block_proposal_ratio || 0),
-            qc_participation_rate: parseFloat(h.qc_participation_rate || 0),
-            uptime_score: parseFloat(h.uptime_score || 0)
-          },
-          activity: {
-            blocks_proposed: parseInt(h.blocks_proposed || 0),
-            blocks_skipped: parseInt(h.blocks_skipped || 0),
-            qc_participations: parseInt(h.qc_participations || 0),
-            qc_opportunities: parseInt(h.total_qc_opportunities || 0)
-          }
-        })),
+        history,
         metadata: {
           hours,
           source: 'database',
@@ -332,55 +310,10 @@ export class ValidatorController {
         return;
       }
 
-      // Build query for multiple validators
-      const validatorIdList = validatorIds.map(id => `'${id}'`).join(',');
-      const intervalClause = this.getIntervalClause(timeWindow);
-
-      const query = `
-        SELECT 
-          validator_id,
-          AVG(block_proposal_ratio) as avg_block_proposal_ratio,
-          AVG(qc_participation_rate) as avg_qc_participation_rate,
-          AVG(uptime_score) as avg_uptime_score,
-          SUM(blocks_proposed) as total_blocks_proposed,
-          SUM(blocks_skipped) as total_blocks_skipped,
-          SUM(qc_participations) as total_qc_participations,
-          SUM(total_qc_opportunities) as total_qc_opportunities,
-          any(provider) as provider,
-          any(location) as location
-        FROM validator_metrics_hourly
-        WHERE validator_id IN (${validatorIdList})
-          AND hour >= now() - INTERVAL ${intervalClause}
-        GROUP BY validator_id
-        ORDER BY avg_uptime_score DESC
-      `;
-
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
-
-      const comparison = await result.json() as any[];
+      const comparison = await this.compareValidatorsMetrics(validatorIds, timeWindow);
       
       res.json({
-        comparison: comparison.map(v => ({
-          validator_id: v.validator_id,
-          metrics: {
-            block_proposal_ratio: parseFloat(v.avg_block_proposal_ratio || 0),
-            qc_participation_rate: parseFloat(v.avg_qc_participation_rate || 0),
-            uptime_score: parseFloat(v.avg_uptime_score || 0)
-          },
-          totals: {
-            blocks_proposed: parseInt(v.total_blocks_proposed || 0),
-            blocks_skipped: parseInt(v.total_blocks_skipped || 0),
-            qc_participations: parseInt(v.total_qc_participations || 0),
-            qc_opportunities: parseInt(v.total_qc_opportunities || 0)
-          },
-          infrastructure: {
-            provider: v.provider || 'unknown',
-            location: v.location || 'unknown'
-          }
-        })),
+        comparison,
         metadata: {
           timeWindow,
           validatorCount: comparison.length,
@@ -402,40 +335,51 @@ export class ValidatorController {
   // HELPER METHODS
   // =============================================
 
-  private async getValidatorRankingsFromCache(timeWindow: string, limit: number, sortBy: string): Promise<any[]> {
-    let orderByClause = 'avg_uptime_score DESC';
+  private async calculateValidatorRankings(timeWindow: string, limit: number, sortBy: string): Promise<any[]> {
+    const intervalClause = this.getIntervalClause(timeWindow);
     
-    switch (sortBy) {
-      case 'block_proposal_ratio':
-        orderByClause = 'avg_block_proposal_ratio DESC';
-        break;
-      case 'qc_participation_rate':
-        orderByClause = 'avg_qc_participation_rate DESC';
-        break;
-      case 'uptime_score':
-      default:
-        orderByClause = 'avg_uptime_score DESC';
-        break;
-    }
-
+    // Combined query to get both block proposal and QC participation metrics
     const query = `
+      WITH 
+        block_metrics AS (
+          SELECT 
+            validator_id,
+            COUNT(*) as total_block_opportunities,
+            COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
+            COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
+            (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio,
+            any(provider) as provider,
+            any(location) as location
+          FROM block_proposals
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY validator_id
+        ),
+        qc_metrics AS (
+          SELECT 
+            validator_id,
+            COUNT(*) as total_qc_opportunities,
+            COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
+            (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
+          FROM qc_participation
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY validator_id
+        )
       SELECT 
-        rank,
-        validator_id,
-        avg_block_proposal_ratio,
-        avg_qc_participation_rate,
-        avg_uptime_score,
-        total_block_opportunities,
-        total_qc_opportunities,
-        blocks_proposed,
-        blocks_skipped,
-        qc_participations,
-        provider,
-        location,
-        last_activity
-      FROM validator_rankings_cache
-      WHERE time_window = '${timeWindow}'
-      ORDER BY ${orderByClause}
+        COALESCE(b.validator_id, q.validator_id) as validator_id,
+        COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
+        COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
+        (COALESCE(b.block_proposal_ratio, 0) * 0.3 + COALESCE(q.qc_participation_rate, 0) * 0.7) as uptime_score,
+        COALESCE(b.total_block_opportunities, 0) as total_block_opportunities,
+        COALESCE(b.blocks_proposed, 0) as blocks_proposed,
+        COALESCE(b.blocks_skipped, 0) as blocks_skipped,
+        COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
+        COALESCE(q.qc_participations, 0) as qc_participations,
+        COALESCE(b.provider, 'unknown') as provider,
+        COALESCE(b.location, 'unknown') as location
+      FROM block_metrics b
+      FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
+      WHERE COALESCE(b.validator_id, q.validator_id) IS NOT NULL
+      ORDER BY ${this.getSortByClause(sortBy)}
       LIMIT ${limit}
     `;
 
@@ -446,13 +390,13 @@ export class ValidatorController {
 
     const rankings = await result.json() as any[];
     
-    return rankings.map(r => ({
-      rank: parseInt(r.rank),
+    return rankings.map((r, index) => ({
+      rank: index + 1,
       validator_id: r.validator_id,
       metrics: {
-        block_proposal_ratio: parseFloat(r.avg_block_proposal_ratio || 0),
-        qc_participation_rate: parseFloat(r.avg_qc_participation_rate || 0),
-        uptime_score: parseFloat(r.avg_uptime_score || 0)
+        block_proposal_ratio: parseFloat(r.block_proposal_ratio || 0),
+        qc_participation_rate: parseFloat(r.qc_participation_rate || 0),
+        uptime_score: parseFloat(r.uptime_score || 0)
       },
       details: {
         total_block_opportunities: parseInt(r.total_block_opportunities || 0),
@@ -464,8 +408,171 @@ export class ValidatorController {
       infrastructure: {
         provider: r.provider || 'unknown',
         location: r.location || 'unknown'
+      }
+    }));
+  }
+
+  private async getValidatorHourlyHistory(validatorId: string, hours: number): Promise<any[]> {
+    // Get hourly aggregated block proposal data
+    const blockQuery = `
+      SELECT 
+        toStartOfHour(timestamp) as hour,
+        COUNT(*) as block_opportunities,
+        COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
+        COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
+        (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
+      FROM block_proposals
+      WHERE validator_id = '${validatorId}'
+        AND timestamp >= now() - INTERVAL ${hours} HOUR
+      GROUP BY hour
+      ORDER BY hour
+    `;
+
+    // Get hourly aggregated QC participation data
+    const qcQuery = `
+      SELECT 
+        toStartOfHour(timestamp) as hour,
+        COUNT(*) as qc_opportunities,
+        COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
+        (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
+      FROM qc_participation
+      WHERE validator_id = '${validatorId}'
+        AND timestamp >= now() - INTERVAL ${hours} HOUR
+      GROUP BY hour
+      ORDER BY hour
+    `;
+
+    const [blockResult, qcResult] = await Promise.all([
+      this.clickhouseClient['client'].query({ query: blockQuery, format: 'JSONEachRow' }),
+      this.clickhouseClient['client'].query({ query: qcQuery, format: 'JSONEachRow' })
+    ]);
+
+    const blockData = await blockResult.json() as any[];
+    const qcData = await qcResult.json() as any[];
+
+    // Merge data by hour
+    const hourlyData = new Map<string, any>();
+    
+    blockData.forEach(b => {
+      hourlyData.set(b.hour, {
+        hour: b.hour,
+        block_opportunities: parseInt(b.block_opportunities || 0),
+        blocks_proposed: parseInt(b.blocks_proposed || 0),
+        blocks_skipped: parseInt(b.blocks_skipped || 0),
+        block_proposal_ratio: parseFloat(b.block_proposal_ratio || 0),
+        qc_opportunities: 0,
+        qc_participations: 0,
+        qc_participation_rate: 0
+      });
+    });
+
+    qcData.forEach(q => {
+      const existing = hourlyData.get(q.hour) || {
+        hour: q.hour,
+        block_opportunities: 0,
+        blocks_proposed: 0,
+        blocks_skipped: 0,
+        block_proposal_ratio: 0
+      };
+      
+      existing.qc_opportunities = parseInt(q.qc_opportunities || 0);
+      existing.qc_participations = parseInt(q.qc_participations || 0);
+      existing.qc_participation_rate = parseFloat(q.qc_participation_rate || 0);
+      
+      hourlyData.set(q.hour, existing);
+    });
+
+    // Convert to array and calculate uptime scores
+    return Array.from(hourlyData.values()).map(h => ({
+      hour: h.hour,
+      metrics: {
+        block_proposal_ratio: h.block_proposal_ratio,
+        qc_participation_rate: h.qc_participation_rate,
+        uptime_score: h.block_proposal_ratio * 0.3 + h.qc_participation_rate * 0.7
       },
-      last_activity: r.last_activity
+      activity: {
+        block_opportunities: h.block_opportunities,
+        blocks_proposed: h.blocks_proposed,
+        blocks_skipped: h.blocks_skipped,
+        qc_opportunities: h.qc_opportunities,
+        qc_participations: h.qc_participations
+      }
+    })).sort((a, b) => a.hour.localeCompare(b.hour));
+  }
+
+  private async compareValidatorsMetrics(validatorIds: string[], timeWindow: string): Promise<any[]> {
+    const validatorIdList = validatorIds.map(id => `'${id}'`).join(',');
+    const intervalClause = this.getIntervalClause(timeWindow);
+
+    const query = `
+      WITH 
+        block_metrics AS (
+          SELECT 
+            validator_id,
+            COUNT(*) as total_block_opportunities,
+            COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
+            COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
+            (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio,
+            any(provider) as provider,
+            any(location) as location
+          FROM block_proposals
+          WHERE validator_id IN (${validatorIdList})
+            AND timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY validator_id
+        ),
+        qc_metrics AS (
+          SELECT 
+            validator_id,
+            COUNT(*) as total_qc_opportunities,
+            COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
+            (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
+          FROM qc_participation
+          WHERE validator_id IN (${validatorIdList})
+            AND timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY validator_id
+        )
+      SELECT 
+        COALESCE(b.validator_id, q.validator_id) as validator_id,
+        COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
+        COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
+        (COALESCE(b.block_proposal_ratio, 0) * 0.3 + COALESCE(q.qc_participation_rate, 0) * 0.7) as uptime_score,
+        COALESCE(b.total_block_opportunities, 0) as total_block_opportunities,
+        COALESCE(b.blocks_proposed, 0) as blocks_proposed,
+        COALESCE(b.blocks_skipped, 0) as blocks_skipped,
+        COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
+        COALESCE(q.qc_participations, 0) as qc_participations,
+        COALESCE(b.provider, 'unknown') as provider,
+        COALESCE(b.location, 'unknown') as location
+      FROM block_metrics b
+      FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
+      ORDER BY uptime_score DESC
+    `;
+
+    const result = await this.clickhouseClient['client'].query({
+      query,
+      format: 'JSONEachRow'
+    });
+
+    const comparison = await result.json() as any[];
+    
+    return comparison.map(v => ({
+      validator_id: v.validator_id,
+      metrics: {
+        block_proposal_ratio: parseFloat(v.block_proposal_ratio || 0),
+        qc_participation_rate: parseFloat(v.qc_participation_rate || 0),
+        uptime_score: parseFloat(v.uptime_score || 0)
+      },
+      totals: {
+        total_block_opportunities: parseInt(v.total_block_opportunities || 0),
+        blocks_proposed: parseInt(v.blocks_proposed || 0),
+        blocks_skipped: parseInt(v.blocks_skipped || 0),
+        total_qc_opportunities: parseInt(v.total_qc_opportunities || 0),
+        qc_participations: parseInt(v.qc_participations || 0)
+      },
+      infrastructure: {
+        provider: v.provider || 'unknown',
+        location: v.location || 'unknown'
+      }
     }));
   }
 
@@ -481,4 +588,16 @@ export class ValidatorController {
         return '24 HOUR';
     }
   }
-} 
+
+  private getSortByClause(sortBy: string): string {
+    switch (sortBy) {
+      case 'block_proposal_ratio':
+        return 'block_proposal_ratio DESC, uptime_score DESC';
+      case 'qc_participation_rate':
+        return 'qc_participation_rate DESC, uptime_score DESC';
+      case 'uptime_score':
+      default:
+        return 'uptime_score DESC, block_proposal_ratio DESC';
+    }
+  }
+}
