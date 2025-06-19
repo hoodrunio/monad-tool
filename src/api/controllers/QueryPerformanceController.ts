@@ -36,12 +36,9 @@ export class QueryPerformanceController {
         LIMIT ${Number(limit)}
       `;
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      const result = await this.clickhouseClient.executeRawQuery(query);
 
-      const data = await result.json() as any[];
+      const data = result;
 
       res.json({
         success: true,
@@ -94,12 +91,9 @@ export class QueryPerformanceController {
         LIMIT ${Number(limit)}
       `;
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      const result = await this.clickhouseClient.executeRawQuery(query);
 
-      const data = await result.json() as any[];
+      const data = result;
 
       res.json({
         success: true,
@@ -142,12 +136,9 @@ export class QueryPerformanceController {
         ORDER BY hour DESC
       `;
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      const result = await this.clickhouseClient.executeRawQuery(query);
 
-      const data = await result.json() as any[];
+      const data = result;
 
       res.json({
         success: true,
@@ -207,12 +198,12 @@ export class QueryPerformanceController {
       `;
 
       const [performanceResult, systemResult] = await Promise.all([
-        this.clickhouseClient['client'].query({ query: performanceQuery, format: 'JSONEachRow' }),
-        this.clickhouseClient['client'].query({ query: systemQuery, format: 'JSONEachRow' })
+        this.clickhouseClient.executeRawQuery(performanceQuery),
+        this.clickhouseClient.executeRawQuery(systemQuery)
       ]);
 
-      const [performance] = await performanceResult.json() as any[];
-      const [system] = await systemResult.json() as any[];
+      const [performance] = performanceResult;
+      const [system] = systemResult;
 
       const health = {
         status: 'healthy',

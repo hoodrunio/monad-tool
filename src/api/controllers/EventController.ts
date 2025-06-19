@@ -67,12 +67,9 @@ export class EventController {
           LIMIT ${Math.min(limit, 500)}
         `;
 
-        const blockResult = await this.clickhouseClient['client'].query({
-          query: blockQuery,
-          format: 'JSONEachRow'
-        });
+        const blockResult = await this.clickhouseClient.executeRawQuery(blockQuery);
 
-        blockEvents = await blockResult.json() as any[];
+        blockEvents = blockResult
       }
 
       // Get QC participation events
@@ -96,12 +93,9 @@ export class EventController {
           LIMIT ${Math.min(limit, 500)}
         `;
 
-        const qcResult = await this.clickhouseClient['client'].query({
-          query: qcQuery,
-          format: 'JSONEachRow'
-        });
+        const qcResult = await this.clickhouseClient.executeRawQuery(qcQuery);
 
-        qcEvents = await qcResult.json() as any[];
+        qcEvents = qcResult;
       }
 
       // Combine and sort events
@@ -227,12 +221,12 @@ export class EventController {
       `;
 
       const [blockResult, qcResult] = await Promise.all([
-        this.clickhouseClient['client'].query({ query: blockStatsQuery, format: 'JSONEachRow' }),
-        this.clickhouseClient['client'].query({ query: qcStatsQuery, format: 'JSONEachRow' })
+        this.clickhouseClient.executeRawQuery(blockStatsQuery),
+        this.clickhouseClient.executeRawQuery(qcStatsQuery)
       ]);
 
-      const blockStats = await blockResult.json() as any[];
-      const qcStats = await qcResult.json() as any[];
+      const blockStats = blockResult;
+      const qcStats = qcResult;
 
       const eventTypes = [...blockStats, ...qcStats].map(et => ({
         event_type: et.event_type,
@@ -353,24 +347,15 @@ export class EventController {
           ORDER BY time_bucket
         `;
 
-        const result = await this.clickhouseClient['client'].query({
-          query: combinedQuery,
-          format: 'JSONEachRow'
-        });
+        const result = await this.clickhouseClient.executeRawQuery(combinedQuery);
 
-        timeline = await result.json() as any[];
+        timeline = result;
       } else if (blockTimelineQuery) {
-        const result = await this.clickhouseClient['client'].query({
-          query: blockTimelineQuery,
-          format: 'JSONEachRow'
-        });
-        timeline = await result.json() as any[];
+        const result = await this.clickhouseClient.executeRawQuery(blockTimelineQuery);
+        timeline = result;
       } else if (qcTimelineQuery) {
-        const result = await this.clickhouseClient['client'].query({
-          query: qcTimelineQuery,
-          format: 'JSONEachRow'
-        });
-        timeline = await result.json() as any[];
+        const result = await this.clickhouseClient.executeRawQuery(qcTimelineQuery);
+        timeline = result;
       }
       
       res.json({
@@ -475,12 +460,9 @@ export class EventController {
           OFFSET ${parseInt(offset as string)}
         `;
 
-        const blockResult = await this.clickhouseClient['client'].query({
-          query: blockQuery,
-          format: 'JSONEachRow'
-        });
+        const blockResult = await this.clickhouseClient.executeRawQuery(blockQuery);
 
-        const blockEvents = await blockResult.json() as any[];
+        const blockEvents = blockResult;
         events.push(...blockEvents.map(e => ({
           timestamp: e.timestamp,
           event_type: e.status === 'proposed' ? 'block_proposal' : 'block_skipped',
@@ -534,12 +516,9 @@ export class EventController {
           OFFSET ${parseInt(offset as string)}
         `;
 
-        const qcResult = await this.clickhouseClient['client'].query({
-          query: qcQuery,
-          format: 'JSONEachRow'
-        });
+        const qcResult = await this.clickhouseClient.executeRawQuery(qcQuery);
 
-        const qcEvents = await qcResult.json() as any[];
+        const qcEvents = qcResult;
         events.push(...qcEvents.map(e => ({
           timestamp: e.timestamp,
           event_type: 'qc_participation',
@@ -637,12 +616,12 @@ export class EventController {
       `;
 
       const [blockResult, qcResult] = await Promise.all([
-        this.clickhouseClient['client'].query({ query: blockStatsQuery, format: 'JSONEachRow' }),
-        this.clickhouseClient['client'].query({ query: qcStatsQuery, format: 'JSONEachRow' })
+        this.clickhouseClient.executeRawQuery(blockStatsQuery),
+        this.clickhouseClient.executeRawQuery(qcStatsQuery)
       ]);
 
-      const [blockStats] = await blockResult.json() as any[];
-      const [qcStats] = await qcResult.json() as any[];
+      const [blockStats] = blockResult;
+      const [qcStats] = qcResult;
 
       const totalEvents = (parseInt(blockStats?.total_block_events || 0)) + (parseInt(qcStats?.total_qc_events || 0));
       const totalSuccessful = (parseInt(blockStats?.successful_block_events || 0)) + (parseInt(qcStats?.successful_qc_events || 0));

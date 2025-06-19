@@ -148,12 +148,12 @@ export class ValidatorController {
       `;
 
       const [blockResult, qcResult] = await Promise.all([
-        this.clickhouseClient['client'].query({ query: blockProposalQuery, format: 'JSONEachRow' }),
-        this.clickhouseClient['client'].query({ query: qcParticipationQuery, format: 'JSONEachRow' })
+        this.clickhouseClient.executeRawQuery(blockProposalQuery),
+        this.clickhouseClient.executeRawQuery(qcParticipationQuery)
       ]);
 
-      const [blockData] = await blockResult.json() as any[];
-      const [qcData] = await qcResult.json() as any[];
+      const [blockData] = blockResult;
+      const [qcData] = qcResult;
       
       if (!blockData && !qcData) {
         res.status(404).json({
@@ -383,12 +383,9 @@ export class ValidatorController {
       LIMIT ${limit}
     `;
 
-    const result = await this.clickhouseClient['client'].query({
-      query,
-      format: 'JSONEachRow'
-    });
+    const result = await this.clickhouseClient.executeRawQuery(query);
 
-    const rankings = await result.json() as any[];
+    const rankings = result;
     
     return rankings.map((r, index) => ({
       rank: index + 1,
@@ -443,12 +440,12 @@ export class ValidatorController {
     `;
 
     const [blockResult, qcResult] = await Promise.all([
-      this.clickhouseClient['client'].query({ query: blockQuery, format: 'JSONEachRow' }),
-      this.clickhouseClient['client'].query({ query: qcQuery, format: 'JSONEachRow' })
+      this.clickhouseClient.executeRawQuery(blockQuery),
+      this.clickhouseClient.executeRawQuery(qcQuery)
     ]);
 
-    const blockData = await blockResult.json() as any[];
-    const qcData = await qcResult.json() as any[];
+    const blockData = blockResult;
+    const qcData = qcResult;
 
     // Merge data by hour
     const hourlyData = new Map<string, any>();
@@ -548,12 +545,9 @@ export class ValidatorController {
       ORDER BY uptime_score DESC
     `;
 
-    const result = await this.clickhouseClient['client'].query({
-      query,
-      format: 'JSONEachRow'
-    });
+    const result = await this.clickhouseClient.executeRawQuery(query);
 
-    const comparison = await result.json() as any[];
+    const comparison = result;
     
     return comparison.map(v => ({
       validator_id: v.validator_id,

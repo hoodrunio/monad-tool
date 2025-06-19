@@ -50,7 +50,7 @@ class APIIssueFixer {
     for (const table of tables) {
       try {
         const query = `SELECT count() FROM ${table} LIMIT 1`;
-        await this.clickhouseClient['client'].query({ query });
+        await this.clickhouseClient.executeCommand(query);
         console.log(`✅ Table ${table} exists`);
       } catch (error) {
         console.log(`⚠️  Table ${table} missing, creating...`);
@@ -135,7 +135,7 @@ class APIIssueFixer {
     }
 
     if (createQuery) {
-      await this.clickhouseClient['client'].query({ query: createQuery });
+      await this.clickhouseClient.executeCommand(createQuery);
       console.log(`✅ Created table ${tableName}`);
     }
   }
@@ -172,7 +172,7 @@ class APIIssueFixer {
     `;
 
     try {
-      await this.clickhouseClient['client'].query({ query: sampleNetworkData });
+      await this.clickhouseClient.executeCommand(sampleNetworkData);
       console.log('✅ Added sample network metrics');
     } catch (error) {
       console.log('⚠️  Sample data already exists or failed to insert');
@@ -197,7 +197,7 @@ class APIIssueFixer {
     `;
 
     try {
-      await this.clickhouseClient['client'].query({ query: sampleGeoData });
+      await this.clickhouseClient.executeCommand(sampleGeoData);
       console.log('✅ Added sample geographic metrics');
     } catch (error) {
       console.log('⚠️  Sample geographic data already exists or failed to insert');
@@ -226,7 +226,7 @@ class APIIssueFixer {
     `;
 
     try {
-      await this.clickhouseClient['client'].query({ query: sampleValidatorData });
+      await this.clickhouseClient.executeCommand(sampleValidatorData);
       console.log('✅ Added sample validator data');
     } catch (error) {
       console.log('⚠️  Sample validator data already exists or failed to insert');

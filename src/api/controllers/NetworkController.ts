@@ -78,12 +78,12 @@ export class NetworkController {
       `;
 
       const [blockResult, qcResult] = await Promise.all([
-        this.clickhouseClient['client'].query({ query: blockSummaryQuery, format: 'JSONEachRow' }),
-        this.clickhouseClient['client'].query({ query: qcSummaryQuery, format: 'JSONEachRow' })
+        this.clickhouseClient.executeRawQuery(blockSummaryQuery),
+        this.clickhouseClient.executeRawQuery(qcSummaryQuery)
       ]);
 
-      const [blockSummary] = await blockResult.json() as any[];
-      const [qcSummary] = await qcResult.json() as any[];
+      const [blockSummary] = blockResult;
+      const [qcSummary] = qcResult;
 
       const summary = {
         total_events: (parseInt(blockSummary?.total_block_events || 0)) + (parseInt(qcSummary?.total_qc_events || 0)),
@@ -213,12 +213,12 @@ export class NetworkController {
       `;
 
       const [blockResult, qcResult] = await Promise.all([
-        this.clickhouseClient['client'].query({ query: blockMetricsQuery, format: 'JSONEachRow' }),
-        this.clickhouseClient['client'].query({ query: qcMetricsQuery, format: 'JSONEachRow' })
+        this.clickhouseClient.executeRawQuery(blockMetricsQuery),
+        this.clickhouseClient.executeRawQuery(qcMetricsQuery)
       ]);
 
-      const blockMetrics = await blockResult.json() as any[];
-      const qcMetrics = await qcResult.json() as any[];
+      const blockMetrics = blockResult;
+      const qcMetrics = qcResult;
 
       // Merge metrics by time bucket
       const metricsMap = new Map<string, any>();
@@ -363,12 +363,12 @@ export class NetworkController {
       `;
 
       const [blockResult, qcResult] = await Promise.all([
-        this.clickhouseClient['client'].query({ query: blockGeoQuery, format: 'JSONEachRow' }),
-        this.clickhouseClient['client'].query({ query: qcGeoQuery, format: 'JSONEachRow' })
+        this.clickhouseClient.executeRawQuery(blockGeoQuery),
+        this.clickhouseClient.executeRawQuery(qcGeoQuery)
       ]);
 
-      const blockGeoData = await blockResult.json() as any[];
-      const qcGeoData = await qcResult.json() as any[];
+      const blockGeoData = blockResult;
+      const qcGeoData = qcResult;
 
       // Combine geographic data from both sources
       const geoMap = new Map<string, any>();
@@ -457,12 +457,9 @@ export class NetworkController {
         WHERE timestamp >= now() - INTERVAL 1 HOUR
       `;
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      const result = await this.clickhouseClient.executeRawQuery(query);
 
-      const metrics = await result.json() as any[];
+      const metrics = result;
       const data = metrics[0];
 
       // Calculate health score (0-100)
@@ -514,12 +511,9 @@ export class NetworkController {
         ORDER BY minute
       `;
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      const result = await this.clickhouseClient.executeRawQuery(query);
 
-      const efficiency = await result.json() as any[];
+      const efficiency = result
       
       res.json({
         consensus_efficiency: efficiency,
@@ -561,12 +555,9 @@ export class NetworkController {
         ORDER BY minute
       `;
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      const result = await this.clickhouseClient.executeRawQuery(query);
 
-      const throughput = await result.json() as any[];
+      const throughput = result;
       
       // Calculate additional metrics
       const totalEvents = throughput.reduce((sum: number, item: any) => sum + item.events_per_minute, 0);

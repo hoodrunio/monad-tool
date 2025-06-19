@@ -196,12 +196,12 @@ export class AdminController {
       `;
 
       const [result, specificResult] = await Promise.all([
-        this.clickhouseClient['client'].query({ query, format: 'JSONEachRow' }),
-        this.clickhouseClient['client'].query({ query: specificTablesQuery, format: 'JSONEachRow' })
+        this.clickhouseClient.executeRawQuery(query),
+        this.clickhouseClient.executeRawQuery(specificTablesQuery)
       ]);
 
-      const dbMetrics = await result.json() as any[];
-      const specificStats = await specificResult.json() as any[];
+      const dbMetrics = result;
+      const specificStats = specificResult;
       
       res.json({
         database_metrics: dbMetrics[0],
@@ -242,10 +242,7 @@ export class AdminController {
       // Run OPTIMIZE TABLE command for better performance
       const query = `OPTIMIZE TABLE ${tableName} FINAL`;
       
-      await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      await this.clickhouseClient.executeCommand(query);
       
       logger.info(`Database table ${tableName} optimized`);
       
@@ -288,12 +285,9 @@ export class AdminController {
         WHERE name = 'default'
       `;
 
-      const diskResult = await this.clickhouseClient['client'].query({
-        query: diskUsageQuery,
-        format: 'JSONEachRow'
-      });
+      const diskResult = await this.clickhouseClient.executeRawQuery(diskUsageQuery);
 
-      const diskUsage = await diskResult.json() as any[];
+      const diskUsage = diskResult;
       
       const maintenanceStatus = {
         overall_health: dbPing && cachePing && systemHealth.database && systemHealth.cache ? 'healthy' : 'needs_attention',
@@ -350,18 +344,9 @@ export class AdminController {
         case 'optimize_db':
           // Optimize all main tables
           await Promise.all([
-            this.clickhouseClient['client'].query({
-              query: 'OPTIMIZE TABLE block_proposals FINAL',
-              format: 'JSONEachRow'
-            }),
-            this.clickhouseClient['client'].query({
-              query: 'OPTIMIZE TABLE qc_participation FINAL',
-              format: 'JSONEachRow'
-            }),
-            this.clickhouseClient['client'].query({
-              query: 'OPTIMIZE TABLE raw_logs FINAL',
-              format: 'JSONEachRow'
-            })
+            this.clickhouseClient.executeCommand('OPTIMIZE TABLE block_proposals FINAL'),
+            this.clickhouseClient.executeCommand('OPTIMIZE TABLE qc_participation FINAL'),
+            this.clickhouseClient.executeCommand('OPTIMIZE TABLE raw_logs FINAL'),
           ]);
           result.message = 'All main tables optimized successfully (block_proposals, qc_participation, raw_logs)';
           break;
@@ -369,18 +354,9 @@ export class AdminController {
         case 'clear_old_data':
           const retentionDays = req.body.retention_days || 30;
           await Promise.all([
-            this.clickhouseClient['client'].query({
-              query: `ALTER TABLE block_proposals DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`,
-              format: 'JSONEachRow'
-            }),
-            this.clickhouseClient['client'].query({
-              query: `ALTER TABLE qc_participation DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`,
-              format: 'JSONEachRow'
-            }),
-            this.clickhouseClient['client'].query({
-              query: `ALTER TABLE raw_logs DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`,
-              format: 'JSONEachRow'
-            })
+            this.clickhouseClient.executeCommand(`ALTER TABLE block_proposals DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`),
+            this.clickhouseClient.executeCommand(`ALTER TABLE qc_participation DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`),
+            this.clickhouseClient.executeCommand(`ALTER TABLE raw_logs DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`),
           ]);
           result.message = `Old data cleared from all tables (older than ${retentionDays} days)`;
           break;
@@ -392,10 +368,7 @@ export class AdminController {
 
         case 'vacuum_logs':
           // Clean up any orphaned raw logs that weren't processed
-          await this.clickhouseClient['client'].query({
-            query: `ALTER TABLE raw_logs DELETE WHERE parsing_status = 'failed' AND parsed_at < now() - INTERVAL 7 DAY`,
-            format: 'JSONEachRow'
-          });
+          await this.clickhouseClient.executeCommand(`ALTER TABLE raw_logs DELETE WHERE parsing_status = 'failed' AND parsed_at < now() - INTERVAL 7 DAY`);
           result.message = 'Failed raw logs cleaned up successfully';
           break;
       }

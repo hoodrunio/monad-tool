@@ -60,12 +60,8 @@ async function testInsertion() {
 
     // Query back to verify
     console.log('🔍 Querying data back...');
-    const result = await client['client'].query({
-      query: `SELECT * FROM validator_events WHERE validator_id = 'test_validator_123' LIMIT 1`,
-      format: 'JSONEachRow'
-    });
-    
-    const rows = await result.json() as any[];
+    const result = await client.executeRawQuery(`SELECT * FROM validator_events WHERE validator_id = 'test_validator_123' LIMIT 1`);
+    const rows = result;
     console.log('📊 Retrieved data:', rows);
 
     if (rows.length > 0) {
