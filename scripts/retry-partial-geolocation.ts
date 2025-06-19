@@ -37,7 +37,7 @@ async function main() {
     // Check for validators with partial geolocation data
     console.log('\n🔍 Checking for validators with partial geolocation data...');
     
-    const allValidatorInfos = validatorInfoService.getAllDNSInfo();
+    const allValidatorInfos = dnsMapper.getAllDNSInfo();
     const partialDataValidators = allValidatorInfos.filter(info => {
       const hasKnownRegion = Boolean(info.country && info.country !== 'unknown');
       const hasUnknownDatacenter = Boolean(!info.datacenter || info.datacenter === 'unknown');
