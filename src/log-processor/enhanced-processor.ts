@@ -496,13 +496,10 @@ export class MonadLogProcessor {
   private extractValidatorId(fields: any, target: string): string {
     // Extract validator ID from different possible fields
     let validatorId = '';
-    
-    if (fields.validator_id) {
-      validatorId = fields.validator_id;
-    } else if (fields.node_id) {
+    if (fields.node_id) {
       validatorId = fields.node_id;
-    } else if (fields.validator) {
-      validatorId = fields.validator;
+    } else if (fields.author) {
+      validatorId = fields.author;
     } else {
       validatorId = 'unknown';
     }
