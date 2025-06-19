@@ -607,7 +607,7 @@ export class ValidatorInfoService {
     
     for (const nodeId of validatorsToRetry) {
       try {
-        console.log(`🔄 Retrying DNS resolution for validator ${nodeId.substring(0, 8)}...`);
+        console.log(`🔄 Retrying DNS resolution for validator ${nodeId}`);
         
         // Get current state before retry
         const beforeInfo = this.getValidatorInfoSync(nodeId);
@@ -711,7 +711,7 @@ export class ValidatorInfoService {
     
     for (const nodeId of validatorsToRetry) {
       try {
-        console.log(`🔄 Retrying DNS resolution for validator ${nodeId.substring(0, 8)}...`);
+        console.log(`🔄 Retrying DNS resolution for validator ${nodeId}`);
         
         // Get current state before retry
         const beforeInfo = this.getValidatorInfoSync(nodeId);
