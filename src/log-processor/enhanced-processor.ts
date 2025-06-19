@@ -115,9 +115,9 @@ export class MonadLogProcessor {
       qcParticipationData.push(...qcData);
     } catch (error) {
       errors.push(`QC parsing error: ${error}`);
-    }
-
-    // Build vote chains
+      }
+      
+      // Build vote chains
     try {
       const chains = this.voteChainBuilder.buildVoteChains(consensusEvents);
       voteChains.push(...chains);
@@ -211,8 +211,8 @@ export class MonadLogProcessor {
       enhanced.datacenterCode = validatorInfo.datacenter || 'unknown';
     } else {
       // Fallback to domain-based extraction if no cached info
-      const validatorDns = this.extractValidatorDns(fields);
-      if (validatorDns) {
+    const validatorDns = this.extractValidatorDns(fields);
+    if (validatorDns) {
         enhanced.validatorDns = validatorDns;
         enhanced.infrastructureProvider = this.extractProviderFromDomain(validatorDns);
       }
@@ -239,7 +239,7 @@ export class MonadLogProcessor {
 
     // Get validator information from pre-cached map
     const validatorInfo = validatorInfoMap.get(this.normalizeValidatorId(validatorId));
-    
+
     let geographicRegion = 'unknown';
     let infrastructureProvider = 'unknown';
     let datacenterCode = 'unknown';
@@ -251,7 +251,7 @@ export class MonadLogProcessor {
     } else {
       // Fallback to domain-based extraction
       const validatorDns = this.extractValidatorDns(fields);
-      if (validatorDns) {
+    if (validatorDns) {
         infrastructureProvider = this.extractProviderFromDomain(validatorDns);
       }
     }
@@ -328,8 +328,8 @@ export class MonadLogProcessor {
            fields.proposer_id || 
            fields.leader_id || 
            'unknown';
-  }
-
+    }
+    
   private extractValidatorDns(fields: any): string | null {
     // Try to extract DNS from various fields
     return fields.dns_address || 
@@ -367,8 +367,8 @@ export class MonadLogProcessor {
       return 'enterprise';
     }
     
-    return 'community';
-  }
+      return 'community';
+    }
 
   private normalizeValidatorId(validatorId: string): string {
     return validatorId.startsWith('0x') ? validatorId.slice(2) : validatorId;
@@ -479,7 +479,7 @@ class VoteChainBuilderImpl implements VoteChainBuilder {
       if (event.timestamp > chain.endTime) chain.endTime = event.timestamp;
       if (event.timestamp < chain.startTime) chain.startTime = event.timestamp;
     }
-
+    
     return Array.from(chains.values());
   }
 }

@@ -2,6 +2,7 @@ node_modules
 dist
 examples
 logs
+prod-logs
 *.d.ts*
 *-logs.js*
 *check.js*

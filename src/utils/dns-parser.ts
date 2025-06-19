@@ -62,29 +62,29 @@ export class IntelligentDNSParser {
    */
   async parse(dnsAddress: string): Promise<DNSParseResult> {
     try {
-      const { hostname, port } = this.extractHostnameAndPort(dnsAddress);
-      
-      // Extract provider name using intelligent parsing
-      const provider = this.extractProviderName(hostname);
-      
+    const { hostname, port } = this.extractHostnameAndPort(dnsAddress);
+    
+    // Extract provider name using intelligent parsing
+    const provider = this.extractProviderName(hostname);
+    
       // Get location info from external DNS services (with graceful fallback)
-      const locationInfo = await this.getLocationInfo(hostname);
-      
-      // Extract network information
-      const networkInfo = this.extractNetworkInfo(hostname);
-      
-      return {
-        originalAddress: dnsAddress,
-        hostname,
-        port,
-        provider,
-        networkType: networkInfo.type,
-        network: networkInfo.network,
-        instance: networkInfo.instance,
-        locationInfo,
-        rawDomainParts: hostname.split('.'),
-        parsingMethod: this.getParsingMethod(hostname)
-      };
+    const locationInfo = await this.getLocationInfo(hostname);
+    
+    // Extract network information
+    const networkInfo = this.extractNetworkInfo(hostname);
+    
+    return {
+      originalAddress: dnsAddress,
+      hostname,
+      port,
+      provider,
+      networkType: networkInfo.type,
+      network: networkInfo.network,
+      instance: networkInfo.instance,
+      locationInfo,
+      rawDomainParts: hostname.split('.'),
+      parsingMethod: this.getParsingMethod(hostname)
+    };
     } catch (error) {
       console.warn(`DNS parsing completely failed for ${dnsAddress}, returning fallback result:`, error);
       
@@ -192,17 +192,17 @@ export class IntelligentDNSParser {
       
       // Get geographic information using IP geolocation
       try {
-        const geoInfo = await this.getIPGeolocation(ip);
-        
-        return {
-          ip,
-          country: geoInfo.country || 'unknown',
-          region: geoInfo.region || 'unknown',
-          city: geoInfo.city || 'unknown',
-          datacenter: geoInfo.datacenter || this.extractDatacenterFromHostname(hostname),
-          isp: geoInfo.isp || 'unknown',
-          coordinates: geoInfo.coordinates
-        };
+      const geoInfo = await this.getIPGeolocation(ip);
+      
+      return {
+        ip,
+        country: geoInfo.country || 'unknown',
+        region: geoInfo.region || 'unknown',
+        city: geoInfo.city || 'unknown',
+        datacenter: geoInfo.datacenter || this.extractDatacenterFromHostname(hostname),
+        isp: geoInfo.isp || 'unknown',
+        coordinates: geoInfo.coordinates
+      };
       } catch (geoError) {
         console.warn(`Geolocation lookup failed for ${hostname} (${ip}), using IP-only info:`, geoError);
         

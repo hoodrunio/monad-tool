@@ -217,20 +217,20 @@ export class DataIngestionService extends EventEmitter {
       
       // Store consensus events
       if (result.consensusEvents.length > 0) {
-        try {
+          try {
           await this.clickhouseClient.insertValidatorEvents(result.consensusEvents);
-        } catch (error) {
-          console.error(`Failed to insert consensus events:`, error);
+          } catch (error) {
+            console.error(`Failed to insert consensus events:`, error);
           console.error(`Consensus events sample:`, JSON.stringify(result.consensusEvents.slice(0, 2), null, 2));
+          }
         }
-      }
-      
+        
       // Store ledger events
       if (result.ledgerEvents.length > 0) {
-        try {
+          try {
           await this.clickhouseClient.insertLedgerEvents(result.ledgerEvents);
-        } catch (error) {
-          console.error(`Failed to insert ledger events:`, error);
+          } catch (error) {
+            console.error(`Failed to insert ledger events:`, error);
           console.error(`Ledger events sample:`, JSON.stringify(result.ledgerEvents.slice(0, 2), null, 2));
         }
       }
