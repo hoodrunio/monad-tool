@@ -429,12 +429,9 @@ export class MonadClickHouseClient {
       LIMIT ${limit}
     `;
 
-    const result = await this.client.query({
-      query,
-      format: 'JSONEachRow'
-    });
+    const result = await this.executeRawQuery(query);
 
-    return result.json();
+    return result;
   }
 
   async getNetworkMetrics(timeWindow: '1m' | '1h' | '24h' = '1h'): Promise<any> {
@@ -455,12 +452,9 @@ export class MonadClickHouseClient {
         AND timestamp >= now() - INTERVAL 1 ${timeWindow === '1m' ? 'HOUR' : timeWindow === '1h' ? 'DAY' : 'WEEK'}
     `;
 
-    const result = await this.client.query({
-      query,
-      format: 'JSONEachRow'
-    });
+    const result = await this.executeRawQuery(query);
 
-    const rows = await result.json<any[]>();
+    const rows = await result;
     return rows[0] || {};
   }
 
@@ -480,12 +474,9 @@ export class MonadClickHouseClient {
       ORDER BY validator_count DESC
     `;
 
-    const result = await this.client.query({
-      query,
-      format: 'JSONEachRow'
-    });
+    const result = await this.executeRawQuery(query);
 
-    return result.json();
+    return result;
   }
 
   async getValidatorHistory(validatorId: string, hours: number = 24): Promise<any[]> {
@@ -504,12 +495,9 @@ export class MonadClickHouseClient {
       LIMIT 1000
     `;
 
-    const result = await this.client.query({
-      query,
-      format: 'JSONEachRow'
-    });
+    const result = await this.executeRawQuery(query);
 
-    return result.json();
+    return result;
   }
 
   async getHealthAlerts(): Promise<any[]> {
@@ -527,12 +515,9 @@ export class MonadClickHouseClient {
       LIMIT 100
     `;
 
-    const result = await this.client.query({
-      query,
-      format: 'JSONEachRow'
-    });
+    const result = await this.executeRawQuery(query);
 
-    return result.json();
+    return result;
   }
 
   // =============================================
@@ -558,23 +543,6 @@ export class MonadClickHouseClient {
     await this.client.close();
   }
 
-  // =============================================
-  // RAW QUERY METHODS FOR SYSTEM OPERATIONS
-  // =============================================
-
-  async executeRawQuery(query: string): Promise<any[]> {
-    const result = await this.client.query({
-      query,
-      format: 'JSONEachRow'
-    });
-
-    return result.json();
-  }
-
-  async executeCommand(command: string): Promise<void> {
-    await this.client.command({ query: command });
-  }
-
   async getTableStats(): Promise<any[]> {
     const query = `
       SELECT 
@@ -590,11 +558,25 @@ export class MonadClickHouseClient {
       ORDER BY total_bytes DESC
     `;
 
+    const result = await this.executeRawQuery(query);
+
+    return result;
+  }
+
+    // =============================================
+  // RAW QUERY METHODS FOR SYSTEM OPERATIONS
+  // =============================================
+
+  async executeRawQuery(query: string): Promise<any[]> {
     const result = await this.client.query({
       query,
       format: 'JSONEachRow'
     });
 
     return result.json();
+  }
+
+  async executeCommand(command: string): Promise<void> {
+    await this.client.command({ query: command });
   }
 } 

@@ -1,11 +1,8 @@
 import { Request, Response } from 'express';
 import { 
   EnhancedDNSProcessor,
-  createEnhancedDNSProcessor,
-  NetworkDiscoveryResult,
-  DNSParseResult
+  createEnhancedDNSProcessor
 } from '../../utils';
-import { ProcessingConfig } from '../../log-processor/types';
 import { FocusedLogProcessor } from '../../log-processor/enhanced-processor';
 import { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { MonadRedisClient } from '../../cache/redis-client';

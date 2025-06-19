@@ -24,11 +24,7 @@ async function debugDatabase() {
 
     // Check if tables exist
     const tablesQuery = `SHOW TABLES FROM ${config.database}`;
-    const tablesResult = await client['client'].query({
-      query: tablesQuery,
-      format: 'JSONEachRow'
-    });
-    const tables = await tablesResult.json() as any[];
+    const tables = await client.executeRawQuery(tablesQuery);
     console.log('📊 Available tables:', tables.map(t => t.name));
 
     // =============================================
@@ -38,11 +34,8 @@ async function debugDatabase() {
       console.log('\n🏗️  BLOCK PROPOSALS DATA:');
       
       const countQuery = 'SELECT COUNT(*) as count FROM block_proposals';
-      const countResult = await client['client'].query({
-        query: countQuery,
-        format: 'JSONEachRow'
-      });
-      const countData = await countResult.json() as any[];
+      const countResult = await client.executeRawQuery(countQuery);
+      const countData = countResult;
       console.log('📈 Total block proposals:', countData[0]?.count || 0);
 
       // Check recent block proposals
@@ -63,11 +56,8 @@ async function debugDatabase() {
         LIMIT 5
       `;
       
-      const recentResult = await client['client'].query({
-        query: recentQuery,
-        format: 'JSONEachRow'
-      });
-      const recentData = await recentResult.json() as any[];
+      const recentResult = await client.executeRawQuery(recentQuery);
+      const recentData = recentResult;
       console.log('🔄 Recent block proposals:');
       recentData.forEach((event, i) => {
         console.log(`  ${i + 1}. ${event.timestamp} - Seq: ${event.seq_num} - Round: ${event.round} - Status: ${event.status} - Validator: ${event.validator_id.substring(0, 8)}...`);
@@ -83,11 +73,8 @@ async function debugDatabase() {
         ORDER BY count DESC
       `;
       
-      const statusResult = await client['client'].query({
-        query: statusQuery,
-        format: 'JSONEachRow'
-      });
-      const statusData = await statusResult.json() as any[];
+      const statusResult = await client.executeRawQuery(statusQuery);
+      const statusData = statusResult;
       console.log('📊 Block proposal status distribution:');
       statusData.forEach(s => {
         console.log(`  ${s.status}: ${s.count}`);
@@ -100,11 +87,8 @@ async function debugDatabase() {
         WHERE timestamp >= now() - INTERVAL 24 HOUR
       `;
       
-      const last24hResult = await client['client'].query({
-        query: last24hQuery,
-        format: 'JSONEachRow'
-      });
-      const last24hData = await last24hResult.json() as any[];
+      const last24hResult = await client.executeRawQuery(last24hQuery);
+      const last24hData = last24hResult;
       console.log('⏰ Block proposals in last 24 hours:', last24hData[0]?.count || 0);
 
     } else {
@@ -118,11 +102,8 @@ async function debugDatabase() {
       console.log('\n🗳️  QC PARTICIPATION DATA:');
       
       const countQuery = 'SELECT COUNT(*) as count FROM qc_participation';
-      const countResult = await client['client'].query({
-        query: countQuery,
-        format: 'JSONEachRow'
-      });
-      const countData = await countResult.json() as any[];
+      const countResult = await client.executeRawQuery(countQuery);
+      const countData = countResult;
       console.log('📈 Total QC participation records:', countData[0]?.count || 0);
 
       // Check recent QC participation
@@ -143,11 +124,8 @@ async function debugDatabase() {
         LIMIT 5
       `;
       
-      const recentResult = await client['client'].query({
-        query: recentQuery,
-        format: 'JSONEachRow'
-      });
-      const recentData = await recentResult.json() as any[];
+      const recentResult = await client.executeRawQuery(recentQuery);
+      const recentData = recentResult;
       console.log('🔄 Recent QC participation:');
       recentData.forEach((event, i) => {
         console.log(`  ${i + 1}. ${event.timestamp} - Round: ${event.round} - Participated: ${event.participated ? 'YES' : 'NO'} - Rate: ${event.participation_rate.toFixed(1)}%`);
@@ -164,11 +142,8 @@ async function debugDatabase() {
         FROM qc_participation
       `;
       
-      const participationStatsResult = await client['client'].query({
-        query: participationStatsQuery,
-        format: 'JSONEachRow'
-      });
-      const participationStatsData = await participationStatsResult.json() as any[];
+      const participationStatsResult = await client.executeRawQuery(participationStatsQuery);
+      const participationStatsData = participationStatsResult;
       if (participationStatsData[0]) {
         const stats = participationStatsData[0];
         console.log('📊 QC Participation Statistics:');
@@ -186,11 +161,8 @@ async function debugDatabase() {
         WHERE timestamp >= now() - INTERVAL 24 HOUR
       `;
       
-      const last24hResult = await client['client'].query({
-        query: last24hQuery,
-        format: 'JSONEachRow'
-      });
-      const last24hData = await last24hResult.json() as any[];
+      const last24hResult = await client.executeRawQuery(last24hQuery);
+      const last24hData = last24hResult;
       console.log('⏰ QC participation records in last 24 hours:', last24hData[0]?.count || 0);
 
     } else {
@@ -217,11 +189,8 @@ async function debugDatabase() {
         LIMIT 10
       `;
       
-      const topProposersResult = await client['client'].query({
-        query: topProposersQuery,
-        format: 'JSONEachRow'
-      });
-      const topProposersData = await topProposersResult.json() as any[];
+      const topProposersResult = await client.executeRawQuery(topProposersQuery);
+      const topProposersData = topProposersResult;
       console.log('🏆 Top validators by block proposals:');
       topProposersData.forEach((v, i) => {
         console.log(`  ${i + 1}. ${v.validator_id.substring(0, 12)}... - ${v.proposal_count} proposals (${v.success_rate.toFixed(1)}% success)`);
@@ -243,11 +212,8 @@ async function debugDatabase() {
         LIMIT 10
       `;
       
-      const geoResult = await client['client'].query({
-        query: geoQuery,
-        format: 'JSONEachRow'
-      });
-      const geoData = await geoResult.json() as any[];
+      const geoResult = await client.executeRawQuery(geoQuery);
+      const geoData = geoResult;
       console.log('🌍 Geographic distribution:');
       geoData.forEach((g, i) => {
         console.log(`  ${i + 1}. ${g.location} (${g.provider}) - ${g.validator_count} validators, ${g.total_proposals} proposals`);
@@ -257,22 +223,16 @@ async function debugDatabase() {
     // Check legacy validator_events table for comparison
     if (tables.some(t => t.name === 'validator_events')) {
       const legacyCountQuery = 'SELECT COUNT(*) as count FROM validator_events';
-      const legacyCountResult = await client['client'].query({
-        query: legacyCountQuery,
-        format: 'JSONEachRow'
-      });
-      const legacyCountData = await legacyCountResult.json() as any[];
+      const legacyCountResult = await client.executeRawQuery(legacyCountQuery);
+      const legacyCountData = legacyCountResult;
       console.log('\n📊 Legacy validator_events table:', legacyCountData[0]?.count || 0, 'records');
     }
 
     // Check raw_logs table if it exists
     if (tables.some(t => t.name === 'raw_logs')) {
       const rawLogsCountQuery = 'SELECT COUNT(*) as count FROM raw_logs';
-      const rawLogsCountResult = await client['client'].query({
-        query: rawLogsCountQuery,
-        format: 'JSONEachRow'
-      });
-      const rawLogsCountData = await rawLogsCountResult.json() as any[];
+      const rawLogsCountResult = await client.executeRawQuery(rawLogsCountQuery);
+      const rawLogsCountData = rawLogsCountResult;
       console.log('📝 Total raw logs:', rawLogsCountData[0]?.count || 0);
     }
 
