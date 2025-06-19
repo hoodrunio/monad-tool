@@ -11,7 +11,9 @@ export function createValidatorRoutes(validatorController: ValidatorController):
   // Individual validator endpoints
   router.get('/api/validators/:id', validatorController.getValidatorDetails.bind(validatorController));
   router.get('/api/validators/:id/history', validatorController.getValidatorHistory.bind(validatorController));
-  router.get('/api/validators/:id/performance', validatorController.getValidatorPerformance.bind(validatorController));
+  
+  // Validator comparison endpoint
+  router.post('/api/validators/compare', validatorController.compareValidators.bind(validatorController));
 
   return router;
 } 
