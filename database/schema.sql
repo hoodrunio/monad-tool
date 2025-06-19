@@ -202,9 +202,9 @@ CREATE TABLE network_health_hourly (
     active_locations UInt16,
     active_providers UInt16,
     
-    -- Performance
-    avg_round_time_ms Float32,
-    p95_round_time_ms Float32,
+    -- Performance metrics (aggregated by hour)
+    events_per_second Float32,
+    avg_participation_efficiency Float32,
     
     updated_at DateTime64(3, 'UTC') DEFAULT now()
 ) ENGINE = ReplacingMergeTree(updated_at)

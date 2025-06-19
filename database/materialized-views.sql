@@ -203,9 +203,9 @@ SELECT
     COUNT(DISTINCT location) as active_locations,
     COUNT(DISTINCT provider) as active_providers,
     
-    -- Performance (placeholder - would need timing data)
-    0 as avg_round_time_ms,
-    0 as p95_round_time_ms
+    -- Performance metrics (aggregated by hour, not individual event timing)
+    COUNT(*) / 3600 as events_per_second, -- Events per second average for the hour
+    AVG(participation_rate) as avg_participation_efficiency
 
 FROM qc_participation
 GROUP BY hour;
@@ -240,9 +240,9 @@ SELECT
     COUNT(DISTINCT location) as active_locations,
     COUNT(DISTINCT provider) as active_providers,
     
-    -- Performance
-    0 as avg_round_time_ms,
-    0 as p95_round_time_ms
+    -- Performance metrics (block production rate, matching table schema)
+    COUNT(*) / 3600 as events_per_second, -- Blocks per second average for the hour
+    AVG(CASE WHEN status = 'proposed' THEN 100.0 ELSE 0.0 END) as avg_participation_efficiency
 
 FROM block_proposals  
 GROUP BY hour;

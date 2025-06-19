@@ -17,6 +17,7 @@ import {
 import { ValidatorInfoService, CompleteValidatorInfo } from '../services/validator-info-service';
 import { MonadClickHouseClient } from '../database/clickhouse-client';
 import { logger } from '../utils/logger';
+import { validatorRegistry } from '../services/validator-registry';
 
 export class FocusedLogProcessor {
   private validatorInfoService: ValidatorInfoService;
@@ -141,7 +142,7 @@ export class FocusedLogProcessor {
         numTx: parseInt(fields.num_tx) || 0,
         blockId: fields.block_id || undefined,
         
-        // Infrastructure (will be filled later)
+        // Infrastructure will be populated by enhanceBlockProposalEvents
         validatorDns: '',
         geographicRegion: 'unknown',
         infrastructureProvider: 'unknown',
@@ -162,7 +163,7 @@ export class FocusedLogProcessor {
         numTx: 0,
         blockId: undefined,
         
-        // Infrastructure (will be filled later)
+        // Infrastructure will be populated by enhanceBlockProposalEvents
         validatorDns: '',
         geographicRegion: 'unknown',
         infrastructureProvider: 'unknown',
@@ -263,7 +264,7 @@ export class FocusedLogProcessor {
         participatingValidators: qcData.participatingValidators,
         participationRate,
         
-        // Infrastructure (will be filled later)
+        // Infrastructure will be populated by enhanceQCParticipationEvents
         validatorDns: '',
         geographicRegion: 'unknown',
         infrastructureProvider: 'unknown',
@@ -313,11 +314,28 @@ export class FocusedLogProcessor {
 
   private async loadValidatorRegistry(): Promise<void> {
     try {
-      // This would typically load from the validator registry service
-      // For now, we'll populate it as we encounter validators
-      logger.info('📋 Validator registry loaded (dynamic population enabled)');
+      // Load the actual validator registry from the service
+      await validatorRegistry.initialize();
+      
+      // Get all validators for current epoch
+      const validators = validatorRegistry.getAllValidators();
+      
+      // Populate our internal registry map with validator positions
+      this.validatorRegistry.clear();
+      validators.forEach(validator => {
+        this.validatorRegistry.set(validator.position, {
+          position: validator.position,
+          validatorId: validator.node_id,
+          nodeId: validator.node_id,
+          stake: validator.stake
+        });
+      });
+      
+      logger.info(`📋 Loaded ${validators.length} validators from registry for epoch ${validatorRegistry.getCurrentEpoch()}`);
     } catch (error) {
       logger.error('Failed to load validator registry:', error);
+      // Fall back to dynamic population
+      logger.warn('📋 Falling back to dynamic validator population');
     }
   }
 

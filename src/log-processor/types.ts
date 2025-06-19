@@ -543,12 +543,10 @@ export interface ParsedQCData {
 // =============================================
 
 export interface ValidatorRegistryEntry {
-  nodeId: string;
-  validatorId: string;
   position: number;
+  validatorId: string;
+  nodeId: string;
   stake: number;
-  isActive: boolean;
-  epoch: number;
 }
 
 export interface ValidatorMappingService {

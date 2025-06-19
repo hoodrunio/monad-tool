@@ -9,6 +9,11 @@ export class DNSCacheManager {
   private defaultTTL: number = 3600000; // 1 hour in milliseconds
   private maxCacheSize: number = 10000;
   private cleanupInterval: NodeJS.Timeout | null = null;
+  
+  // Hit rate tracking
+  private hitCount: number = 0;
+  private missCount: number = 0;
+  private totalRequests: number = 0;
 
   constructor(options?: {
     defaultTTL?: number;
@@ -31,18 +36,22 @@ export class DNSCacheManager {
    * Get cached DNS parse result
    */
   get(hostname: string): DNSParseResult | null {
+    this.totalRequests++;
     const entry = this.cache.get(hostname);
     
     if (!entry) {
+      this.missCount++;
       return null;
     }
     
     // Check if entry has expired
     if (this.isExpired(entry)) {
       this.cache.delete(hostname);
+      this.missCount++;
       return null;
     }
     
+    this.hitCount++;
     return entry.parseResult;
   }
 
@@ -83,10 +92,11 @@ export class DNSCacheManager {
   }
 
   /**
-   * Clear all cache entries
+   * Clear all cache entries and reset statistics
    */
   clear(): void {
     this.cache.clear();
+    this.resetStats();
   }
 
   /**
@@ -97,6 +107,10 @@ export class DNSCacheManager {
     validEntries: number;
     expiredEntries: number;
     hitRate: number;
+    missRate: number;
+    totalRequests: number;
+    hitCount: number;
+    missCount: number;
     memoryUsage: number;
   } {
     let validEntries = 0;
@@ -113,11 +127,18 @@ export class DNSCacheManager {
     // Estimate memory usage (rough calculation)
     const memoryUsage = this.cache.size * 1000; // Approximate bytes per entry
     
+    const hitRate = this.totalRequests > 0 ? (this.hitCount / this.totalRequests) * 100 : 0;
+    const missRate = this.totalRequests > 0 ? (this.missCount / this.totalRequests) * 100 : 0;
+    
     return {
       totalEntries: this.cache.size,
       validEntries,
       expiredEntries,
-      hitRate: this.calculateHitRate(),
+      hitRate,
+      missRate,
+      totalRequests: this.totalRequests,
+      hitCount: this.hitCount,
+      missCount: this.missCount,
       memoryUsage
     };
   }
@@ -331,12 +352,52 @@ export class DNSCacheManager {
   }
 
   /**
-   * Calculate cache hit rate (placeholder - would need tracking)
+   * Calculate cache hit rate with actual tracking
    */
   private calculateHitRate(): number {
-    // This would need request tracking to calculate actual hit rate
-    // For now, return estimated hit rate based on cache size and usage
-    return this.cache.size > 0 ? 0.85 : 0;
+    return this.totalRequests > 0 ? (this.hitCount / this.totalRequests) * 100 : 0;
+  }
+
+  /**
+   * Reset hit rate statistics
+   */
+  resetStats(): void {
+    this.hitCount = 0;
+    this.missCount = 0;
+    this.totalRequests = 0;
+  }
+
+  /**
+   * Get detailed cache performance metrics
+   */
+  getPerformanceMetrics(): {
+    hitRate: number;
+    missRate: number;
+    efficiency: string;
+    totalRequests: number;
+    cacheSize: number;
+    memoryEfficiency: string;
+  } {
+    const hitRate = this.calculateHitRate();
+    const missRate = 100 - hitRate;
+    
+    let efficiency: string;
+    if (hitRate >= 90) efficiency = 'excellent';
+    else if (hitRate >= 80) efficiency = 'good';
+    else if (hitRate >= 70) efficiency = 'fair';
+    else efficiency = 'poor';
+    
+    const memoryUsage = this.cache.size * 1000;
+    const memoryEfficiency = memoryUsage < (this.maxCacheSize * 800) ? 'efficient' : 'high';
+    
+    return {
+      hitRate,
+      missRate,
+      efficiency,
+      totalRequests: this.totalRequests,
+      cacheSize: this.cache.size,
+      memoryEfficiency
+    };
   }
 
   private async delay(ms: number): Promise<void> {
