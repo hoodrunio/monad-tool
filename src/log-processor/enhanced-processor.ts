@@ -93,12 +93,13 @@ export class MonadLogProcessor {
           continue;
         }
 
-        if (log.target === 'consensus') {
+        // Check if this is a consensus-related log
+        if (this.isConsensusTarget(log.target)) {
           const event = await this.parseConsensusEventAsync(log, validatorInfoMap);
           if (event) {
             consensusEvents.push(event);
           }
-        } else if (log.target === 'ledger-tail') {
+        } else if (this.isLedgerTarget(log.target)) {
           const event = await this.parseLedgerEventAsync(log, validatorInfoMap);
           if (event) {
             ledgerEvents.push(event);
@@ -320,6 +321,17 @@ export class MonadLogProcessor {
   // =============================================
   // UTILITY METHODS
   // =============================================
+
+  private isConsensusTarget(target: string): boolean {
+    return target.includes('consensus') || 
+           target.includes('monad_consensus') ||
+           target.includes('monad_eth_block_policy') ||
+           target.includes('pacemaker');
+  }
+
+  private isLedgerTarget(target: string): boolean {
+    return target === 'ledger_tail' || target.includes('ledger');
+  }
 
   private extractValidatorId(fields: any, target: string): string {
     // Try various field names based on log type
