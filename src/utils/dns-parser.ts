@@ -236,7 +236,7 @@ export class IntelligentDNSParser {
       const ipMatch = output.match(/Address: (\d+\.\d+\.\d+\.\d+)/);
       return ipMatch ? ipMatch[1] : null;
     } catch (error) {
-      console.warn(`nslookup failed for ${hostname}:`, error);
+      console.warn(`nslookup failed for ${hostname}`);
       return null;
     }
   }
