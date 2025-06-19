@@ -230,9 +230,9 @@ CREATE TABLE validator_rankings_cache (
     -- Supporting data
     total_block_opportunities UInt32,
     total_qc_opportunities UInt32,
-    blocks_proposed UInt32,
-    blocks_skipped UInt32,
-    qc_participations UInt32,
+    total_blocks_proposed UInt32,
+    total_blocks_skipped UInt32,
+    total_qc_participations UInt32,
     
     -- Infrastructure
     provider LowCardinality(String),
@@ -280,27 +280,13 @@ SETTINGS index_granularity = 8192;
 
 -- Projection for validator rankings (most common query)
 ALTER TABLE validator_metrics_hourly ADD PROJECTION rankings_proj (
-    SELECT 
-        validator_id,
-        uptime_score,
-        block_proposal_ratio,
-        qc_participation_rate,
-        blocks_proposed,
-        blocks_skipped,
-        qc_participations,
-        provider,
-        location
-    ORDER BY uptime_score DESC, validator_id
+    SELECT validator_id, uptime_score, block_proposal_ratio, qc_participation_rate, blocks_proposed, blocks_skipped, qc_participations, provider, location
+    ORDER BY uptime_score, validator_id
 );
 
 -- Projection for time-series analysis
 ALTER TABLE validator_metrics_hourly ADD PROJECTION timeseries_proj (
-    SELECT 
-        hour,
-        validator_id,
-        uptime_score,
-        block_proposal_ratio,
-        qc_participation_rate
+    SELECT hour, validator_id, uptime_score, block_proposal_ratio, qc_participation_rate
     ORDER BY hour, validator_id
 );
 

@@ -18,8 +18,8 @@ SELECT
     COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
     COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
     CASE 
-        WHEN (blocks_proposed + blocks_skipped) > 0 
-        THEN blocks_proposed / (blocks_proposed + blocks_skipped) * 100 
+        WHEN (COUNT(CASE WHEN status = 'proposed' THEN 1 END) + COUNT(CASE WHEN status = 'skipped' THEN 1 END)) > 0 
+        THEN COUNT(CASE WHEN status = 'proposed' THEN 1 END) / (COUNT(CASE WHEN status = 'proposed' THEN 1 END) + COUNT(CASE WHEN status = 'skipped' THEN 1 END)) * 100 
         ELSE 0 
     END as block_proposal_ratio,
     
@@ -53,8 +53,8 @@ SELECT
     COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
     COUNT(*) as total_qc_opportunities,
     CASE 
-        WHEN total_qc_opportunities > 0 
-        THEN qc_participations / total_qc_opportunities * 100 
+        WHEN COUNT(*) > 0 
+        THEN COUNT(CASE WHEN participated = 1 THEN 1 END) / COUNT(*) * 100 
         ELSE 0 
     END as qc_participation_rate,
     
@@ -89,11 +89,11 @@ SELECT
     END) as avg_uptime_score,
     
     -- Supporting data  
-    SUM(blocks_proposed + blocks_skipped) as total_block_opportunities,
+    SUM(blocks_proposed) + SUM(blocks_skipped) as total_block_opportunities,
     SUM(total_qc_opportunities) as total_qc_opportunities,
-    SUM(blocks_proposed) as blocks_proposed,
-    SUM(blocks_skipped) as blocks_skipped,
-    SUM(qc_participations) as qc_participations,
+    SUM(blocks_proposed) as total_blocks_proposed,
+    SUM(blocks_skipped) as total_blocks_skipped,
+    SUM(qc_participations) as total_qc_participations,
     
     -- Infrastructure
     any(provider) as provider,
@@ -123,11 +123,11 @@ SELECT
     END) as avg_uptime_score,
     
     -- Supporting data
-    SUM(blocks_proposed + blocks_skipped) as total_block_opportunities,
+    SUM(blocks_proposed) + SUM(blocks_skipped) as total_block_opportunities,
     SUM(total_qc_opportunities) as total_qc_opportunities,
-    SUM(blocks_proposed) as blocks_proposed,
-    SUM(blocks_skipped) as blocks_skipped,
-    SUM(qc_participations) as qc_participations,
+    SUM(blocks_proposed) as total_blocks_proposed,
+    SUM(blocks_skipped) as total_blocks_skipped,
+    SUM(qc_participations) as total_qc_participations,
     
     -- Infrastructure
     any(provider) as provider,
@@ -157,11 +157,11 @@ SELECT
     END) as avg_uptime_score,
     
     -- Supporting data
-    SUM(blocks_proposed + blocks_skipped) as total_block_opportunities,
+    SUM(blocks_proposed) + SUM(blocks_skipped) as total_block_opportunities,
     SUM(total_qc_opportunities) as total_qc_opportunities,
-    SUM(blocks_proposed) as blocks_proposed,
-    SUM(blocks_skipped) as blocks_skipped,
-    SUM(qc_participations) as qc_participations,
+    SUM(blocks_proposed) as total_blocks_proposed,
+    SUM(blocks_skipped) as total_blocks_skipped,
+    SUM(qc_participations) as total_qc_participations,
     
     -- Infrastructure
     any(provider) as provider,
@@ -226,8 +226,8 @@ SELECT
     COUNT(CASE WHEN status = 'proposed' THEN 1 END) as total_proposals,
     COUNT(CASE WHEN status = 'skipped' THEN 1 END) as total_skips,
     CASE 
-        WHEN (total_proposals + total_skips) > 0
-        THEN total_proposals / (total_proposals + total_skips) * 100
+        WHEN (COUNT(CASE WHEN status = 'proposed' THEN 1 END) + COUNT(CASE WHEN status = 'skipped' THEN 1 END)) > 0
+        THEN COUNT(CASE WHEN status = 'proposed' THEN 1 END) / (COUNT(CASE WHEN status = 'proposed' THEN 1 END) + COUNT(CASE WHEN status = 'skipped' THEN 1 END)) * 100
         ELSE 0
     END as proposal_success_rate,
     
@@ -342,10 +342,10 @@ ORDER BY current_uptime_score DESC;
 -- Network health summary for monitoring
 CREATE VIEW network_health_summary AS
 SELECT 
-    -- Latest hour metrics
-    consensus_efficiency as current_consensus_efficiency,
-    proposal_success_rate as current_proposal_success_rate,
-    active_validators as current_active_validators,
+    -- Latest hour metrics (using argMax to get values from most recent hour)
+    argMax(consensus_efficiency, hour) as current_consensus_efficiency,
+    argMax(proposal_success_rate, hour) as current_proposal_success_rate,
+    argMax(active_validators, hour) as current_active_validators,
     
     -- 24-hour trends
     AVG(consensus_efficiency) as avg_24h_consensus_efficiency,
