@@ -61,29 +61,50 @@ export class IntelligentDNSParser {
    * Parse validator DNS to extract provider name and network information
    */
   async parse(dnsAddress: string): Promise<DNSParseResult> {
-    const { hostname, port } = this.extractHostnameAndPort(dnsAddress);
-    
-    // Extract provider name using intelligent parsing
-    const provider = this.extractProviderName(hostname);
-    
-    // Get location info from external DNS services
-    const locationInfo = await this.getLocationInfo(hostname);
-    
-    // Extract network information
-    const networkInfo = this.extractNetworkInfo(hostname);
-    
-    return {
-      originalAddress: dnsAddress,
-      hostname,
-      port,
-      provider,
-      networkType: networkInfo.type,
-      network: networkInfo.network,
-      instance: networkInfo.instance,
-      locationInfo,
-      rawDomainParts: hostname.split('.'),
-      parsingMethod: this.getParsingMethod(hostname)
-    };
+    try {
+      const { hostname, port } = this.extractHostnameAndPort(dnsAddress);
+      
+      // Extract provider name using intelligent parsing
+      const provider = this.extractProviderName(hostname);
+      
+      // Get location info from external DNS services (with graceful fallback)
+      const locationInfo = await this.getLocationInfo(hostname);
+      
+      // Extract network information
+      const networkInfo = this.extractNetworkInfo(hostname);
+      
+      return {
+        originalAddress: dnsAddress,
+        hostname,
+        port,
+        provider,
+        networkType: networkInfo.type,
+        network: networkInfo.network,
+        instance: networkInfo.instance,
+        locationInfo,
+        rawDomainParts: hostname.split('.'),
+        parsingMethod: this.getParsingMethod(hostname)
+      };
+    } catch (error) {
+      console.warn(`DNS parsing completely failed for ${dnsAddress}, returning fallback result:`, error);
+      
+      // Return a safe fallback result that never throws
+      const { hostname, port } = this.extractHostnameAndPort(dnsAddress);
+      const fallbackLocation = this.getUnknownLocationInfo();
+      
+      return {
+        originalAddress: dnsAddress,
+        hostname,
+        port,
+        provider: this.extractProviderName(hostname) || 'unknown',
+        networkType: 'validator',
+        network: 'testnet',
+        instance: '',
+        locationInfo: fallbackLocation,
+        rawDomainParts: hostname.split('.'),
+        parsingMethod: 'fallback-error'
+      };
+    }
   }
 
   /**
@@ -165,23 +186,38 @@ export class IntelligentDNSParser {
       // Use nslookup and dig to get IP and then lookup location
       const ip = await this.resolveHostnameToIP(hostname);
       if (!ip) {
+        console.warn(`DNS resolution failed for ${hostname}, using fallback info`);
         return this.getUnknownLocationInfo();
       }
       
       // Get geographic information using IP geolocation
-      const geoInfo = await this.getIPGeolocation(ip);
-      
-      return {
-        ip,
-        country: geoInfo.country || 'unknown',
-        region: geoInfo.region || 'unknown',
-        city: geoInfo.city || 'unknown',
-        datacenter: geoInfo.datacenter || this.extractDatacenterFromHostname(hostname),
-        isp: geoInfo.isp || 'unknown',
-        coordinates: geoInfo.coordinates
-      };
+      try {
+        const geoInfo = await this.getIPGeolocation(ip);
+        
+        return {
+          ip,
+          country: geoInfo.country || 'unknown',
+          region: geoInfo.region || 'unknown',
+          city: geoInfo.city || 'unknown',
+          datacenter: geoInfo.datacenter || this.extractDatacenterFromHostname(hostname),
+          isp: geoInfo.isp || 'unknown',
+          coordinates: geoInfo.coordinates
+        };
+      } catch (geoError) {
+        console.warn(`Geolocation lookup failed for ${hostname} (${ip}), using IP-only info:`, geoError);
+        
+        // Return partial info with IP but no geolocation
+        return {
+          ip,
+          country: 'unknown',
+          region: 'unknown', 
+          city: 'unknown',
+          datacenter: this.extractDatacenterFromHostname(hostname),
+          isp: 'unknown'
+        };
+      }
     } catch (error) {
-      console.warn(`Failed to get location info for ${hostname}:`, error);
+      console.warn(`Complete location lookup failed for ${hostname}:`, error);
       return this.getUnknownLocationInfo();
     }
   }

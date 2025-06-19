@@ -325,10 +325,16 @@ export class ValidatorInfoService {
       return null;
     }
 
-    // Get DNS info (if available)
-    const dnsInfo = await this.dnsMapper.getValidatorDNSInfo(nodeId);
+    // Get DNS info (if available) - never fail due to DNS issues
+    let dnsInfo: ValidatorDNSInfo | null = null;
+    try {
+      dnsInfo = await this.dnsMapper.getValidatorDNSInfo(nodeId);
+    } catch (error) {
+      console.warn(`DNS lookup failed for validator ${nodeId}, continuing without DNS info:`, error);
+      // Continue without DNS info rather than failing entirely
+    }
     
-    // Build complete info
+    // Build complete info - always return validator info even if DNS fails
     const completeInfo: CompleteValidatorInfo = {
       nodeId: validator.node_id,
       stake: validator.stake,
@@ -337,15 +343,15 @@ export class ValidatorInfoService {
       epoch: epoch || this.validatorRegistry.getCurrentEpoch(),
       isActive: true,
       
-      // DNS information (if available)
+      // DNS information (if available, otherwise defaults)
       dnsAddress: dnsInfo?.dnsAddress,
       dnsHost: dnsInfo?.dnsHost,
       dnsPort: dnsInfo?.dnsPort,
-      provider: dnsInfo?.provider,
-      location: dnsInfo?.location,
-      country: dnsInfo?.country,
-      city: dnsInfo?.city,
-      datacenter: dnsInfo?.datacenter,
+      provider: dnsInfo?.provider || 'unknown',
+      location: dnsInfo?.location || 'unknown',
+      country: dnsInfo?.country || 'unknown',
+      city: dnsInfo?.city || 'unknown',
+      datacenter: dnsInfo?.datacenter || 'unknown',
       
       // Metadata
       lastSeen: dnsInfo?.lastSeen || new Date(),

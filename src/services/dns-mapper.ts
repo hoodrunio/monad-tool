@@ -172,8 +172,9 @@ export class DNSMapperService {
       return null;
     }
 
+    // Always return valid DNS info, never null or throw errors
     try {
-      // Get enriched DNS information
+      // Get enriched DNS information with graceful fallbacks
       const dnsInfo = await this.enrichDNSMapping(mapping);
       
       // Cache the result
@@ -183,24 +184,28 @@ export class DNSMapperService {
       return dnsInfo;
     } catch (error) {
       this.errorCount++;
-      console.warn(`Failed to enrich DNS info for validator ${normalizedId}:`, error);
+      console.warn(`Failed to enrich DNS info for validator ${normalizedId} (${mapping.dnsAddress}):`, error);
       
-      // Return basic info if enrichment fails
+      // Return basic info with hostname-based inference if enrichment fails
+      const basicProvider = this.inferProviderFromHostname(mapping.dnsHost);
+      const basicLocation = this.inferLocationFromHostname(mapping.dnsHost);
+      
       const basicInfo: ValidatorDNSInfo = {
         nodeId: normalizedId,
         dnsAddress: mapping.dnsAddress,
         dnsHost: mapping.dnsHost,
         dnsPort: mapping.dnsPort,
-        provider: 'unknown',
-        location: 'unknown',
-        country: 'unknown',
-        city: 'unknown',
-        datacenter: 'unknown',
+        provider: basicProvider,
+        location: basicLocation.location,
+        country: basicLocation.country,
+        city: basicLocation.city,
+        datacenter: basicLocation.datacenter,
         lastUpdated: new Date(),
         lastSeen: new Date(),
         processedCount: 1
       };
       
+      // Cache even the basic fallback info to avoid repeated failures
       this.validatorDNSInfo.set(normalizedId, basicInfo);
       return basicInfo;
     }
@@ -246,20 +251,39 @@ export class DNSMapperService {
   async batchProcessValidatorDNS(nodeIds: string[]): Promise<ValidatorDNSInfo[]> {
     const results: ValidatorDNSInfo[] = [];
     const batchSize = 5; // Process in small batches to avoid rate limits
+    let processedCount = 0;
+    let errorCount = 0;
 
     console.log(`Processing DNS info for ${nodeIds.length} validators in batches of ${batchSize}`);
 
     for (let i = 0; i < nodeIds.length; i += batchSize) {
       const batch = nodeIds.slice(i, i + batchSize);
-      const batchPromises = batch.map(nodeId => this.getValidatorDNSInfo(nodeId));
+      const batchPromises = batch.map(nodeId => 
+        this.getValidatorDNSInfo(nodeId).catch(error => {
+          console.warn(`Failed to process validator ${nodeId}:`, error);
+          errorCount++;
+          return null; // Return null instead of throwing
+        })
+      );
 
       const batchResults = await Promise.allSettled(batchPromises);
       
-      batchResults.forEach(result => {
+      batchResults.forEach((result, index) => {
+        const nodeId = batch[index];
+        
         if (result.status === 'fulfilled' && result.value) {
           results.push(result.value);
+          processedCount++;
+        } else {
+          console.warn(`Failed to get DNS info for validator ${nodeId}: ${
+            result.status === 'rejected' ? result.reason : 'No data returned'
+          }`);
+          errorCount++;
         }
       });
+
+      // Progress logging
+      console.log(`Processed batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(nodeIds.length / batchSize)} - ${processedCount} successful, ${errorCount} errors`);
 
       // Add delay between batches
       if (i + batchSize < nodeIds.length) {
@@ -267,6 +291,7 @@ export class DNSMapperService {
       }
     }
 
+    console.log(`✅ Batch processing complete: ${processedCount}/${nodeIds.length} validators processed successfully (${errorCount} errors)`);
     return results;
   }
 
@@ -385,6 +410,96 @@ export class DNSMapperService {
    */
   private async delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Infer provider from hostname patterns when DNS resolution fails
+   */
+  private inferProviderFromHostname(hostname: string): string {
+    const lowerHost = hostname.toLowerCase();
+    
+    if (lowerHost.includes('monadinfra') || lowerHost.includes('monad')) return 'monadinfra';
+    if (lowerHost.includes('aws') || lowerHost.includes('amazon')) return 'aws';
+    if (lowerHost.includes('gcp') || lowerHost.includes('google')) return 'google-cloud';
+    if (lowerHost.includes('azure') || lowerHost.includes('microsoft')) return 'azure';
+    if (lowerHost.includes('digitalocean')) return 'digitalocean';
+    if (lowerHost.includes('vultr')) return 'vultr';
+    if (lowerHost.includes('linode')) return 'linode';
+    if (lowerHost.includes('hetzner')) return 'hetzner';
+    if (lowerHost.includes('ovh')) return 'ovh';
+    if (lowerHost.includes('blockscape')) return 'blockscape';
+    if (lowerHost.includes('piertwo')) return 'piertwo';
+    
+    // Extract from domain parts
+    const parts = hostname.split('.');
+    if (parts.length >= 2) {
+      return parts[parts.length - 2]; // Second-to-last part usually provider
+    }
+    
+    return 'unknown';
+  }
+
+  /**
+   * Infer basic location from hostname patterns when DNS resolution fails
+   */
+  private inferLocationFromHostname(hostname: string): {
+    location: string;
+    country: string;
+    city: string;
+    datacenter: string;
+  } {
+    const lowerHost = hostname.toLowerCase();
+    
+    // Look for common location codes in hostname
+    const locationPatterns = [
+      { pattern: /syd|sydney/i, city: 'Sydney', country: 'Australia', location: 'Sydney, Australia' },
+      { pattern: /nyc|newyork/i, city: 'New York', country: 'United States', location: 'New York, United States' },
+      { pattern: /fra|frankfurt/i, city: 'Frankfurt', country: 'Germany', location: 'Frankfurt, Germany' },
+      { pattern: /lon|london/i, city: 'London', country: 'United Kingdom', location: 'London, United Kingdom' },
+      { pattern: /tok|tokyo/i, city: 'Tokyo', country: 'Japan', location: 'Tokyo, Japan' },
+      { pattern: /sgp|singapore/i, city: 'Singapore', country: 'Singapore', location: 'Singapore, Singapore' },
+      { pattern: /ams|amsterdam/i, city: 'Amsterdam', country: 'Netherlands', location: 'Amsterdam, Netherlands' },
+      { pattern: /par|paris/i, city: 'Paris', country: 'France', location: 'Paris, France' },
+      { pattern: /tor|toronto/i, city: 'Toronto', country: 'Canada', location: 'Toronto, Canada' },
+      { pattern: /sf|sanfrancisco/i, city: 'San Francisco', country: 'United States', location: 'San Francisco, United States' }
+    ];
+
+    for (const { pattern, city, country, location } of locationPatterns) {
+      if (pattern.test(lowerHost)) {
+        return {
+          location,
+          country,
+          city,
+          datacenter: this.inferDatacenterFromHostname(hostname)
+        };
+      }
+    }
+    
+    // Default fallback
+    return {
+      location: 'unknown, unknown',
+      country: 'unknown',
+      city: 'unknown', 
+      datacenter: this.inferDatacenterFromHostname(hostname)
+    };
+  }
+
+  /**
+   * Infer datacenter/provider type from hostname
+   */
+  private inferDatacenterFromHostname(hostname: string): string {
+    const lowerHost = hostname.toLowerCase();
+    
+    if (lowerHost.includes('aws') || lowerHost.includes('amazon')) return 'aws';
+    if (lowerHost.includes('gcp') || lowerHost.includes('google')) return 'google-cloud';
+    if (lowerHost.includes('azure')) return 'azure';
+    if (lowerHost.includes('digitalocean')) return 'digitalocean';
+    if (lowerHost.includes('vultr')) return 'vultr';
+    if (lowerHost.includes('hetzner')) return 'hetzner';
+    if (lowerHost.includes('ovh')) return 'ovh';
+    if (lowerHost.includes('monadinfra')) return 'monadinfra';
+    
+    return 'community';
   }
 }
 
