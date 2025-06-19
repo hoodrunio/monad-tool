@@ -2,7 +2,7 @@
 // Orchestrates log processing, database storage, and caching for real-time analytics
 
 import { EventEmitter } from 'events';
-import { MonadLogProcessor } from '../log-processor/enhanced-processor';
+import { FocusedLogProcessor } from '../log-processor/enhanced-processor';
 import { MonadClickHouseClient, ClickHouseConfig } from '../database/clickhouse-client';
 import { MonadRedisClient, RedisConfig } from '../cache/redis-client';
 import { 
@@ -36,7 +36,7 @@ export interface IngestionMetrics {
 }
 
 export class DataIngestionService extends EventEmitter {
-  private logProcessor: MonadLogProcessor;
+  private logProcessor: FocusedLogProcessor;
   private clickhouseClient: MonadClickHouseClient;
   private redisClient: MonadRedisClient;
   private config: IngestionConfig;
@@ -49,7 +49,7 @@ export class DataIngestionService extends EventEmitter {
   constructor(config: IngestionConfig) {
     super();
     this.config = config;
-    this.logProcessor = new MonadLogProcessor(config.processing);
+    this.logProcessor = new FocusedLogProcessor();
     this.clickhouseClient = new MonadClickHouseClient(config.clickhouse);
     this.redisClient = new MonadRedisClient(config.redis);
     

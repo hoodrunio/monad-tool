@@ -393,20 +393,167 @@ export const EventTypeMapping: Record<string, EventType> = {
   'txpool updating committed block': EventType.TXPOOL_UPDATED
 };
 
-export const GeographicRegionMapping: Record<string, string> = {
-  'sgp': 'Singapore',
-  'jfk': 'New York JFK',
-  'fra': 'Frankfurt',
-  'pit': 'Pittsburgh', 
-  'cdg': 'Paris CDG'
-};
+// =============================================
+// SEPARATE VALIDATOR METRICS TYPES (NEW)
+// =============================================
 
-export const ProviderMapping: Record<string, string> = {
-  'mf': 'monadinfra',
-  'monadinfra': 'monadinfra',
-  'quantnode': 'quantnode',
-  'node3tech': 'node3tech',
-  'brightlystake': 'brightlystake',
-  'go2pro': 'go2pro',
-  'liquify': 'liquify'
-}; 
+export interface BlockProposalEvent {
+  timestamp: Date;
+  validatorId: string;
+  seqNum: number;
+  roundNumber: number;
+  epochNumber: number;
+  status: 'proposed' | 'skipped';
+  numTx: number;
+  blockId?: string;
+  
+  // Infrastructure data
+  validatorDns: string;
+  geographicRegion: string;
+  infrastructureProvider: string;
+  
+  // Processing metadata
+  ingestionId: string;
+}
+
+export interface QCParticipationEvent {
+  timestamp: Date;
+  validatorId: string;
+  seqNum: number;
+  roundNumber: number;
+  epochNumber: number;
+  participated: boolean;
+  validatorIndex: number;
+  
+  // QC metadata
+  qcId: string;
+  totalValidators: number;
+  participatingValidators: number;
+  participationRate: number;
+  
+  // Infrastructure data
+  validatorDns: string;
+  geographicRegion: string;
+  infrastructureProvider: string;
+  
+  // Processing metadata
+  ingestionId: string;
+}
+
+export interface SeparateValidatorMetrics {
+  hour: Date;
+  validatorId: string;
+  
+  // Metric 1: Block Proposal Ratio
+  blocksProposed: number;
+  blocksSkipped: number;
+  blockProposalRatio: number;
+  
+  // Metric 2: QC Participation Rate
+  qcParticipations: number;
+  totalBlocksWithQc: number;
+  qcParticipationRate: number;
+  
+  // Metric 3: Combined Uptime Summary
+  uptimeSummary: number;
+  
+  // Infrastructure metadata
+  geographicRegion: string;
+  infrastructureProvider: string;
+  validatorDns: string;
+}
+
+// =============================================
+// ENHANCED PROCESSING INTERFACES
+// =============================================
+
+export interface EnhancedLogProcessingResult extends LogProcessingResult {
+  blockProposalEvents: BlockProposalEvent[];
+  qcParticipationEvents: QCParticipationEvent[];
+  separateMetrics: SeparateValidatorMetrics[];
+}
+
+export interface SeparateMetricsProcessor {
+  processLedgerEvents(logs: RawLog[]): BlockProposalEvent[];
+  processBFTEvents(logs: RawLog[]): QCParticipationEvent[];
+  extractBlockProposal(logEntry: any): BlockProposalEvent | null;
+  extractQCParticipation(logEntry: any, validatorRegistry?: Map<number, string>): QCParticipationEvent[];
+  calculateSeparateMetrics(
+    blockProposals: BlockProposalEvent[], 
+    qcParticipations: QCParticipationEvent[]
+  ): SeparateValidatorMetrics[];
+}
+
+export interface QCBitVecParser {
+  parseBitVec(bitVecString: string): number[];
+  extractValidatorParticipation(
+    qcData: any, 
+    seqNum: number, 
+    validatorRegistry?: Map<number, string>
+  ): QCParticipationEvent[];
+  mapIndexToValidatorId(index: number, epoch?: number): string;
+}
+
+// =============================================
+// LEDGER EVENT PROCESSING TYPES  
+// =============================================
+
+export interface LedgerProposedBlockEvent {
+  message: 'proposed_block';
+  round: string;
+  seq_num: string;
+  epoch: string;
+  author: string;
+  num_tx: string;
+  block_id?: string;
+}
+
+export interface LedgerSkippedBlockEvent {
+  message: 'skipped_block';
+  round: string;
+  author: string;
+  epoch?: string;
+}
+
+export type LedgerBlockEvent = LedgerProposedBlockEvent | LedgerSkippedBlockEvent;
+
+// =============================================
+// BFT QC PROCESSING TYPES
+// =============================================
+
+export interface BFTQCCommitEvent {
+  message: 'try committing blocks using qc';
+  qc: string; // Contains QC data with BitVec
+  seq_num?: string;
+  round: string;
+  epoch: string;
+}
+
+export interface ParsedQCData {
+  signerBits: number[];
+  round: number;
+  epoch: number;
+  seqNum?: number;
+  totalValidators: number;
+  participatingValidators: number;
+}
+
+// =============================================
+// VALIDATOR REGISTRY INTEGRATION
+// =============================================
+
+export interface ValidatorRegistryEntry {
+  nodeId: string;
+  validatorId: string;
+  position: number;
+  stake: number;
+  isActive: boolean;
+  epoch: number;
+}
+
+export interface ValidatorMappingService {
+  getValidatorByPosition(position: number, epoch?: number): ValidatorRegistryEntry | null;
+  getPositionByValidatorId(validatorId: string, epoch?: number): number | null;
+  updateEpochMapping(epoch: number, validators: ValidatorRegistryEntry[]): void;
+  getCurrentEpochValidators(): ValidatorRegistryEntry[];
+} 
