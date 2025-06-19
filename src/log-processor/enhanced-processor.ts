@@ -15,15 +15,18 @@ import {
 } from './types';
 
 import { ValidatorInfoService, CompleteValidatorInfo } from '../services/validator-info-service';
+import { MonadClickHouseClient } from '../database/clickhouse-client';
 import { logger } from '../utils/logger';
 
 export class FocusedLogProcessor {
   private validatorInfoService: ValidatorInfoService;
+  private clickhouseClient: MonadClickHouseClient | null = null;
   private validatorRegistry: Map<number, ValidatorRegistryEntry> = new Map();
   private isInitialized: boolean = false;
 
-  constructor() {
+  constructor(clickhouseClient?: MonadClickHouseClient) {
     this.validatorInfoService = new ValidatorInfoService();
+    this.clickhouseClient = clickhouseClient || null;
   }
 
   async initialize(): Promise<void> {
@@ -355,24 +358,14 @@ export class FocusedLogProcessor {
   async insertBlockProposals(events: BlockProposalEvent[]): Promise<void> {
     if (events.length === 0) return;
 
-    const rows = events.map(event => ({
-      timestamp: event.timestamp.toISOString(),
-      validator_id: event.validatorId,
-      seq_num: event.seqNum,
-      round: event.roundNumber,
-      epoch: event.epochNumber,
-      status: event.status,
-      num_tx: event.numTx,
-      block_id: event.blockId || null,
-      provider: event.infrastructureProvider,
-      location: event.geographicRegion,
-      ingestion_id: event.ingestionId
-    }));
+    if (!this.clickhouseClient) {
+      logger.warn('💾 No ClickHouse client available, skipping block proposal insertion');
+      return;
+    }
 
     try {
-      // Insert into ClickHouse
-      logger.info(`💾 Inserting ${rows.length} block proposal events`);
-      // Implementation would insert into block_proposals table
+      await this.clickhouseClient.insertBlockProposals(events);
+      logger.info(`💾 Successfully inserted ${events.length} block proposal events`);
     } catch (error) {
       logger.error('Failed to insert block proposals:', error);
       throw error;
@@ -382,27 +375,14 @@ export class FocusedLogProcessor {
   async insertQCParticipations(events: QCParticipationEvent[]): Promise<void> {
     if (events.length === 0) return;
 
-    const rows = events.map(event => ({
-      timestamp: event.timestamp.toISOString(),
-      seq_num: event.seqNum,
-      round: event.roundNumber,
-      epoch: event.epochNumber,
-      validator_id: event.validatorId,
-      validator_index: event.validatorIndex,
-      participated: event.participated ? 1 : 0,
-      qc_id: event.qcId,
-      total_validators: event.totalValidators,
-      participating_validators: event.participatingValidators,
-      participation_rate: event.participationRate,
-      provider: event.infrastructureProvider,
-      location: event.geographicRegion,
-      ingestion_id: event.ingestionId
-    }));
+    if (!this.clickhouseClient) {
+      logger.warn('💾 No ClickHouse client available, skipping QC participation insertion');
+      return;
+    }
 
     try {
-      // Insert into ClickHouse
-      logger.info(`💾 Inserting ${rows.length} QC participation events`);
-      // Implementation would insert into qc_participation table
+      await this.clickhouseClient.insertQCParticipations(events);
+      logger.info(`💾 Successfully inserted ${events.length} QC participation events`);
     } catch (error) {
       logger.error('Failed to insert QC participations:', error);
       throw error;

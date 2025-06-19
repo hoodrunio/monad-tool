@@ -2,7 +2,7 @@
 // High-performance database client with connection pooling and query optimization
 
 import { createClient, ClickHouseClient } from '@clickhouse/client';
-import { ConsensusEvent, LedgerEvent, QCParticipationData, ValidatorInfrastructure } from '../log-processor/types';
+import { ConsensusEvent, LedgerEvent, QCParticipationData, ValidatorInfrastructure, BlockProposalEvent, QCParticipationEvent } from '../log-processor/types';
 
 export interface ClickHouseConfig {
   host: string;
@@ -151,7 +151,62 @@ export class MonadClickHouseClient {
       ) ENGINE = ReplacingMergeTree(updated_at)
       PARTITION BY epoch
       ORDER BY (node_id, epoch)
-      TTL toDateTime(updated_at) + INTERVAL 7 DAY`
+      TTL toDateTime(updated_at) + INTERVAL 7 DAY`,
+
+      `CREATE TABLE IF NOT EXISTS block_proposals (
+        timestamp DateTime64(3, 'UTC'),
+        validator_id String,
+        seq_num UInt64,
+        round UInt64,
+        epoch UInt64,
+        
+        -- Proposal status: proposed or skipped
+        status Enum8('proposed' = 1, 'skipped' = 2),
+        num_tx UInt32 DEFAULT 0,
+        block_id Nullable(String),
+        
+        -- Infrastructure data (from validator registry)
+        provider LowCardinality(String) DEFAULT 'unknown',
+        location LowCardinality(String) DEFAULT 'unknown',
+        
+        -- Processing metadata
+        ingestion_id UUID DEFAULT generateUUIDv4(),
+        processed_at DateTime64(3, 'UTC') DEFAULT now()
+      ) ENGINE = MergeTree()
+      PARTITION BY toYYYYMM(timestamp)
+      ORDER BY (seq_num, validator_id)
+      TTL toDateTime(timestamp) + INTERVAL 30 DAY
+      SETTINGS index_granularity = 8192`,
+
+      `CREATE TABLE IF NOT EXISTS qc_participation (
+        timestamp DateTime64(3, 'UTC'),
+        seq_num UInt64,
+        round UInt64,
+        epoch UInt64,
+        validator_id String,
+        validator_index UInt32,
+        
+        -- Participation: 1 = participated, 0 = did not participate
+        participated UInt8,
+        
+        -- QC metadata
+        qc_id String,
+        total_validators UInt16,
+        participating_validators UInt16,
+        participation_rate Float32,
+        
+        -- Infrastructure data (from validator registry)
+        provider LowCardinality(String) DEFAULT 'unknown',
+        location LowCardinality(String) DEFAULT 'unknown',
+        
+        -- Processing metadata
+        ingestion_id UUID DEFAULT generateUUIDv4(),
+        processed_at DateTime64(3, 'UTC') DEFAULT now()
+      ) ENGINE = MergeTree()
+      PARTITION BY toYYYYMM(timestamp)
+      ORDER BY (seq_num, validator_id)
+      TTL toDateTime(timestamp) + INTERVAL 30 DAY
+      SETTINGS index_granularity = 8192`
     ];
   }
 
@@ -281,6 +336,73 @@ export class MonadClickHouseClient {
       values: data,
       format: 'JSONEachRow'
     });
+  }
+
+  // =============================================
+  // NEW FOCUSED INSERTION METHODS
+  // =============================================
+
+  async insertBlockProposals(events: BlockProposalEvent[]): Promise<void> {
+    if (events.length === 0) return;
+
+    const data = events.map(event => ({
+      timestamp: this.formatTimestamp(event.timestamp),
+      validator_id: event.validatorId,
+      seq_num: event.seqNum,
+      round: event.roundNumber,
+      epoch: event.epochNumber,
+      status: event.status,
+      num_tx: event.numTx,
+      block_id: event.blockId || null,
+      provider: event.infrastructureProvider,
+      location: event.geographicRegion,
+      ingestion_id: event.ingestionId
+    }));
+
+    try {
+      await this.client.insert({
+        table: 'block_proposals',
+        values: data,
+        format: 'JSONEachRow'
+      });
+      console.log(`💾 Successfully inserted ${data.length} block proposal events`);
+    } catch (error) {
+      console.error('Failed to insert block proposals:', error);
+      throw error;
+    }
+  }
+
+  async insertQCParticipations(events: QCParticipationEvent[]): Promise<void> {
+    if (events.length === 0) return;
+
+    const data = events.map(event => ({
+      timestamp: this.formatTimestamp(event.timestamp),
+      seq_num: event.seqNum,
+      round: event.roundNumber,
+      epoch: event.epochNumber,
+      validator_id: event.validatorId,
+      validator_index: event.validatorIndex,
+      participated: event.participated ? 1 : 0,
+      qc_id: event.qcId,
+      total_validators: event.totalValidators,
+      participating_validators: event.participatingValidators,
+      participation_rate: event.participationRate,
+      provider: event.infrastructureProvider,
+      location: event.geographicRegion,
+      ingestion_id: event.ingestionId
+    }));
+
+    try {
+      await this.client.insert({
+        table: 'qc_participation',
+        values: data,
+        format: 'JSONEachRow'
+      });
+      console.log(`💾 Successfully inserted ${data.length} QC participation events`);
+    } catch (error) {
+      console.error('Failed to insert QC participations:', error);
+      throw error;
+    }
   }
 
   // =============================================
