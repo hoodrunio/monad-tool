@@ -24,7 +24,7 @@ import { createNetworkRoutes } from './routes/network';
 import { createEventRoutes } from './routes/events';
 import { createAdminRoutes } from './routes/admin';
 import { createQueryPerformanceRoutes } from './routes/query-performance';
-import dnsAnalyticsRoutes from './routes/dns-analytics';
+import { createDNSAnalyticsRoutes } from './routes/dns-analytics';
 
 export interface APIServerConfig {
   port: number;
@@ -197,7 +197,7 @@ export class AnalyticsAPIServer {
     this.app.use('/', createEventRoutes(this.eventController));
     this.app.use('/', createAdminRoutes(this.adminController));
     this.app.use('/', createQueryPerformanceRoutes(this.queryPerformanceController));
-    this.app.use('/api/dns', dnsAnalyticsRoutes);
+    this.app.use('/', createDNSAnalyticsRoutes(this.clickhouseClient, this.redisClient));
 
     // API documentation endpoint
     this.app.get('/api/docs', this.handleApiDocs.bind(this));

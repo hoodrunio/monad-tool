@@ -14,7 +14,7 @@ import 'dotenv/config';
 import { ValidatorRegistry } from '../src/services/validator-registry';
 import { DNSMapperService } from '../src/services/dns-mapper';
 import { ValidatorInfoService } from '../src/services/validator-info-service';
-import { MonadLogProcessor } from '../src/log-processor/enhanced-processor';
+import { FocusedLogProcessor } from '../src/log-processor/enhanced-processor';
 import { ProcessingConfig } from '../src/log-processor/types';
 
 async function demonstrateNewArchitecture() {
@@ -123,15 +123,15 @@ async function demonstrateNewArchitecture() {
     preProcessDNS: true // New flag for DNS pre-processing
   };
   
-  const logProcessor = new MonadLogProcessor(config);
+  const logProcessor = new FocusedLogProcessor();
   await logProcessor.initialize();
   
+  // Get stats from processor
+  const processorStats = logProcessor.getProcessingStats();
+  console.log('📊 Processor Stats:', processorStats);
+  
   console.log('   ✅ Log processor initialized with pre-cached validator information');
-  console.log('   🚀 Ready for high-performance log processing without DNS lookups');
-  
-  const processorStats = logProcessor.getValidatorStats();
-  console.log(`   📊 Processor has access to ${processorStats.totalValidators} validators`);
-  
+  console.log('   🚀 Ready for high-performance log processing without DNS lookups');  
   console.log('');
 
   // =============================================

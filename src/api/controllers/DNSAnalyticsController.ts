@@ -1,5 +1,4 @@
 import { Request, Response } from 'express';
-import { MonadLogProcessor } from '../../log-processor/enhanced-processor';
 import { 
   EnhancedDNSProcessor,
   createEnhancedDNSProcessor,
@@ -7,27 +6,33 @@ import {
   DNSParseResult
 } from '../../utils';
 import { ProcessingConfig } from '../../log-processor/types';
+import { FocusedLogProcessor } from '../../log-processor/enhanced-processor';
+import { MonadClickHouseClient } from '../../database/clickhouse-client';
+import { MonadRedisClient } from '../../cache/redis-client';
 
 export class DNSAnalyticsController {
   private enhancedDnsProcessor: EnhancedDNSProcessor;
-  private logProcessor: MonadLogProcessor;
+  private logProcessor: FocusedLogProcessor;
 
-  constructor() {
+  constructor(
+    private clickhouseClient: MonadClickHouseClient,
+    private redisClient: MonadRedisClient
+  ) {
     this.enhancedDnsProcessor = createEnhancedDNSProcessor();
     
-    // Default config for log processor
-    const config: ProcessingConfig = {
-      batchSize: 1000,
+    // Initialize the log processor for DNS analytics
+    const config = {
+      batchSize: 100,
       batchTimeoutMs: 5000,
       maxRetries: 3,
       enableQCParsing: true,
-      enableVoteChainAnalysis: true,
+      enableVoteChainAnalysis: false,
       enableGeographicIntelligence: true,
       parallelProcessing: true,
-      maxConcurrentBatches: 4
+      maxConcurrentBatches: 2
     };
-    
-    this.logProcessor = new MonadLogProcessor(config);
+
+    this.logProcessor = new FocusedLogProcessor();
   }
 
   /**

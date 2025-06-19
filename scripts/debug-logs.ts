@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { MonadLogProcessor } from '../src/log-processor/enhanced-processor';
+import { FocusedLogProcessor } from '../src/log-processor/enhanced-processor';
 import { EventTypeMapping } from '../src/log-processor/types';
 import fs from 'fs';
 import readline from 'readline';
@@ -19,7 +19,7 @@ async function debugLogProcessing() {
     maxConcurrentBatches: 5
   };
   
-  const processor = new MonadLogProcessor(config);
+  const processor = new FocusedLogProcessor();
   
   // Check what event types we're looking for
   console.log('📋 Available event type mappings:');
