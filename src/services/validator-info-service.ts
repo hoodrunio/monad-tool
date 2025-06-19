@@ -113,21 +113,29 @@ export class ValidatorInfoService {
   }
 
   /**
-   * Pre-process all validator DNS information for optimal performance
+   * Pre-process all validator DNS information
+   * Enhanced to avoid unnecessary DNS processing when data is cached in database
    */
   async preProcessAll(): Promise<void> {
     console.log('🔄 Pre-processing all validator DNS information...');
     
     // First, load existing cache from database
+    const loadStartTime = Date.now();
     await this.loadCacheFromDatabase();
+    console.log(`📥 Cache loading completed in ${Date.now() - loadStartTime}ms`);
     
     const allValidators = this.validatorRegistry.getAllValidators();
+    console.log(`📋 Total validators to check: ${allValidators.length}`);
+    
+    // Check for validators that need DNS processing
     const uncachedValidators = allValidators.filter(v => 
       !this.hasValidCachedInfo(v.node_id)
     );
+    
+    console.log(`📊 Cache analysis: ${this.validatorInfoCache.size} cached, ${uncachedValidators.length} need processing`);
 
     if (uncachedValidators.length === 0) {
-      console.log('✅ All validators already cached, skipping DNS processing');
+      console.log('✅ All validators already cached in database, skipping DNS processing');
       // Even if all are cached, check for partial data that needs retry
       await this.retryPartialGeolocationData();
       return;
@@ -136,11 +144,15 @@ export class ValidatorInfoService {
     console.log(`🔄 Processing DNS for ${uncachedValidators.length} uncached validators...`);
     const nodeIds = uncachedValidators.map(v => v.node_id);
     
-    // Process DNS information in batches
+    // Process DNS information in batches only for uncached validators
+    const dnsStartTime = Date.now();
     await this.dnsMapper.batchProcessValidatorDNS(nodeIds);
+    console.log(`🌐 DNS processing completed in ${Date.now() - dnsStartTime}ms`);
     
-    // Build cache and save to database
-    await this.buildValidatorInfoCache();
+    // Build cache and save to database only for newly processed validators
+    const cacheStartTime = Date.now();
+    await this.buildValidatorInfoCacheForValidators(nodeIds);
+    console.log(`💾 Cache building completed in ${Date.now() - cacheStartTime}ms`);
     
     // Check for partial geolocation data and retry
     await this.retryPartialGeolocationData();
@@ -398,6 +410,7 @@ export class ValidatorInfoService {
 
   /**
    * Load validator info cache from database
+   * Enhanced to also populate DNS mapper cache to avoid redundant processing
    */
   private async loadCacheFromDatabase(): Promise<void> {
     try {
@@ -408,10 +421,11 @@ export class ValidatorInfoService {
           country, city, datacenter, is_active, last_seen, 
           processed_count, updated_at
         FROM validator_info_cache
-        WHERE updated_at >= now() - INTERVAL ${this.CACHE_TTL_MS / 1000} SECOND
+        WHERE updated_at >= now() - INTERVAL ${Math.floor(this.CACHE_TTL_MS / 1000)} SECOND
       `;
       
       const results = await this.clickhouse.executeRawQuery(query);
+      let populatedDnsMapperCount = 0;
       
       for (const row of results) {
         const info: CompleteValidatorInfo = {
@@ -435,9 +449,39 @@ export class ValidatorInfoService {
         
         const cacheKey = this.getCacheKey(row.node_id, row.epoch);
         this.validatorInfoCache.set(cacheKey, info);
+        
+        // Also populate DNS mapper cache if we have DNS info
+        if (info.dnsHost && info.dnsAddress && info.provider && info.provider !== 'unknown') {
+          try {
+            const dnsInfo = {
+              nodeId: info.nodeId,
+              dnsAddress: info.dnsAddress,
+              dnsHost: info.dnsHost,
+              dnsPort: info.dnsPort || 8000,
+              provider: info.provider,
+              location: info.location || 'unknown',
+              country: info.country || 'unknown',
+              city: info.city || 'unknown',
+              datacenter: info.datacenter || 'unknown',
+              lastUpdated: new Date(row.updated_at),
+              lastSeen: info.lastSeen,
+              processedCount: info.processedCount || 1
+            };
+            
+            // Populate DNS mapper's internal cache to avoid reprocessing
+            // This is a bit of a hack, but necessary to prevent redundant DNS processing
+            (this.dnsMapper as any).validatorDNSInfo?.set(info.nodeId, dnsInfo);
+            populatedDnsMapperCount++;
+          } catch (error) {
+            console.warn(`Failed to populate DNS mapper cache for ${row.node_id}:`, error);
+          }
+        }
       }
       
       console.log(`📥 Loaded ${results.length} validator entries from database cache`);
+      if (populatedDnsMapperCount > 0) {
+        console.log(`🔄 Populated DNS mapper cache with ${populatedDnsMapperCount} entries to avoid reprocessing`);
+      }
     } catch (error) {
       console.warn('Failed to load cache from database:', error);
       // Continue without database cache
@@ -445,12 +489,60 @@ export class ValidatorInfoService {
   }
 
   /**
+   * Check if cached validator info is still valid
+   * Enhanced to be more lenient with database-cached data
+   */
+  private isCacheValid(info: CompleteValidatorInfo): boolean {
+    if (!info.lastSeen) {
+      // If no lastSeen timestamp, consider valid for basic validator info
+      return info.nodeId !== undefined && info.stake !== undefined;
+    }
+    
+    const now = new Date();
+    const ageMs = now.getTime() - info.lastSeen.getTime();
+    
+    // Be more lenient for database-cached data
+    // Only consider invalid if very old (7 days) or missing critical DNS info
+    const maxAgeMs = 7 * 24 * 60 * 60 * 1000; // 7 days instead of 12 hours
+    
+    // If data is newer than 7 days, it's valid
+    if (ageMs < maxAgeMs) {
+      return true;
+    }
+    
+    // If data is older than 7 days but has DNS info, still consider valid
+    // (DNS info doesn't change frequently)
+    if (info.dnsAddress && info.provider && info.provider !== 'unknown') {
+      return true;
+    }
+    
+    // Only consider invalid if very old AND missing DNS info
+    return false;
+  }
+
+  /**
    * Check if validator has valid cached info
+   * Enhanced with better logging for debugging
    */
   private hasValidCachedInfo(nodeId: string, epoch?: number): boolean {
     const cacheKey = this.getCacheKey(nodeId, epoch);
     const cached = this.validatorInfoCache.get(cacheKey);
-    return cached !== undefined && this.isCacheValid(cached);
+    
+    if (!cached) {
+      return false;
+    }
+    
+    const isValid = this.isCacheValid(cached);
+    
+    // Debug logging to understand cache behavior
+    if (!isValid) {
+      const ageHours = cached.lastSeen ? 
+        Math.round((Date.now() - cached.lastSeen.getTime()) / (1000 * 60 * 60)) : 
+        'unknown';
+      console.log(`🔍 Cache invalid for ${nodeId.substring(0, 8)}: age=${ageHours}h, dns=${cached.dnsAddress ? 'yes' : 'no'}, provider=${cached.provider}`);
+    }
+    
+    return isValid;
   }
 
   /**
@@ -526,6 +618,41 @@ export class ValidatorInfoService {
   }
 
   /**
+   * Build validator info cache for specific validators (optimization for partial cache updates)
+   */
+  private async buildValidatorInfoCacheForValidators(nodeIds: string[]): Promise<void> {
+    if (nodeIds.length === 0) return;
+    
+    console.log(`🔄 Building validator info cache for ${nodeIds.length} specific validators...`);
+    
+    const batchSize = 10;
+    const newValidatorInfos: CompleteValidatorInfo[] = [];
+    
+    for (let i = 0; i < nodeIds.length; i += batchSize) {
+      const batch = nodeIds.slice(i, i + batchSize);
+      const batchPromises = batch.map(nodeId => this.buildCompleteValidatorInfo(nodeId));
+      
+      const results = await Promise.allSettled(batchPromises);
+      
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled' && result.value) {
+          const nodeId = batch[index];
+          const cacheKey = this.getCacheKey(nodeId);
+          this.validatorInfoCache.set(cacheKey, result.value);
+          newValidatorInfos.push(result.value);
+        }
+      });
+    }
+    
+    // Save new entries to database
+    if (newValidatorInfos.length > 0) {
+      await this.saveCacheToDatabase(newValidatorInfos);
+    }
+    
+    console.log(`✅ Built cache for ${newValidatorInfos.length}/${nodeIds.length} specific validators`);
+  }
+
+  /**
    * Format timestamp for ClickHouse
    */
   private formatTimestamp(date: Date): string {
@@ -539,16 +666,6 @@ export class ValidatorInfoService {
     const normalizedId = this.normalizeNodeId(nodeId);
     const epochPart = epoch || this.validatorRegistry.getCurrentEpoch();
     return `${normalizedId}:${epochPart}`;
-  }
-
-  /**
-   * Check if cached validator info is still valid
-   */
-  private isCacheValid(info: CompleteValidatorInfo): boolean {
-    if (!info.lastSeen) return true; // No expiry for non-DNS info
-    
-    const now = new Date();
-    return now.getTime() - info.lastSeen.getTime() < this.CACHE_TTL_MS;
   }
 
   /**
@@ -751,6 +868,100 @@ export class ValidatorInfoService {
       improved: improvedCount, 
       successful: successCount 
     };
+  }
+
+  /**
+   * Get detailed cache status for debugging
+   */
+  getCacheStatus(): {
+    totalCached: number;
+    validEntries: number;
+    expiredEntries: number;
+    entriesWithDns: number;
+    entriesWithoutDns: number;
+    avgAge: number;
+    oldestEntry: Date | null;
+    newestEntry: Date | null;
+  } {
+    let validEntries = 0;
+    let expiredEntries = 0;
+    let entriesWithDns = 0;
+    let entriesWithoutDns = 0;
+    let totalAge = 0;
+    let oldestEntry: Date | null = null;
+    let newestEntry: Date | null = null;
+
+    for (const [key, info] of this.validatorInfoCache.entries()) {
+      if (this.isCacheValid(info)) {
+        validEntries++;
+      } else {
+        expiredEntries++;
+      }
+
+      if (info.dnsAddress && info.provider && info.provider !== 'unknown') {
+        entriesWithDns++;
+      } else {
+        entriesWithoutDns++;
+      }
+
+      if (info.lastSeen) {
+        const entryAge = Date.now() - info.lastSeen.getTime();
+        totalAge += entryAge;
+
+        if (!oldestEntry || info.lastSeen < oldestEntry) {
+          oldestEntry = info.lastSeen;
+        }
+
+        if (!newestEntry || info.lastSeen > newestEntry) {
+          newestEntry = info.lastSeen;
+        }
+      }
+    }
+
+    const avgAge = this.validatorInfoCache.size > 0 ? totalAge / this.validatorInfoCache.size : 0;
+
+    return {
+      totalCached: this.validatorInfoCache.size,
+      validEntries,
+      expiredEntries,
+      entriesWithDns,
+      entriesWithoutDns,
+      avgAge: Math.round(avgAge / (1000 * 60 * 60)), // in hours
+      oldestEntry,
+      newestEntry
+    };
+  }
+
+  /**
+   * Force reload cache from database (useful for debugging)
+   */
+  async forceReloadFromDatabase(): Promise<void> {
+    console.log('🔄 Force reloading cache from database...');
+    
+    // Clear current cache
+    this.validatorInfoCache.clear();
+    
+    // Reload from database
+    await this.loadCacheFromDatabase();
+    
+    const status = this.getCacheStatus();
+    console.log(`✅ Force reload completed: ${status.totalCached} entries loaded, ${status.validEntries} valid, ${status.entriesWithDns} with DNS`);
+  }
+
+  /**
+   * Check if system should skip DNS processing (for startup optimization)
+   */
+  shouldSkipDnsProcessing(): boolean {
+    const status = this.getCacheStatus();
+    const totalValidators = this.validatorRegistry.getAllValidators().length;
+    
+    // Skip if we have valid cache for at least 80% of validators
+    const cacheCoverage = totalValidators > 0 ? (status.validEntries / totalValidators) * 100 : 0;
+    const shouldSkip = cacheCoverage >= 80;
+    
+    console.log(`📊 DNS processing decision: ${cacheCoverage.toFixed(1)}% cache coverage, ${shouldSkip ? 'SKIPPING' : 'PROCESSING'} DNS`);
+    
+    return shouldSkip;
   }
 }
 
