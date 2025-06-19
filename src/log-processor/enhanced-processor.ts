@@ -179,17 +179,17 @@ export class MonadLogProcessor {
       validatorId: baseEvent.validatorId,
       roundNumber: parseInt(fields.round) || 0,
       epochNumber: parseInt(fields.epoch) || 1,
-      blockNumber: fields.block_num ? parseInt(fields.block_num) : undefined,
+      blockNumber: fields.seq_num ? parseInt(fields.seq_num) : undefined,
       blockId: fields.block_id || undefined,
       parentVoteId: fields.parent_vote_id || undefined,
       parentRound: fields.parent_round ? parseInt(fields.parent_round) : undefined,
       nextLeaderId: fields.next_leader_id || undefined,
-      blockTimestampMs: fields.block_timestamp_ms ? parseInt(fields.block_timestamp_ms) : undefined,
+      blockTimestampMs: fields.block_ts_ms ? parseInt(fields.block_ts_ms) : undefined,
       processingTimestampMs: Date.now(),
-      processingDelayMs: 0,
-      transactionCount: fields.transaction_count ? parseInt(fields.transaction_count) : 0,
+      processingDelayMs: this.calculateProcessingDelay(fields),
+      transactionCount: fields.num_tx ? parseInt(fields.num_tx) : 0,
       stateRootAction: fields.state_root_action || undefined,
-      sequenceNumber: fields.sequence_number ? parseInt(fields.sequence_number) : undefined,
+      sequenceNumber: fields.seq_num ? parseInt(fields.seq_num) : undefined,
       isSuccessful: true,
       participantCount: fields.participant_count ? parseInt(fields.participant_count) : undefined,
       participationRate: fields.participation_rate ? parseFloat(fields.participation_rate) : undefined,
@@ -263,13 +263,13 @@ export class MonadLogProcessor {
       validatorId,
       roundNumber: parseInt(fields.round) || 0,
       epochNumber: parseInt(fields.epoch) || 1,
-      blockNumber: fields.block_num ? parseInt(fields.block_num) : undefined,
+      blockNumber: fields.seq_num ? parseInt(fields.seq_num) : undefined,
       parentRound: fields.parent_round ? parseInt(fields.parent_round) : undefined,
-      sequenceNumber: fields.sequence_number ? parseInt(fields.sequence_number) : undefined,
-      transactionCount: fields.transaction_count ? parseInt(fields.transaction_count) : 0,
-      blockTimestampMs: fields.block_timestamp_ms ? parseInt(fields.block_timestamp_ms) : Date.now(),
+      sequenceNumber: fields.seq_num ? parseInt(fields.seq_num) : undefined,
+      transactionCount: fields.num_tx ? parseInt(fields.num_tx) : 0,
+      blockTimestampMs: fields.block_ts_ms ? parseInt(fields.block_ts_ms) : Date.now(),
       processingTimestampMs: Date.now(),
-      processingDelayMs: 0,
+      processingDelayMs: this.calculateProcessingDelay(fields),
       
       // Enhanced fields using pre-cached information
       validatorDns: validatorInfo?.dnsAddress || '',
@@ -333,6 +333,14 @@ export class MonadLogProcessor {
     return target === 'ledger_tail' || target.includes('ledger');
   }
 
+  private calculateProcessingDelay(fields: any): number {
+    // Calculate delay between block timestamp and now timestamp if available
+    if (fields.block_ts_ms && fields.now_ts_ms) {
+      return parseInt(fields.now_ts_ms) - parseInt(fields.block_ts_ms);
+    }
+    return 0;
+  }
+
   private extractValidatorId(fields: any, target: string): string {
     // Try various field names based on log type
     return fields.author || 
@@ -344,7 +352,8 @@ export class MonadLogProcessor {
     
   private extractValidatorDns(fields: any): string | null {
     // Try to extract DNS from various fields
-    return fields.dns_address || 
+    return fields.author_dns || 
+           fields.dns_address || 
            fields.validator_dns || 
            fields.endpoint || 
            null;
