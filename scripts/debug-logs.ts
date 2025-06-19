@@ -166,25 +166,25 @@ async function debugLogProcessing() {
     if (testLogs.length > 0) {
       console.log(`\n🔬 Processing ${testLogs.length} test logs...`);
       
-      const result = await processor.processBatch(testLogs);
+      const result = await processor.processLogBatch(testLogs);
       
       console.log(`\n📊 Processing results:`);
-      console.log(`  Events generated: ${result.events.length}`);
-      console.log(`  QC participation data: ${result.qcParticipation.length}`);
+      console.log(`  Events generated: ${result.consensusEvents.length + result.ledgerEvents.length}`);
+      console.log(`  QC participation data: ${result.qcParticipationData.length}`);
       console.log(`  Validator infrastructure: ${result.validatorInfrastructure.length}`);
       console.log(`  Errors: ${result.errors.length}`);
       
       if (result.errors.length > 0) {
         console.log(`\n❌ Processing errors:`);
         result.errors.forEach((error, i) => {
-          console.log(`  ${i + 1}. ${error.error}`);
-          console.log(`     Log content: ${error.logContent.substring(0, 100)}...`);
+          console.log(`  ${i + 1}. ${error}`);
+          console.log(`     Log content: ${error.substring(0, 100)}...`);
         });
       }
       
-      if (result.events.length > 0) {
+      if (result.consensusEvents.length + result.ledgerEvents.length > 0) {
         console.log(`\n✅ Generated events:`);
-        result.events.forEach((event, i) => {
+        [...result.consensusEvents, ...result.ledgerEvents].forEach((event, i) => {
           console.log(`  ${i + 1}. ${event.eventType} - Validator: ${event.validatorId} - Round: ${event.roundNumber}`);
         });
       } else {
