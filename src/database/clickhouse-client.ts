@@ -121,7 +121,37 @@ export class MonadClickHouseClient {
       ) ENGINE = MergeTree()
       PARTITION BY toYYYYMM(timestamp)
       ORDER BY (timestamp, validator_id, event_type, round_number)
-      TTL toDateTime(timestamp) + INTERVAL 30 DAY`
+      TTL toDateTime(timestamp) + INTERVAL 30 DAY`,
+
+      `CREATE TABLE IF NOT EXISTS validator_info_cache (
+        node_id String,
+        epoch UInt32,
+        
+        -- From ValidatorRegistry
+        stake UInt64,
+        cert_pubkey String,
+        position UInt16,
+        
+        -- From DNSMapper
+        dns_address String,
+        dns_host String,
+        dns_port UInt16,
+        provider LowCardinality(String),
+        location String,
+        country LowCardinality(String),
+        city LowCardinality(String),
+        datacenter LowCardinality(String),
+        
+        -- Cache metadata
+        is_active UInt8 DEFAULT 1,
+        last_seen DateTime64(3, 'UTC'),
+        processed_count UInt32 DEFAULT 1,
+        created_at DateTime64(3, 'UTC') DEFAULT now(),
+        updated_at DateTime64(3, 'UTC') DEFAULT now()
+      ) ENGINE = ReplacingMergeTree(updated_at)
+      PARTITION BY epoch
+      ORDER BY (node_id, epoch)
+      TTL toDateTime(updated_at) + INTERVAL 7 DAY`
     ];
   }
 

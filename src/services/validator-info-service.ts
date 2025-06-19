@@ -1,5 +1,6 @@
 import { ValidatorRegistry, Validator } from './validator-registry';
 import { DNSMapperService, ValidatorDNSInfo, ValidatorDNSMapping } from './dns-mapper';
+import { MonadClickHouseClient, ClickHouseConfig } from '../database/clickhouse-client';
 
 export interface CompleteValidatorInfo {
   // From ValidatorRegistry
@@ -57,6 +58,7 @@ export interface ValidatorInfoStats {
 export class ValidatorInfoService {
   private validatorRegistry: ValidatorRegistry;
   private dnsMapper: DNSMapperService;
+  private clickhouse: MonadClickHouseClient;
   private validatorInfoCache: Map<string, CompleteValidatorInfo> = new Map();
   
   private isInitialized: boolean = false;
@@ -64,10 +66,25 @@ export class ValidatorInfoService {
   
   constructor(
     validatorRegistry?: ValidatorRegistry,
-    dnsMapper?: DNSMapperService
+    dnsMapper?: DNSMapperService,
+    clickhouse?: MonadClickHouseClient
   ) {
     this.validatorRegistry = validatorRegistry || new ValidatorRegistry();
     this.dnsMapper = dnsMapper || new DNSMapperService();
+    this.clickhouse = clickhouse || new MonadClickHouseClient(this.getDefaultClickHouseConfig());
+  }
+
+  private getDefaultClickHouseConfig(): ClickHouseConfig {
+    return {
+      host: process.env.CLICKHOUSE_HOST || 'localhost',
+      port: parseInt(process.env.CLICKHOUSE_PORT || '8123'),
+      username: process.env.CLICKHOUSE_USER || 'default',
+      password: process.env.CLICKHOUSE_PASSWORD || '',
+      database: process.env.CLICKHOUSE_DATABASE || 'monad_analytics',
+      max_open_connections: parseInt(process.env.CLICKHOUSE_MAX_CONNECTIONS || '10'),
+      max_query_timeout: parseInt(process.env.CLICKHOUSE_TIMEOUT || '30000'),
+      compression: process.env.CLICKHOUSE_COMPRESSION !== 'false'
+    };
   }
 
   /**
@@ -101,13 +118,26 @@ export class ValidatorInfoService {
   async preProcessAll(): Promise<void> {
     console.log('🔄 Pre-processing all validator DNS information...');
     
+    // First, load existing cache from database
+    await this.loadCacheFromDatabase();
+    
     const allValidators = this.validatorRegistry.getAllValidators();
-    const nodeIds = allValidators.map(v => v.node_id);
+    const uncachedValidators = allValidators.filter(v => 
+      !this.hasValidCachedInfo(v.node_id)
+    );
+
+    if (uncachedValidators.length === 0) {
+      console.log('✅ All validators already cached, skipping DNS processing');
+      return;
+    }
+
+    console.log(`🔄 Processing DNS for ${uncachedValidators.length} uncached validators...`);
+    const nodeIds = uncachedValidators.map(v => v.node_id);
     
     // Process DNS information in batches
     await this.dnsMapper.batchProcessValidatorDNS(nodeIds);
     
-    // Build cache
+    // Build cache and save to database
     await this.buildValidatorInfoCache();
     
     console.log('✅ Pre-processing completed');
@@ -362,6 +392,101 @@ export class ValidatorInfoService {
   }
 
   /**
+   * Load validator info cache from database
+   */
+  private async loadCacheFromDatabase(): Promise<void> {
+    try {
+      const query = `
+        SELECT 
+          node_id, epoch, stake, cert_pubkey, position,
+          dns_address, dns_host, dns_port, provider, location, 
+          country, city, datacenter, is_active, last_seen, 
+          processed_count, updated_at
+        FROM validator_info_cache
+        WHERE updated_at >= now() - INTERVAL ${this.CACHE_TTL_MS / 1000} SECOND
+      `;
+      
+      const results = await this.clickhouse.executeRawQuery(query);
+      
+      for (const row of results) {
+        const info: CompleteValidatorInfo = {
+          nodeId: row.node_id,
+          stake: row.stake,
+          cert_pubkey: row.cert_pubkey,
+          position: row.position,
+          epoch: row.epoch,
+          dnsAddress: row.dns_address,
+          dnsHost: row.dns_host,
+          dnsPort: row.dns_port,
+          provider: row.provider,
+          location: row.location,
+          country: row.country,
+          city: row.city,
+          datacenter: row.datacenter,
+          isActive: row.is_active === 1,
+          lastSeen: new Date(row.last_seen),
+          processedCount: row.processed_count
+        };
+        
+        const cacheKey = this.getCacheKey(row.node_id, row.epoch);
+        this.validatorInfoCache.set(cacheKey, info);
+      }
+      
+      console.log(`📥 Loaded ${results.length} validator entries from database cache`);
+    } catch (error) {
+      console.warn('Failed to load cache from database:', error);
+      // Continue without database cache
+    }
+  }
+
+  /**
+   * Check if validator has valid cached info
+   */
+  private hasValidCachedInfo(nodeId: string, epoch?: number): boolean {
+    const cacheKey = this.getCacheKey(nodeId, epoch);
+    const cached = this.validatorInfoCache.get(cacheKey);
+    return cached !== undefined && this.isCacheValid(cached);
+  }
+
+  /**
+   * Save validator info to database cache
+   */
+  private async saveCacheToDatabase(validatorInfos: CompleteValidatorInfo[]): Promise<void> {
+    if (validatorInfos.length === 0) return;
+
+    try {
+      const data = validatorInfos.map(info => ({
+        node_id: info.nodeId,
+        epoch: info.epoch,
+        stake: info.stake,
+        cert_pubkey: info.cert_pubkey,
+        position: info.position,
+        dns_address: info.dnsAddress || '',
+        dns_host: info.dnsHost || '',
+        dns_port: info.dnsPort || 8000,
+        provider: info.provider || 'unknown',
+        location: info.location || 'unknown',
+        country: info.country || 'unknown',
+        city: info.city || 'unknown',
+        datacenter: info.datacenter || 'unknown',
+        is_active: info.isActive ? 1 : 0,
+        last_seen: this.formatTimestamp(info.lastSeen || new Date()),
+        processed_count: info.processedCount || 1,
+        updated_at: this.formatTimestamp(new Date())
+      }));
+
+      // Use executeCommand to insert data since client is private
+      const insertQuery = `INSERT INTO validator_info_cache FORMAT JSONEachRow\n${data.map(row => JSON.stringify(row)).join('\n')}`;
+      await this.clickhouse.executeCommand(insertQuery);
+
+      console.log(`💾 Saved ${data.length} validator entries to database cache`);
+    } catch (error) {
+      console.warn('Failed to save cache to database:', error);
+      // Continue without database persistence
+    }
+  }
+
+  /**
    * Build validator info cache for all validators
    */
   private async buildValidatorInfoCache(): Promise<void> {
@@ -369,6 +494,7 @@ export class ValidatorInfoService {
     
     const allValidators = this.validatorRegistry.getAllValidators();
     const batchSize = 10;
+    const newValidatorInfos: CompleteValidatorInfo[] = [];
     
     for (let i = 0; i < allValidators.length; i += batchSize) {
       const batch = allValidators.slice(i, i + batchSize);
@@ -381,11 +507,24 @@ export class ValidatorInfoService {
           const validator = batch[index];
           const cacheKey = this.getCacheKey(validator.node_id);
           this.validatorInfoCache.set(cacheKey, result.value);
+          newValidatorInfos.push(result.value);
         }
       });
     }
     
+    // Save new entries to database
+    if (newValidatorInfos.length > 0) {
+      await this.saveCacheToDatabase(newValidatorInfos);
+    }
+    
     console.log(`✅ Built cache for ${this.validatorInfoCache.size} validators`);
+  }
+
+  /**
+   * Format timestamp for ClickHouse
+   */
+  private formatTimestamp(date: Date): string {
+    return date.toISOString().replace('T', ' ').replace('Z', '');
   }
 
   /**
