@@ -490,24 +490,75 @@ export class IntelligentDNSParser {
   private extractDatacenterFromISP(orgName: string): string {
     if (!orgName) return 'unknown';
     
+    const lowerOrg = orgName.toLowerCase();
+    
+    // Enhanced datacenter patterns with more comprehensive matching
     const dcPatterns = [
-      /amazon.*web.*services/i,
-      /google.*cloud/i,
-      /microsoft.*azure/i,
-      /digitalocean/i,
-      /linode/i,
-      /vultr/i,
-      /hetzner/i,
-      /ovh/i
+      // Major cloud providers
+      { pattern: /amazon.*web.*services|aws/i, name: 'aws' },
+      { pattern: /google.*cloud|gcp/i, name: 'google-cloud' },
+      { pattern: /microsoft.*azure|azure/i, name: 'azure' },
+      
+      // VPS/Cloud providers
+      { pattern: /digitalocean/i, name: 'digitalocean' },
+      { pattern: /linode/i, name: 'linode' },
+      { pattern: /vultr/i, name: 'vultr' },
+      { pattern: /hetzner/i, name: 'hetzner' },
+      { pattern: /ovh/i, name: 'ovh' },
+      { pattern: /scaleway/i, name: 'scaleway' },
+      { pattern: /oracle.*cloud/i, name: 'oracle-cloud' },
+      
+      // CDN/Edge providers
+      { pattern: /cloudflare/i, name: 'cloudflare' },
+      { pattern: /fastly/i, name: 'fastly' },
+      { pattern: /akamai/i, name: 'akamai' },
+      
+      // Hosting providers
+      { pattern: /godaddy/i, name: 'godaddy' },
+      { pattern: /hostgator/i, name: 'hostgator' },
+      { pattern: /bluehost/i, name: 'bluehost' },
+      { pattern: /siteground/i, name: 'siteground' },
+      
+      // Network/ISP providers commonly used for hosting
+      { pattern: /adguard/i, name: 'adguard' },
+      { pattern: /choopa/i, name: 'choopa-vultr' },
+      { pattern: /rackspace/i, name: 'rackspace' },
+      { pattern: /ibm.*cloud/i, name: 'ibm-cloud' },
+      { pattern: /alibaba.*cloud/i, name: 'alibaba-cloud' },
+      
+      // Regional providers
+      { pattern: /contabo/i, name: 'contabo' },
+      { pattern: /netcup/i, name: 'netcup' },
+      { pattern: /ionos/i, name: 'ionos' },
+      { pattern: /upcloud/i, name: 'upcloud' },
+      
+      // Dedicated server providers
+      { pattern: /leaseweb/i, name: 'leaseweb' },
+      { pattern: /servermania/i, name: 'servermania' },
+      { pattern: /quadranet/i, name: 'quadranet' }
     ];
     
-    for (const pattern of dcPatterns) {
-      if (pattern.test(orgName)) {
-        return orgName.toLowerCase();
+    // Check for known patterns first
+    for (const { pattern, name } of dcPatterns) {
+      if (pattern.test(lowerOrg)) {
+        return name;
       }
     }
     
-    return 'unknown';
+    // If no pattern matches, use the organization name directly
+    // Clean it up by removing common suffixes and making it lowercase
+    let cleanedName = orgName
+      .toLowerCase()
+      .replace(/\s+(limited|ltd|llc|inc|corp|corporation|gmbh|ag|sa|srl|bv)\b/gi, '')
+      .replace(/\s+/g, '-')
+      .trim();
+    
+    // If the cleaned name is too short or generic, keep the original
+    if (cleanedName.length < 3 || ['isp', 'hosting', 'network', 'internet'].includes(cleanedName)) {
+      cleanedName = orgName.toLowerCase().replace(/\s+/g, '-');
+    }
+    
+    return cleanedName;
   }
 
   /**
