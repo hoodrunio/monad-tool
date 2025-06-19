@@ -54,21 +54,26 @@ export enum EventType {
 // =============================================
 
 export interface QCParticipationData {
+  timestamp: Date;
+  roundNumber: number;
+  epochNumber: number;
+  participantCount: number;
+  participationRate: number;
+  validatorId: string;
+  qcId: string;
+  blockId: string;
+  processingLatencyMs: number;
+  // Additional fields for ClickHouse storage
   totalValidators: number;
   participatingValidators: number;
-  participationBitmap: string; // BitVec as string
-  participationRate: number;
-  validatorParticipation: Array<{
-    validatorId: string;
-    nodeId: string; // Actual validator address from registry
-    participated: boolean;
-    position: number;
-    stake: number; // Validator stake amount
-  }>;
+  participationBitmap: string;
   blsSignature: string;
   signatureVerificationTimeNs?: number;
   qcAssemblyTimeMs: number;
-  epoch?: number; // Track which epoch this QC data belongs to
+  validatorParticipation: Array<{
+    validatorId: string;
+    participated: boolean;
+  }>;
 }
 
 export interface QCData {
@@ -94,22 +99,22 @@ export interface SignerMap {
 // =============================================
 
 export interface VoteInfo {
-  id: string;
-  epoch: number;
-  round: number;
-  parentId?: string; // pid in logs
-  parentRound?: number; // pr in logs
+  validatorId: string;
+  voteType: string;
+  timestamp: Date;
+  successful: boolean;
+  processingDelayMs: number;
 }
 
 export interface VoteChain {
-  voteId: string;
-  round: number;
-  epoch: number;
-  parentVoteId?: string;
-  parentRound?: number;
-  nextLeaderId?: string;
-  validatorId: string;
-  timestamp: Date;
+  chainId: string;
+  roundNumber: number;
+  epochNumber: number;
+  votes: VoteInfo[];
+  startTime: Date;
+  endTime: Date;
+  totalVotes: number;
+  successfulVotes: number;
 }
 
 // =============================================
@@ -228,11 +233,15 @@ export type ParsedEvent = ConsensusEvent | LedgerEvent;
 // =============================================
 
 export interface LogProcessingResult {
-  events: ParsedEvent[];
-  qcParticipation: QCParticipationData[];
+  consensusEvents: ConsensusEvent[];
+  ledgerEvents: LedgerEvent[];
+  qcParticipationData: QCParticipationData[];
   voteChains: VoteChain[];
   validatorInfrastructure: ValidatorInfrastructure[];
-  errors: ProcessingError[];
+  errors: string[];
+  processingTimeMs: number;
+  processedLogs: number;
+  successfullyParsed: number;
 }
 
 export interface ProcessingError {
@@ -307,6 +316,7 @@ export interface ProcessingConfig {
   enableGeographicIntelligence: boolean;
   parallelProcessing: boolean;
   maxConcurrentBatches: number;
+  preProcessDNS?: boolean; // Optional DNS pre-processing flag
 }
 
 export interface GeographicMapping {

@@ -6,7 +6,6 @@ export interface Validator {
   stake: number;
   cert_pubkey: string;
   position: number;
-  dns_address?: string; // Adding DNS address mapping
 }
 
 export interface ValidatorSet {
@@ -20,20 +19,11 @@ export interface EpochInterval {
   validatorSetEpoch: number;
 }
 
-export interface DNSMapping {
-  node_id: string;
-  dns_address: string;
-  provider?: string;
-  location?: string;
-  last_updated: Date;
-}
-
 export class ValidatorRegistry {
   private validatorSets: Map<number, ValidatorSet> = new Map();
   private epochIntervals: EpochInterval[] = [];
   private currentEpoch: number = 1;
   private isInitialized: boolean = false;
-  private dnsMappings: Map<string, DNSMapping> = new Map(); // node_id -> DNS mapping
 
   constructor(private validatorsFilePath: string = 'validators/validators.toml') {}
 
@@ -46,7 +36,7 @@ export class ValidatorRegistry {
       await this.loadValidatorsFromToml();
       this.buildEpochIntervals();
       this.isInitialized = true;
-      console.log(`Validator registry initialized with ${this.validatorSets.size} epochs and ${this.epochIntervals.length} intervals`);
+      console.log(`✅ Validator registry initialized with ${this.validatorSets.size} epochs and ${this.epochIntervals.length} intervals`);
     } catch (error) {
       console.error('Failed to initialize validator registry:', error);
       throw error;
@@ -193,7 +183,6 @@ export class ValidatorRegistry {
   }
 
   setCurrentEpoch(epoch: number): void {
-    // No longer need to check if exact epoch exists - we resolve it
     this.currentEpoch = epoch;
   }
 
@@ -377,83 +366,7 @@ export class ValidatorRegistry {
     this.isInitialized = false;
     this.validatorSets.clear();
     this.epochIntervals = [];
-    this.dnsMappings.clear();
     await this.initialize();
-  }
-
-  // DNS Mapping Methods
-  
-  /**
-   * Get DNS address for a validator node ID
-   */
-  getValidatorDNS(nodeId: string): string | null {
-    const mapping = this.dnsMappings.get(this.normalizeValidatorId(nodeId));
-    return mapping ? mapping.dns_address : null;
-  }
-
-  /**
-   * Set DNS address for a validator node ID
-   */
-  setValidatorDNS(nodeId: string, dnsAddress: string, provider?: string, location?: string): void {
-    this.dnsMappings.set(this.normalizeValidatorId(nodeId), {
-      node_id: this.normalizeValidatorId(nodeId),
-      dns_address: dnsAddress,
-      provider,
-      location,
-      last_updated: new Date()
-    });
-  }
-
-  /**
-   * Get all DNS mappings
-   */
-  getAllDNSMappings(): DNSMapping[] {
-    return Array.from(this.dnsMappings.values());
-  }
-
-  /**
-   * Check if validator has known DNS mapping
-   */
-  hasValidatorDNS(nodeId: string): boolean {
-    return this.dnsMappings.has(this.normalizeValidatorId(nodeId));
-  }
-
-  /**
-   * Bulk update DNS mappings from external source
-   */
-  updateDNSMappings(mappings: DNSMapping[]): void {
-    for (const mapping of mappings) {
-      this.dnsMappings.set(this.normalizeValidatorId(mapping.node_id), {
-        ...mapping,
-        last_updated: new Date()
-      });
-    }
-  }
-
-  /**
-   * Get DNS mappings statistics
-   */
-  getDNSMappingStats(): {
-    totalMapped: number;
-    totalValidators: number;
-    coveragePercentage: number;
-    lastUpdated: Date | null;
-  } {
-    const totalValidators = this.getAllValidators().length;
-    const totalMapped = this.dnsMappings.size;
-    const mappings = Array.from(this.dnsMappings.values());
-    const lastUpdated = mappings.length > 0 
-      ? mappings.reduce((latest, mapping) => 
-          mapping.last_updated > latest ? mapping.last_updated : latest, 
-          mappings[0].last_updated)
-      : null;
-
-    return {
-      totalMapped,
-      totalValidators,
-      coveragePercentage: totalValidators > 0 ? (totalMapped / totalValidators) * 100 : 0,
-      lastUpdated
-    };
   }
 
   /**

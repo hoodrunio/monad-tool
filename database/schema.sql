@@ -189,6 +189,47 @@ ORDER BY validator_id
 SETTINGS index_granularity = 8192;
 
 -- =============================================
+-- 4A. VALIDATOR INFO CACHE TABLE (NEW)
+-- =============================================
+
+-- Pre-processed validator information for high-performance lookups
+CREATE TABLE validator_info_cache (
+    node_id String,
+    epoch UInt32,
+    
+    -- From ValidatorRegistry
+    stake UInt64,
+    cert_pubkey String,
+    position UInt16,
+    
+    -- From DNSMapper
+    dns_address String,
+    dns_host String,
+    dns_port UInt16,
+    provider LowCardinality(String),
+    location String,
+    country LowCardinality(String),
+    city LowCardinality(String),
+    datacenter LowCardinality(String),
+    
+    -- Cache metadata
+    is_active UInt8 DEFAULT 1,
+    last_seen DateTime64(3, 'UTC'),
+    processed_count UInt32 DEFAULT 1,
+    created_at DateTime64(3, 'UTC') DEFAULT now(),
+    updated_at DateTime64(3, 'UTC') DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY epoch
+ORDER BY (node_id, epoch)
+TTL toDateTime(updated_at) + INTERVAL 7 DAY
+SETTINGS index_granularity = 8192;
+
+-- Index for fast validator lookups
+ALTER TABLE validator_info_cache ADD INDEX idx_node_epoch (node_id, epoch) TYPE minmax GRANULARITY 1;
+ALTER TABLE validator_info_cache ADD INDEX idx_provider (provider, updated_at) TYPE minmax GRANULARITY 1;
+ALTER TABLE validator_info_cache ADD INDEX idx_location (country, city) TYPE minmax GRANULARITY 1;
+
+-- =============================================
 -- 5. PRE-AGGREGATED PERFORMANCE TABLES
 -- =============================================
 

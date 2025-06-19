@@ -136,7 +136,7 @@ export class DNSAnalyticsController {
    */
   async getNetworkTopology(req: Request, res: Response): Promise<void> {
     try {
-      const topology = await this.logProcessor.getNetworkTopology();
+      const topology = await this.enhancedDnsProcessor.analyzeNetworkTopology();
       
       if (!topology) {
         res.status(404).json({
@@ -166,15 +166,27 @@ export class DNSAnalyticsController {
    */
   async getCentralizationRisks(req: Request, res: Response): Promise<void> {
     try {
-      const risks = await this.logProcessor.getCentralizationRisks();
+      const topology = await this.enhancedDnsProcessor.analyzeNetworkTopology();
       
-      if (!risks) {
+      if (!topology) {
         res.status(404).json({
           success: false,
           error: 'Centralization risk data not available'
         });
         return;
       }
+
+      const risks = {
+        centralizationRisk: topology.centralizationRisk,
+        diversityScore: topology.diversityScore,
+        providerRisks: topology.providerMetrics,
+        riskFactors: {
+          providerConcentration: Object.values(topology.providerMetrics)
+            .reduce((max, metric) => Math.max(max, metric.riskScore), 0),
+          geographicConcentration: topology.centralizationRisk,
+          infrastructureDiversity: topology.diversityScore
+        }
+      };
 
       res.json({
         success: true,
@@ -286,7 +298,7 @@ export class DNSAnalyticsController {
    */
   async getDNSCacheStats(req: Request, res: Response): Promise<void> {
     try {
-      const cacheStats = this.logProcessor.getDNSCacheStats();
+      const cacheStats = this.enhancedDnsProcessor.getCacheStats();
       
       res.json({
         success: true,
@@ -401,7 +413,7 @@ export class DNSAnalyticsController {
    */
   async healthCheck(req: Request, res: Response): Promise<void> {
     try {
-      const cacheStats = this.logProcessor.getDNSCacheStats();
+      const cacheStats = this.enhancedDnsProcessor.getCacheStats();
       const isHealthy = cacheStats.totalEntries >= 0; // Basic health check
       
       res.json({

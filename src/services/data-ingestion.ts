@@ -213,47 +213,35 @@ export class DataIngestionService extends EventEmitter {
       console.log(`Processing batch ${batchId} with ${logs.length} logs`);
       
       // Process logs through the enhanced processor
-      const result = await this.logProcessor.processBatch(logs);
+      const result = await this.logProcessor.processLogBatch(logs);
       
       // Store consensus events
-      if (result.events.length > 0) {
-        // Separate consensus and ledger events based on event source/type mapping
-        const consensusEvents = result.events.filter(e => {
-          // Check if this is a ConsensusEvent by verifying required fields
-          return 'isSuccessful' in e && 'metadata' in e;
-        }) as any[]; // Cast to match database interface expectations
-        
-        const ledgerEvents = result.events.filter(e => {
-          // Check if this is a LedgerEvent by verifying it has blockTimestampMs as required field
-          return !('isSuccessful' in e) && 'blockTimestampMs' in e;
-        }) as any[]; // Cast to match database interface expectations
-        
-        if (consensusEvents.length > 0) {
-          try {
-            await this.clickhouseClient.insertValidatorEvents(consensusEvents);
-          } catch (error) {
-            console.error(`Failed to insert consensus events:`, error);
-            console.error(`Consensus events sample:`, JSON.stringify(consensusEvents.slice(0, 2), null, 2));
-          }
+      if (result.consensusEvents.length > 0) {
+        try {
+          await this.clickhouseClient.insertValidatorEvents(result.consensusEvents);
+        } catch (error) {
+          console.error(`Failed to insert consensus events:`, error);
+          console.error(`Consensus events sample:`, JSON.stringify(result.consensusEvents.slice(0, 2), null, 2));
         }
-        
-        if (ledgerEvents.length > 0) {
-          try {
-            await this.clickhouseClient.insertLedgerEvents(ledgerEvents);
-          } catch (error) {
-            console.error(`Failed to insert ledger events:`, error);
-            console.error(`Ledger events sample:`, JSON.stringify(ledgerEvents.slice(0, 2), null, 2));
-          }
+      }
+      
+      // Store ledger events
+      if (result.ledgerEvents.length > 0) {
+        try {
+          await this.clickhouseClient.insertLedgerEvents(result.ledgerEvents);
+        } catch (error) {
+          console.error(`Failed to insert ledger events:`, error);
+          console.error(`Ledger events sample:`, JSON.stringify(result.ledgerEvents.slice(0, 2), null, 2));
         }
       }
       
       // Store QC participation data if available
-      if (result.qcParticipation.length > 0) {
+      if (result.qcParticipationData.length > 0) {
         try {
-          await this.clickhouseClient.insertQCParticipation(result.qcParticipation);
+          await this.clickhouseClient.insertQCParticipation(result.qcParticipationData);
         } catch (error) {
           console.error(`Failed to insert QC participation data:`, error);
-          console.error(`QC data sample:`, JSON.stringify(result.qcParticipation.slice(0, 2), null, 2));
+          console.error(`QC data sample:`, JSON.stringify(result.qcParticipationData.slice(0, 2), null, 2));
         }
       }
       
@@ -268,7 +256,8 @@ export class DataIngestionService extends EventEmitter {
       }
       
       // Update cache invalidation patterns
-      await this.invalidateRelevantCache(result.events);
+      const allEvents = [...result.consensusEvents, ...result.ledgerEvents];
+      await this.invalidateRelevantCache(allEvents);
       
       // Update metrics
       const processingTime = Date.now() - startTime;
@@ -277,8 +266,8 @@ export class DataIngestionService extends EventEmitter {
       // Log any processing errors
       if (result.errors.length > 0) {
         console.warn(`Batch ${batchId} had ${result.errors.length} processing errors:`);
-        result.errors.forEach(error => {
-          console.warn(`  - ${error.error}`);
+        result.errors.forEach((error: string) => {
+          console.warn(`  - ${error}`);
         });
       }
       
@@ -286,14 +275,14 @@ export class DataIngestionService extends EventEmitter {
       this.emit('batchProcessed', {
         batchId,
         logsProcessed: logs.length,
-        eventsGenerated: result.events.length,
-        qcDataGenerated: result.qcParticipation.length,
+        eventsGenerated: result.consensusEvents.length + result.ledgerEvents.length,
+        qcDataGenerated: result.qcParticipationData.length,
         validatorInfraGenerated: result.validatorInfrastructure.length,
         processingTimeMs: processingTime,
         errorCount: result.errors.length
       });
       
-      console.log(`Batch ${batchId} processed successfully in ${processingTime}ms - Generated ${result.events.length} events`);
+      console.log(`Batch ${batchId} processed successfully in ${processingTime}ms - Generated ${result.consensusEvents.length + result.ledgerEvents.length} events`);
       
     } catch (error) {
       const processingTime = Date.now() - startTime;
