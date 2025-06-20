@@ -1,6 +1,7 @@
 -- Monad Validator Analytics - Refactored Materialized Views
 -- Focus: Separate Validator Metrics (Block Proposals + QC Participation)
 -- Removes dependency on generic validator_events table
+-- Updated to use validator_registry for authoritative provider/location data
 
 USE monad_analytics;
 
@@ -11,15 +12,15 @@ USE monad_analytics;
 -- Aggregate block proposal metrics by hour
 CREATE MATERIALIZED VIEW block_proposal_metrics_hourly_mv TO validator_metrics_hourly AS
 SELECT
-    toStartOfHour(timestamp) as hour,
-    validator_id,
+    toStartOfHour(bp.timestamp) as hour,
+    bp.validator_id,
     
     -- Metric 1: Block Proposal Ratio
-    COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
-    COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
+    COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as blocks_proposed,
+    COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END) as blocks_skipped,
     CASE 
-        WHEN (COUNT(CASE WHEN status = 'proposed' THEN 1 END) + COUNT(CASE WHEN status = 'skipped' THEN 1 END)) > 0 
-        THEN COUNT(CASE WHEN status = 'proposed' THEN 1 END) / (COUNT(CASE WHEN status = 'proposed' THEN 1 END) + COUNT(CASE WHEN status = 'skipped' THEN 1 END)) * 100 
+        WHEN (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) + COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END)) > 0 
+        THEN COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) / (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) + COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END)) * 100 
         ELSE 0 
     END as block_proposal_ratio,
     
@@ -31,18 +32,19 @@ SELECT
     -- Combined uptime score (will be calculated in final aggregation)
     0 as uptime_score,
     
-    -- Infrastructure metadata
-    any(provider) as provider,
-    any(location) as location
+    -- Infrastructure metadata from validator_registry
+    any(vr.provider) as provider,
+    any(vr.location) as location
 
-FROM block_proposals
-GROUP BY hour, validator_id;
+FROM block_proposals bp
+LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+GROUP BY hour, bp.validator_id;
 
 -- Aggregate QC participation metrics by hour  
 CREATE MATERIALIZED VIEW qc_participation_metrics_hourly_mv TO validator_metrics_hourly AS
 SELECT
-    toStartOfHour(timestamp) as hour,
-    validator_id,
+    toStartOfHour(qc.timestamp) as hour,
+    qc.validator_id,
     
     -- Block proposal metrics (will be filled by separate MV)
     0 as blocks_proposed,
@@ -50,23 +52,24 @@ SELECT
     0 as block_proposal_ratio,
     
     -- Metric 2: QC Participation Rate
-    COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
+    COUNT(CASE WHEN qc.participated = 1 THEN 1 END) as qc_participations,
     COUNT(*) as total_qc_opportunities,
     CASE 
         WHEN COUNT(*) > 0 
-        THEN COUNT(CASE WHEN participated = 1 THEN 1 END) / COUNT(*) * 100 
+        THEN COUNT(CASE WHEN qc.participated = 1 THEN 1 END) / COUNT(*) * 100 
         ELSE 0 
     END as qc_participation_rate,
     
     -- Combined uptime score (will be calculated in final aggregation)
     0 as uptime_score,
     
-    -- Infrastructure metadata
-    any(provider) as provider,
-    any(location) as location
+    -- Infrastructure metadata from validator_registry
+    any(vr.provider) as provider,
+    any(vr.location) as location
 
-FROM qc_participation
-GROUP BY hour, validator_id;
+FROM qc_participation qc
+LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
+GROUP BY hour, qc.validator_id;
 
 -- =============================================
 -- 2. VALIDATOR RANKINGS CACHE (Real-time)
@@ -95,7 +98,7 @@ SELECT
     SUM(blocks_skipped) as total_blocks_skipped,
     SUM(qc_participations) as total_qc_participations,
     
-    -- Infrastructure
+    -- Infrastructure (now comes from validator_registry via the hourly metrics)
     any(provider) as provider,
     any(location) as location,
     
@@ -129,7 +132,7 @@ SELECT
     SUM(blocks_skipped) as total_blocks_skipped,
     SUM(qc_participations) as total_qc_participations,
     
-    -- Infrastructure
+    -- Infrastructure (now comes from validator_registry via the hourly metrics)
     any(provider) as provider,
     any(location) as location,
     
@@ -163,7 +166,7 @@ SELECT
     SUM(blocks_skipped) as total_blocks_skipped,
     SUM(qc_participations) as total_qc_participations,
     
-    -- Infrastructure
+    -- Infrastructure (now comes from validator_registry via the hourly metrics)
     any(provider) as provider,
     any(location) as location,
     
@@ -180,40 +183,41 @@ GROUP BY validator_id;
 
 CREATE MATERIALIZED VIEW network_health_hourly_mv TO network_health_hourly AS
 SELECT
-    toStartOfHour(timestamp) as hour,
+    toStartOfHour(qc.timestamp) as hour,
     
     -- Consensus health (from QC participation data)
-    COUNT(DISTINCT round) as total_rounds,
-    COUNT(DISTINCT CASE WHEN participation_rate >= 67 THEN round END) as successful_rounds,
-    AVG(participation_rate) as consensus_efficiency,
-    AVG(participation_rate) as avg_qc_participation,
+    COUNT(DISTINCT qc.round) as total_rounds,
+    COUNT(DISTINCT CASE WHEN qc.participation_rate >= 67 THEN qc.round END) as successful_rounds,
+    AVG(qc.participation_rate) as consensus_efficiency,
+    AVG(qc.participation_rate) as avg_qc_participation,
     
     -- Block production (from block proposal data)
-    COUNT(DISTINCT seq_num) as total_blocks,
+    COUNT(DISTINCT qc.seq_num) as total_blocks,
     0 as total_proposals, -- Will be filled by block proposals
     0 as total_skips,     -- Will be filled by block proposals  
     0 as proposal_success_rate, -- Will be calculated
     
     -- Network participation
-    COUNT(DISTINCT validator_id) as active_validators,
+    COUNT(DISTINCT qc.validator_id) as active_validators,
     0 as total_registered_validators, -- Will be filled from registry
     0 as validator_participation_rate, -- Will be calculated
     
-    -- Geographic distribution
-    COUNT(DISTINCT location) as active_locations,
-    COUNT(DISTINCT provider) as active_providers,
+    -- Geographic distribution (from validator_registry)
+    COUNT(DISTINCT vr.location) as active_locations,
+    COUNT(DISTINCT vr.provider) as active_providers,
     
     -- Performance metrics (aggregated by hour, not individual event timing)
     COUNT(*) / 3600 as events_per_second, -- Events per second average for the hour
-    AVG(participation_rate) as avg_participation_efficiency
+    AVG(qc.participation_rate) as avg_participation_efficiency
 
-FROM qc_participation
+FROM qc_participation qc
+LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
 GROUP BY hour;
 
 -- Supplement network health with block proposal data
 CREATE MATERIALIZED VIEW network_health_proposals_mv TO network_health_hourly AS
 SELECT
-    toStartOfHour(timestamp) as hour,
+    toStartOfHour(bp.timestamp) as hour,
     
     -- Consensus health (will be filled by QC data)
     0 as total_rounds,
@@ -222,29 +226,30 @@ SELECT
     0 as avg_qc_participation,
     
     -- Block production
-    COUNT(DISTINCT seq_num) as total_blocks,
-    COUNT(CASE WHEN status = 'proposed' THEN 1 END) as total_proposals,
-    COUNT(CASE WHEN status = 'skipped' THEN 1 END) as total_skips,
+    COUNT(DISTINCT bp.seq_num) as total_blocks,
+    COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as total_proposals,
+    COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END) as total_skips,
     CASE 
-        WHEN (COUNT(CASE WHEN status = 'proposed' THEN 1 END) + COUNT(CASE WHEN status = 'skipped' THEN 1 END)) > 0
-        THEN COUNT(CASE WHEN status = 'proposed' THEN 1 END) / (COUNT(CASE WHEN status = 'proposed' THEN 1 END) + COUNT(CASE WHEN status = 'skipped' THEN 1 END)) * 100
+        WHEN (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) + COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END)) > 0
+        THEN COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) / (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) + COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END)) * 100
         ELSE 0
     END as proposal_success_rate,
     
     -- Network participation
-    COUNT(DISTINCT validator_id) as active_validators,
+    COUNT(DISTINCT bp.validator_id) as active_validators,
     0 as total_registered_validators,
     0 as validator_participation_rate,
     
-    -- Geographic distribution  
-    COUNT(DISTINCT location) as active_locations,
-    COUNT(DISTINCT provider) as active_providers,
+    -- Geographic distribution (from validator_registry)
+    COUNT(DISTINCT vr.location) as active_locations,
+    COUNT(DISTINCT vr.provider) as active_providers,
     
     -- Performance metrics (block production rate, matching table schema)
     COUNT(*) / 3600 as events_per_second, -- Blocks per second average for the hour
-    AVG(CASE WHEN status = 'proposed' THEN 100.0 ELSE 0.0 END) as avg_participation_efficiency
+    AVG(CASE WHEN bp.status = 'proposed' THEN 100.0 ELSE 0.0 END) as avg_participation_efficiency
 
-FROM block_proposals  
+FROM block_proposals bp
+LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
 GROUP BY hour;
 
 -- =============================================
@@ -254,53 +259,55 @@ GROUP BY hour;
 -- Geographic metrics from block proposals
 CREATE MATERIALIZED VIEW geographic_block_metrics_mv TO geographic_metrics_hourly AS
 SELECT
-    toStartOfHour(timestamp) as hour,
-    location,
-    provider,
+    toStartOfHour(bp.timestamp) as hour,
+    vr.location,
+    vr.provider,
     
     -- Validator counts
-    COUNT(DISTINCT validator_id) as active_validators,
-    COUNT(DISTINCT validator_id) as total_validators, -- Same for now
+    COUNT(DISTINCT bp.validator_id) as active_validators,
+    COUNT(DISTINCT bp.validator_id) as total_validators, -- Same for now
     
     -- Performance metrics (block proposals only)
     AVG(CASE 
-        WHEN status = 'proposed' THEN 100.0 
+        WHEN bp.status = 'proposed' THEN 100.0 
         ELSE 0.0 
     END) as avg_block_proposal_ratio,
     0 as avg_qc_participation_rate, -- Will be filled by QC metrics
     0 as avg_uptime_score, -- Will be calculated
     
     -- Activity metrics
-    COUNT(CASE WHEN status = 'proposed' THEN 1 END) as total_block_proposals,
+    COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as total_block_proposals,
     0 as total_qc_participations -- Will be filled by QC metrics
 
-FROM block_proposals
-WHERE location != 'unknown'
-GROUP BY hour, location, provider;
+FROM block_proposals bp
+LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+WHERE vr.location != 'unknown' AND vr.location IS NOT NULL
+GROUP BY hour, vr.location, vr.provider;
 
 -- Geographic metrics from QC participation
 CREATE MATERIALIZED VIEW geographic_qc_metrics_mv TO geographic_metrics_hourly AS
 SELECT
-    toStartOfHour(timestamp) as hour,
-    location,
-    provider,
+    toStartOfHour(qc.timestamp) as hour,
+    vr.location,
+    vr.provider,
     
     -- Validator counts
-    COUNT(DISTINCT validator_id) as active_validators,
-    COUNT(DISTINCT validator_id) as total_validators,
+    COUNT(DISTINCT qc.validator_id) as active_validators,
+    COUNT(DISTINCT qc.validator_id) as total_validators,
     
     -- Performance metrics (QC participation only)
     0 as avg_block_proposal_ratio, -- Will be filled by block metrics
-    AVG(CASE WHEN participated = 1 THEN 100.0 ELSE 0.0 END) as avg_qc_participation_rate,
+    AVG(CASE WHEN qc.participated = 1 THEN 100.0 ELSE 0.0 END) as avg_qc_participation_rate,
     0 as avg_uptime_score, -- Will be calculated
     
     -- Activity metrics
     0 as total_block_proposals, -- Will be filled by block metrics
-    COUNT(CASE WHEN participated = 1 THEN 1 END) as total_qc_participations
+    COUNT(CASE WHEN qc.participated = 1 THEN 1 END) as total_qc_participations
 
-FROM qc_participation
-WHERE location != 'unknown'
-GROUP BY hour, location, provider;
+FROM qc_participation qc
+LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
+WHERE vr.location != 'unknown' AND vr.location IS NOT NULL
+GROUP BY hour, vr.location, vr.provider;
 
 -- =============================================
 -- 5. PERFORMANCE MONITORING VIEWS
@@ -327,7 +334,7 @@ SELECT
     SUM(qc_participations) as total_qc_participations_24h,
     SUM(total_qc_opportunities) as total_qc_opportunities_24h,
     
-    -- Infrastructure
+    -- Infrastructure (now comes from validator_registry via the hourly metrics)
     any(provider) as provider,
     any(location) as location,
     
@@ -415,10 +422,10 @@ FROM network_health_summary;
 -- 7. MATERIALIZED VIEW COMMENTS
 -- =============================================
 
-ALTER TABLE validator_metrics_hourly MODIFY COMMENT 'Hourly aggregated validator metrics (block proposals + QC participation)';
-ALTER TABLE validator_rankings_cache MODIFY COMMENT 'Pre-computed validator rankings for fast API responses';
-ALTER TABLE network_health_hourly MODIFY COMMENT 'Network-wide health metrics aggregated hourly';
-ALTER TABLE geographic_metrics_hourly MODIFY COMMENT 'Geographic distribution and performance analytics';
+ALTER TABLE validator_metrics_hourly MODIFY COMMENT 'Hourly aggregated validator metrics (block proposals + QC participation) with authoritative provider/location data from validator_registry';
+ALTER TABLE validator_rankings_cache MODIFY COMMENT 'Pre-computed validator rankings for fast API responses with correct provider mapping';
+ALTER TABLE network_health_hourly MODIFY COMMENT 'Network-wide health metrics aggregated hourly with geographic data from validator_registry';
+ALTER TABLE geographic_metrics_hourly MODIFY COMMENT 'Geographic distribution and performance analytics using validator_registry for location data';
 
 -- =============================================
 -- 8. SYSTEM OPTIMIZATION
