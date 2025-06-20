@@ -15,6 +15,7 @@ export class GeolocationService implements IGeolocationService {
   private cacheHits = 0;
   private cacheMisses = 0;
   private apiCalls = 0;
+  private batchApiCalls = 0;
   private errors = 0;
   
   constructor(
@@ -126,6 +127,86 @@ export class GeolocationService implements IGeolocationService {
     
     return results;
   }
+
+  /**
+   * EFFICIENT BATCH PROCESSING using ip-api.com batch API
+   * 
+   * This method is ideal for validator initialization as it can process
+   * up to 100 IPs per request, dramatically reducing API calls and time.
+   * 
+   * Example: 169 validators = 2 batch requests instead of 169 individual requests
+   */
+  async getLocationsBatch(ips: string[]): Promise<Map<string, GeolocationData>> {
+    console.log(`🚀 Starting batch geolocation for ${ips.length} IPs...`);
+    
+    const results = new Map<string, GeolocationData>();
+    const validIps: string[] = [];
+    
+    // Filter valid IPs and check cache
+    for (const ip of ips) {
+      this.totalRequests++;
+      
+      if (!this.isValidIp(ip)) {
+        this.errors++;
+        continue;
+      }
+      
+      // Check cache first
+      const cached = this.cache.get(ip);
+      if (cached) {
+        this.cacheHits++;
+        results.set(ip, cached);
+      } else {
+        this.cacheMisses++;
+        validIps.push(ip);
+      }
+    }
+    
+    console.log(`📊 Cache check: ${results.size} hits, ${validIps.length} need lookup`);
+    
+    if (validIps.length === 0) {
+      console.log('✅ All IPs found in cache, no API calls needed');
+      return results;
+    }
+    
+    // Use batch API for remaining IPs
+    try {
+      // Check if provider supports batch (IpApiProvider does)
+      if ('getLocationsBatch' in this.provider) {
+        console.log('📡 Using ip-api.com batch API for efficient processing...');
+        
+        const batchResults = await (this.provider as any).getLocationsBatch(validIps);
+        this.batchApiCalls++;
+        
+        // Process batch results
+        batchResults.forEach((response: any, ip: string) => {
+          if (response.success && response.data) {
+            // Cache the successful result
+            this.cache.set(ip, response.data);
+            results.set(ip, response.data);
+          } else {
+            this.errors++;
+            console.warn(`Failed to get location for ${ip}: ${response.error}`);
+          }
+        });
+        
+        console.log(`✅ Batch processing complete: ${batchResults.size} results processed`);
+        
+      } else {
+        // Fallback to sequential processing
+        console.warn('⚠️ Provider does not support batch API, falling back to sequential processing');
+        const sequentialResults = await this.getLocationsForIps(validIps);
+        sequentialResults.forEach((data, ip) => results.set(ip, data));
+      }
+      
+    } catch (error) {
+      console.error('❌ Batch geolocation failed:', error);
+      this.errors++;
+    }
+    
+    console.log(`🎉 Batch geolocation complete: ${results.size}/${ips.length} successful`);
+    return results;
+  }
   
   getStats(): GeolocationStats {
     const providerStats = this.provider.getStats();
@@ -135,7 +216,7 @@ export class GeolocationService implements IGeolocationService {
       totalRequests: this.totalRequests,
       cacheHits: this.cacheHits,
       cacheMisses: this.cacheMisses,
-      apiCalls: this.apiCalls,
+      apiCalls: this.apiCalls + this.batchApiCalls,
       errors: this.errors,
       rateLimitHits: providerStats.rateLimitHits,
       avgResponseTime: providerStats.avgResponseTime,
@@ -173,6 +254,7 @@ export class GeolocationService implements IGeolocationService {
     this.cacheHits = 0;
     this.cacheMisses = 0;
     this.apiCalls = 0;
+    this.batchApiCalls = 0;
     this.errors = 0;
     this.provider.resetStats();
   }
@@ -186,6 +268,7 @@ export class GeolocationService implements IGeolocationService {
     avgResponseTime: number;
     cacheEfficiency: string;
     rateLimitUtilization: number;
+    batchEfficiency: string;
   } {
     const stats = this.getStats();
     const errorRate = this.totalRequests > 0 ? (this.errors / this.totalRequests) * 100 : 0;
@@ -196,6 +279,11 @@ export class GeolocationService implements IGeolocationService {
     else if (stats.hitRate >= 70) cacheEfficiency = 'fair';
     else cacheEfficiency = 'poor';
     
+    let batchEfficiency: string;
+    if (this.batchApiCalls > this.apiCalls) batchEfficiency = 'excellent';
+    else if (this.batchApiCalls > 0) batchEfficiency = 'good';
+    else batchEfficiency = 'not-used';
+    
     // Estimate rate limit utilization (requests per minute)
     const rateLimitUtilization = (this.apiCalls / this.config.rateLimitConfig.requestsPerMinute) * 100;
     
@@ -204,7 +292,8 @@ export class GeolocationService implements IGeolocationService {
       errorRate,
       avgResponseTime: stats.avgResponseTime,
       cacheEfficiency,
-      rateLimitUtilization: Math.min(rateLimitUtilization, 100)
+      rateLimitUtilization: Math.min(rateLimitUtilization, 100),
+      batchEfficiency
     };
   }
 } 

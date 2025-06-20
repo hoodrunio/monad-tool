@@ -184,6 +184,20 @@ export class DatabaseValidatorInitializer {
     // Initialize the ValidatorService
     await this.validatorService.initialize();
 
+    // Use efficient batch processing for location data
+    logger.info('🚀 Using efficient batch processing for validator locations...');
+    const locationService = (this.validatorService as any).locationService;
+    
+    if (locationService && 'processAllValidatorLocationsBatch' in locationService) {
+      logger.info('📡 Using ip-api.com batch API for maximum efficiency...');
+      
+      const batchResult = await locationService.processAllValidatorLocationsBatch();
+      logger.info(`✅ Batch processing complete: ${batchResult.successful}/${batchResult.processed} validators processed in ${batchResult.timeMs}ms`);
+    } else {
+      logger.info('⚠️ Falling back to regular location processing...');
+      await this.validatorService.processAllValidatorLocations();
+    }
+
     // Get all validators from the service
     const allValidators = await this.validatorService.getAllValidators();
     logger.info(`📋 Found ${allValidators.length} validators to process`);
@@ -193,7 +207,7 @@ export class DatabaseValidatorInitializer {
     }
 
     // Batch process validators for database insertion
-    const batchSize = 10;
+    const batchSize = 50;
     const batches = [];
     
     for (let i = 0; i < allValidators.length; i += batchSize) {

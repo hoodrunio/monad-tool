@@ -142,7 +142,7 @@ export class ValidatorLocationService implements IValidatorLocationService {
     
     const mappings = this.locationMapper.getAllMappings();
     const results: LocationProcessResult[] = [];
-    const batchSize = this.config.batchSize;
+    const batchSize = 50;
     
     console.log(`📋 Processing ${mappings.length} validators in batches of ${batchSize}`);
     
