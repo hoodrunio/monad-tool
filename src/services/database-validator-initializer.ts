@@ -19,6 +19,7 @@ export interface ValidatorDatabaseRecord {
   dns_address: string;
   dns_host: string;
   dns_port: number;
+  validator_name: string;
   provider: string;
   location: string;
   country: string;
@@ -283,6 +284,7 @@ export class DatabaseValidatorInitializer {
       dns_address: this.escapeString(validator.location?.dnsAddress || ''),
       dns_host: this.escapeString(validator.location?.dnsAddress ? validator.location.dnsAddress.split(':')[0] || '' : ''),
       dns_port: validator.location?.dnsAddress ? parseInt(validator.location.dnsAddress.split(':')[1] || '8000') : 8000,
+      validator_name: this.escapeString(validator.location?.validatorName || 'unknown'),
       provider: this.escapeString(validator.location?.isp || 'unknown'),
       location: this.escapeString(validator.location ? `${validator.location.city || 'unknown'}, ${validator.location.country || 'unknown'}` : 'unknown'),
       country: this.escapeString(validator.location?.country || 'unknown'),
@@ -295,14 +297,14 @@ export class DatabaseValidatorInitializer {
       // Use proper parameterized insertion with escaped values
       const values = data.map(d => 
         `('${d.validator_id}', '${d.node_id}', ${d.epoch}, ${d.stake}, ${d.position}, ${d.is_active}, ` +
-        `'${d.dns_address}', '${d.dns_host}', ${d.dns_port}, '${d.provider}', '${d.location}', ` +
+        `'${d.dns_address}', '${d.dns_host}', ${d.dns_port}, '${d.validator_name}', '${d.provider}', '${d.location}', ` +
         `'${d.country}', '${d.datacenter}', '${d.first_seen}', '${d.last_updated}')`
       ).join(',');
 
       const insertQuery = `
         INSERT INTO validator_registry 
         (validator_id, node_id, epoch, stake, position, is_active, dns_address, dns_host, dns_port, 
-         provider, location, country, datacenter, first_seen, last_updated)
+         validator_name, provider, location, country, datacenter, first_seen, last_updated)
         VALUES ${values}
       `;
 

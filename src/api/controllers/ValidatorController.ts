@@ -123,6 +123,7 @@ export class ValidatorController {
           COUNT(CASE WHEN b.status = 'proposed' THEN 1 END) as successful_proposals,
           COUNT(CASE WHEN b.status = 'skipped' THEN 1 END) as skipped_proposals,
           (COUNT(CASE WHEN b.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio,
+          COALESCE(vr.validator_name, 'unknown') as validator_name,
           COALESCE(vr.provider, 'unknown') as provider,
           COALESCE(vr.location, 'unknown') as location,
           MIN(b.timestamp) as first_seen,
@@ -131,7 +132,7 @@ export class ValidatorController {
         LEFT JOIN validator_registry vr ON vr.validator_id = b.validator_id AND vr.is_active = 1
         WHERE b.validator_id = '${validatorId}'
           AND b.timestamp >= now() - INTERVAL ${timeWindow}
-        GROUP BY b.validator_id, vr.provider, vr.location
+        GROUP BY b.validator_id, vr.validator_name, vr.provider, vr.location
       `;
 
       // Get QC participation metrics
@@ -191,6 +192,7 @@ export class ValidatorController {
           }
         },
         infrastructure: {
+          validator_name: blockData?.validator_name || 'unknown',
           provider: blockData?.provider || 'unknown',
           location: blockData?.location || 'unknown'
         },
@@ -374,6 +376,7 @@ export class ValidatorController {
         COALESCE(b.blocks_skipped, 0) as blocks_skipped,
         COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
         COALESCE(q.qc_participations, 0) as qc_participations,
+        COALESCE(vr.validator_name, 'unknown') as validator_name,
         COALESCE(vr.provider, 'unknown') as provider,
         COALESCE(vr.location, 'unknown') as location
       FROM block_metrics b
@@ -404,6 +407,7 @@ export class ValidatorController {
         qc_participations: parseInt(r.qc_participations || 0)
       },
       infrastructure: {
+        validator_name: r.validator_name || 'unknown',
         provider: r.provider || 'unknown',
         location: r.location || 'unknown'
       }
@@ -537,6 +541,7 @@ export class ValidatorController {
         COALESCE(b.blocks_skipped, 0) as blocks_skipped,
         COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
         COALESCE(q.qc_participations, 0) as qc_participations,
+        COALESCE(vr.validator_name, 'unknown') as validator_name,
         COALESCE(vr.provider, 'unknown') as provider,
         COALESCE(vr.location, 'unknown') as location
       FROM block_metrics b
@@ -564,6 +569,7 @@ export class ValidatorController {
         qc_participations: parseInt(v.qc_participations || 0)
       },
       infrastructure: {
+        validator_name: v.validator_name || 'unknown',
         provider: v.provider || 'unknown',
         location: v.location || 'unknown'
       }

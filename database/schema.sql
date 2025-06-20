@@ -48,6 +48,11 @@ CREATE TABLE validator_registry (
     dns_address String DEFAULT '',
     dns_host String DEFAULT '',
     dns_port UInt16 DEFAULT 8000,
+    
+    -- Validator identification (extracted from domain)
+    validator_name LowCardinality(String) DEFAULT 'unknown',
+    
+    -- ISP/hosting provider (from geolocation)
     provider LowCardinality(String) DEFAULT 'unknown',
     location LowCardinality(String) DEFAULT 'unknown',
     country LowCardinality(String) DEFAULT 'unknown',
@@ -78,6 +83,7 @@ CREATE TABLE block_proposals (
     block_id Nullable(String),
     
     -- Infrastructure data (from validator registry)
+    validator_name LowCardinality(String) DEFAULT 'unknown',
     provider LowCardinality(String) DEFAULT 'unknown',
     location LowCardinality(String) DEFAULT 'unknown',
     
@@ -117,6 +123,7 @@ CREATE TABLE qc_participation (
     participation_rate Float32,
     
     -- Infrastructure data (from validator registry)
+    validator_name LowCardinality(String) DEFAULT 'unknown',
     provider LowCardinality(String) DEFAULT 'unknown',
     location LowCardinality(String) DEFAULT 'unknown',
     
@@ -235,6 +242,7 @@ CREATE TABLE validator_rankings_cache (
     total_qc_participations UInt32,
     
     -- Infrastructure
+    validator_name LowCardinality(String),
     provider LowCardinality(String),
     location LowCardinality(String),
     

@@ -12,11 +12,13 @@ import {
 import { TomlLocationMapper } from './mappers/TomlLocationMapper';
 import { DnsService } from '../dns/DnsService';
 import { GeolocationService } from '../geolocation/GeolocationService';
+import { DomainExtractor } from '../dns/DomainExtractor';
 
 export class ValidatorLocationService implements IValidatorLocationService {
   private readonly locationMapper: ILocationMapper;
   private readonly dnsService: IDnsService;
   private readonly geolocationService: IGeolocationService;
+  private readonly domainExtractor: DomainExtractor;
   private readonly config: ValidatorLocationServiceConfig;
   
   private validatorLocations: Map<string, ValidatorLocation> = new Map();
@@ -47,6 +49,7 @@ export class ValidatorLocationService implements IValidatorLocationService {
     this.locationMapper = locationMapper || new TomlLocationMapper(this.config.tomlFilePath);
     this.dnsService = dnsService || new DnsService();
     this.geolocationService = geolocationService || new GeolocationService();
+    this.domainExtractor = new DomainExtractor();
   }
   
   async initialize(): Promise<void> {
@@ -373,11 +376,15 @@ export class ValidatorLocationService implements IValidatorLocationService {
   }
   
   private createBasicValidatorLocation(mapping: ValidatorMapping): ValidatorLocation {
+    // Extract validator name from hostname
+    const validatorName = this.domainExtractor.extractValidatorName(mapping.hostname);
+    
     return {
       nodeId: mapping.nodeId,
       dnsAddress: mapping.dnsAddress,
       hostname: mapping.hostname,
       port: mapping.port,
+      validatorName,
       lastUpdated: new Date()
     };
   }

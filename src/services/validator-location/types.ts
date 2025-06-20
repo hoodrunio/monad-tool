@@ -10,6 +10,7 @@ export interface ValidatorLocation {
   dnsAddress: string;
   hostname: string;
   port: number;
+  validatorName?: string;
   ip?: string;
   country?: string;
   region?: string;
