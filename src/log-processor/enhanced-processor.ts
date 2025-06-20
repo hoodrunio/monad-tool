@@ -21,6 +21,8 @@ export class FocusedLogProcessor {
   private validatorService: ValidatorService;
   private clickhouseClient: MonadClickHouseClient | null = null;
   private validatorRegistry: Map<number, ValidatorRegistryEntry> = new Map();
+  // Add reverse mapping for BitVec index to validator position
+  private bitVecIndexToPosition: Map<number, number> = new Map();
   private isInitialized: boolean = false;
 
   constructor(clickhouseClient?: MonadClickHouseClient) {
@@ -32,9 +34,8 @@ export class FocusedLogProcessor {
     if (!this.isInitialized) {
       logger.info('🔧 Initializing Focused Log Processor...');
       
-      await this.validatorService.initialize();
-      await this.loadValidatorRegistry();
-      
+      // Initialize both services but avoid double initialization
+      await this.validatorService.initialize();      
       this.isInitialized = true;
       logger.info('✅ Focused processor initialized with validator registry');
     }
@@ -54,7 +55,6 @@ export class FocusedLogProcessor {
 
     // Extract validator infrastructure data once
     const validatorIds = new Set<string>();
-    const validatorInfoMap = new Map<string, CompleteValidator>();
 
     for (const log of logs) {
       try {
@@ -72,7 +72,7 @@ export class FocusedLogProcessor {
 
         // Process BFT logs for QC participation
         if (this.isConsensusTarget(log.target)) {
-          const qcEvents = this.extractQCParticipation(log, fields);
+          const qcEvents = this.extractQCParticipation(log, fields, errors);
           if (qcEvents.length > 0) {
             qcParticipationEvents.push(...qcEvents);
             qcEvents.forEach(event => validatorIds.add(event.validatorId));
@@ -84,15 +84,19 @@ export class FocusedLogProcessor {
     }
 
     // Batch fetch validator infrastructure info
+    let validatorInfoMap = new Map<string, CompleteValidator>();
     if (validatorIds.size > 0) {
-      const batchInfo = await this.validatorService.getValidators(Array.from(validatorIds));
-      validatorInfoMap.clear();
-      batchInfo.forEach((validator, id) => validatorInfoMap.set(id, validator));
+      try {
+        validatorInfoMap = await this.validatorService.getValidators(Array.from(validatorIds));
+      } catch (error) {
+        errors.push(`Error fetching validator info: ${error}`);
+        logger.error('Failed to fetch validator infrastructure info:', error);
+      }
     }
 
     // Enhance events with infrastructure data
-    this.enhanceBlockProposalEvents(blockProposalEvents, validatorInfoMap);
-    this.enhanceQCParticipationEvents(qcParticipationEvents, validatorInfoMap);
+    this.enhanceEventsWithInfrastructure(blockProposalEvents, validatorInfoMap);
+    this.enhanceEventsWithInfrastructure(qcParticipationEvents, validatorInfoMap);
 
     const processingTime = Date.now() - startTime;
 
@@ -138,7 +142,7 @@ export class FocusedLogProcessor {
         numTx: parseInt(fields.num_tx) || 0,
         blockId: fields.block_id || undefined,
         
-        // Infrastructure will be populated by enhanceBlockProposalEvents
+        // Infrastructure will be populated by enhanceEventsWithInfrastructure
         validatorDns: '',
         geographicRegion: 'unknown',
         infrastructureProvider: 'unknown',
@@ -152,14 +156,14 @@ export class FocusedLogProcessor {
       return {
         timestamp: new Date(log.timestamp),
         validatorId: this.normalizeValidatorId(fields.author || 'unknown'),
-        seqNum: 0, // May not be available for skipped blocks
+        seqNum: parseInt(fields.seq_num) || 0, // Try to extract actual seq_num
         roundNumber: parseInt(fields.round) || 0,
         epochNumber: parseInt(fields.epoch) || 1,
         status: 'skipped',
         numTx: 0,
         blockId: undefined,
         
-        // Infrastructure will be populated by enhanceBlockProposalEvents
+        // Infrastructure will be populated by enhanceEventsWithInfrastructure
         validatorDns: '',
         geographicRegion: 'unknown',
         infrastructureProvider: 'unknown',
@@ -175,7 +179,7 @@ export class FocusedLogProcessor {
   // QC PARTICIPATION EXTRACTION (from monad-bft.json)
   // =============================================
 
-  private extractQCParticipation(log: RawLog, fields: any): QCParticipationEvent[] {
+  private extractQCParticipation(log: RawLog, fields: any, errors: string[]): QCParticipationEvent[] {
     const message = fields.message;
     
     // Look for QC commit events with BitVec data
@@ -186,7 +190,9 @@ export class FocusedLogProcessor {
           return this.extractValidatorParticipation(qcData, log.timestamp, fields);
         }
       } catch (error) {
-        logger.warn(`Failed to parse QC data: ${error}`);
+        const errorMsg = `Failed to parse QC data: ${error}`;
+        logger.warn(errorMsg);
+        errors.push(errorMsg); // Add to errors array for consistency
       }
     }
 
@@ -240,10 +246,11 @@ export class FocusedLogProcessor {
     // Extract seq_num if available
     const seqNum = parseInt(fields.seq_num) || 0;
 
-    qcData.signerBits.forEach((participated, index) => {
-      // Map validator index to validator ID
-      const validatorEntry = this.validatorRegistry.get(index);
-      const validatorId = validatorEntry?.validatorId || `unknown_${index}`;
+    qcData.signerBits.forEach((participated, bitVecIndex) => {
+      // Map BitVec index to validator position, then to validator ID
+      const validatorPosition = this.bitVecIndexToPosition.get(bitVecIndex) ?? bitVecIndex;
+      const validatorEntry = this.validatorRegistry.get(validatorPosition);
+      const validatorId = validatorEntry?.validatorId || `unknown_pos_${validatorPosition}`;
 
       events.push({
         timestamp: new Date(timestamp),
@@ -252,7 +259,7 @@ export class FocusedLogProcessor {
         roundNumber: qcData.round,
         epochNumber: qcData.epoch,
         participated: participated === 1,
-        validatorIndex: index,
+        validatorIndex: bitVecIndex,
         
         // QC metadata
         qcId: `${qcData.round}-${qcData.epoch}`,
@@ -260,7 +267,7 @@ export class FocusedLogProcessor {
         participatingValidators: qcData.participatingValidators,
         participationRate,
         
-        // Infrastructure will be populated by enhanceQCParticipationEvents
+        // Infrastructure will be populated by enhanceEventsWithInfrastructure
         validatorDns: '',
         geographicRegion: 'unknown',
         infrastructureProvider: 'unknown',
@@ -273,31 +280,17 @@ export class FocusedLogProcessor {
   }
 
   // =============================================
-  // INFRASTRUCTURE ENHANCEMENT
+  // INFRASTRUCTURE ENHANCEMENT (CONSOLIDATED)
   // =============================================
 
-  private enhanceBlockProposalEvents(
-    events: BlockProposalEvent[], 
+  private enhanceEventsWithInfrastructure<T extends { validatorId: string; validatorDns: string; geographicRegion: string; infrastructureProvider: string }>(
+    events: T[], 
     validatorInfoMap: Map<string, CompleteValidator>
   ): void {
     events.forEach(event => {
-      const validator = validatorInfoMap.get(this.normalizeValidatorId(event.validatorId));
-      if (validator && validator.location) {
-        event.validatorDns = validator.location.dnsAddress || '';
-        event.geographicRegion = validator.location.city && validator.location.country ? 
-          `${validator.location.city}, ${validator.location.country}` : 'unknown';
-        event.infrastructureProvider = validator.location.isp || 'unknown';
-      }
-    });
-  }
-
-  private enhanceQCParticipationEvents(
-    events: QCParticipationEvent[], 
-    validatorInfoMap: Map<string, CompleteValidator>
-  ): void {
-    events.forEach(event => {
-      const validator = validatorInfoMap.get(this.normalizeValidatorId(event.validatorId));
-      if (validator && validator.location) {
+      // ValidatorId is already normalized, no need to normalize again
+      const validator = validatorInfoMap.get(event.validatorId);
+      if (validator?.location) {
         event.validatorDns = validator.location.dnsAddress || '';
         event.geographicRegion = validator.location.city && validator.location.country ? 
           `${validator.location.city}, ${validator.location.country}` : 'unknown';
@@ -312,7 +305,7 @@ export class FocusedLogProcessor {
 
   private async loadValidatorRegistry(): Promise<void> {
     try {
-      // Load the actual validator registry from the service
+      // Initialize validator registry (has internal guard against double initialization)
       await validatorRegistry.initialize();
       
       // Get all validators for current epoch
@@ -320,13 +313,20 @@ export class FocusedLogProcessor {
       
       // Populate our internal registry map with validator positions
       this.validatorRegistry.clear();
-      validators.forEach(validator => {
-        this.validatorRegistry.set(validator.position, {
+      this.bitVecIndexToPosition.clear();
+      
+      validators.forEach((validator, index) => {
+        const registryEntry = {
           position: validator.position,
           validatorId: validator.node_id,
           nodeId: validator.node_id,
           stake: validator.stake
-        });
+        };
+        
+        this.validatorRegistry.set(validator.position, registryEntry);
+        // For now, assume BitVec index matches registry index
+        // This mapping can be updated if we discover the actual relationship
+        this.bitVecIndexToPosition.set(index, validator.position);
       });
       
       logger.info(`📋 Loaded ${validators.length} validators from registry for epoch ${validatorRegistry.getCurrentEpoch()}`);
@@ -339,9 +339,13 @@ export class FocusedLogProcessor {
 
   updateValidatorRegistry(epoch: number, validators: ValidatorRegistryEntry[]): void {
     this.validatorRegistry.clear();
-    validators.forEach(validator => {
+    this.bitVecIndexToPosition.clear();
+    
+    validators.forEach((validator, index) => {
       this.validatorRegistry.set(validator.position, validator);
+      this.bitVecIndexToPosition.set(index, validator.position);
     });
+    
     logger.info(`📋 Updated validator registry for epoch ${epoch} with ${validators.length} validators`);
   }
 
