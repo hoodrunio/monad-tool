@@ -1,8 +1,5 @@
-// DNS Utilities for Monad Validator Analytics
-export { IntelligentDNSParser } from './dns-parser';
-export { NetworkDiscoveryService } from './network-discovery';
-export { DNSCacheManager } from './dns-cache';
-export { EnhancedDNSProcessor, createEnhancedDNSProcessor, extractProviderFromDNS } from './enhanced-dns-processor';
+// Utility functions for Monad Validator Analytics
+// Note: DNS and geolocation services moved to /services/ with SOLID architecture
 
 // Types
 export * from './types';

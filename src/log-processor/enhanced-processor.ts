@@ -8,25 +8,23 @@ import {
   BlockProposalEvent,
   QCParticipationEvent,
   EnhancedLogProcessingResult,
-  LedgerBlockEvent,
-  BFTQCCommitEvent,
   ParsedQCData,
   ValidatorRegistryEntry
 } from './types';
 
-import { ValidatorInfoService, CompleteValidatorInfo } from '../services/validator-info-service';
+import { ValidatorService, CompleteValidator } from '../services/unified-validator';
 import { MonadClickHouseClient } from '../database/clickhouse-client';
 import { logger } from '../utils/logger';
 import { validatorRegistry } from '../services/validator-registry';
 
 export class FocusedLogProcessor {
-  private validatorInfoService: ValidatorInfoService;
+  private validatorService: ValidatorService;
   private clickhouseClient: MonadClickHouseClient | null = null;
   private validatorRegistry: Map<number, ValidatorRegistryEntry> = new Map();
   private isInitialized: boolean = false;
 
   constructor(clickhouseClient?: MonadClickHouseClient) {
-    this.validatorInfoService = new ValidatorInfoService();
+    this.validatorService = new ValidatorService();
     this.clickhouseClient = clickhouseClient || null;
   }
 
@@ -34,7 +32,7 @@ export class FocusedLogProcessor {
     if (!this.isInitialized) {
       logger.info('🔧 Initializing Focused Log Processor...');
       
-      await this.validatorInfoService.initialize();
+      await this.validatorService.initialize();
       await this.loadValidatorRegistry();
       
       this.isInitialized = true;
@@ -56,7 +54,7 @@ export class FocusedLogProcessor {
 
     // Extract validator infrastructure data once
     const validatorIds = new Set<string>();
-    const validatorInfoMap = new Map<string, CompleteValidatorInfo>();
+    const validatorInfoMap = new Map<string, CompleteValidator>();
 
     for (const log of logs) {
       try {
@@ -87,11 +85,9 @@ export class FocusedLogProcessor {
 
     // Batch fetch validator infrastructure info
     if (validatorIds.size > 0) {
-      const batchInfo = await this.validatorInfoService.batchGetValidatorInfo(
-        Array.from(validatorIds)
-      );
+      const batchInfo = await this.validatorService.getValidators(Array.from(validatorIds));
       validatorInfoMap.clear();
-      batchInfo.forEach((info, id) => validatorInfoMap.set(id, info));
+      batchInfo.forEach((validator, id) => validatorInfoMap.set(id, validator));
     }
 
     // Enhance events with infrastructure data
@@ -282,28 +278,30 @@ export class FocusedLogProcessor {
 
   private enhanceBlockProposalEvents(
     events: BlockProposalEvent[], 
-    validatorInfoMap: Map<string, CompleteValidatorInfo>
+    validatorInfoMap: Map<string, CompleteValidator>
   ): void {
     events.forEach(event => {
-      const info = validatorInfoMap.get(this.normalizeValidatorId(event.validatorId));
-      if (info) {
-        event.validatorDns = info.dnsAddress || '';
-        event.geographicRegion = info.location || 'unknown';
-        event.infrastructureProvider = info.provider || 'unknown';
+      const validator = validatorInfoMap.get(this.normalizeValidatorId(event.validatorId));
+      if (validator && validator.location) {
+        event.validatorDns = validator.location.dnsAddress || '';
+        event.geographicRegion = validator.location.city && validator.location.country ? 
+          `${validator.location.city}, ${validator.location.country}` : 'unknown';
+        event.infrastructureProvider = validator.location.isp || 'unknown';
       }
     });
   }
 
   private enhanceQCParticipationEvents(
     events: QCParticipationEvent[], 
-    validatorInfoMap: Map<string, CompleteValidatorInfo>
+    validatorInfoMap: Map<string, CompleteValidator>
   ): void {
     events.forEach(event => {
-      const info = validatorInfoMap.get(this.normalizeValidatorId(event.validatorId));
-      if (info) {
-        event.validatorDns = info.dnsAddress || '';
-        event.geographicRegion = info.location || 'unknown';
-        event.infrastructureProvider = info.provider || 'unknown';
+      const validator = validatorInfoMap.get(this.normalizeValidatorId(event.validatorId));
+      if (validator && validator.location) {
+        event.validatorDns = validator.location.dnsAddress || '';
+        event.geographicRegion = validator.location.city && validator.location.country ? 
+          `${validator.location.city}, ${validator.location.country}` : 'unknown';
+        event.infrastructureProvider = validator.location.isp || 'unknown';
       }
     });
   }
@@ -415,7 +413,7 @@ export class FocusedLogProcessor {
     return {
       validatorRegistrySize: this.validatorRegistry.size,
       isInitialized: this.isInitialized,
-      validatorInfoService: this.validatorInfoService.getStats()
+      validatorService: this.validatorService.getStats()
     };
   }
 }
