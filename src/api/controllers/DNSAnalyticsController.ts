@@ -160,18 +160,18 @@ export class DNSAnalyticsController {
    */
   async getNetworkTopology(req: Request, res: Response): Promise<void> {
     try {
+      const accurateStats = await this.getAccurateValidatorStats();
       const geoDistribution = this.validatorService.getGeographicDistribution();
       const ispDistribution = this.validatorService.getIspDistribution();
-      const stats = this.validatorService.getStats();
       
       const topology = {
-        totalValidators: stats.totalValidators,
-        validatorsWithLocation: stats.validatorsWithLocation,
-        locationCoverage: stats.locationCoverage,
+        totalValidators: accurateStats.totalValidators,
+        validatorsWithLocation: accurateStats.validatorsWithLocation,
+        locationCoverage: accurateStats.locationCoverage,
         geographicDistribution: Object.fromEntries(geoDistribution),
         providerDistribution: Object.fromEntries(ispDistribution),
         diversityScore: this.calculateDiversityScore(geoDistribution),
-        centralizationRisk: this.calculateCentralizationRisk(ispDistribution, stats.totalValidators)
+        centralizationRisk: this.calculateCentralizationRisk(ispDistribution, accurateStats.totalValidators)
       };
 
       res.json({
@@ -194,31 +194,35 @@ export class DNSAnalyticsController {
    */
   async getCentralizationRisks(req: Request, res: Response): Promise<void> {
     try {
+      const accurateStats = await this.getAccurateValidatorStats();
       const geoDistribution = this.validatorService.getGeographicDistribution();
       const ispDistribution = this.validatorService.getIspDistribution();
-      const stats = this.validatorService.getStats();
+      const performanceData = await this.getProviderPerformanceData();
       
-      const providerRisks = this.analyzeProviderRisks(ispDistribution, stats.totalValidators);
-      const geoRisks = this.analyzeGeographicRisks(geoDistribution, stats.totalValidators);
+      const providerRisks = this.analyzeProviderRisks(ispDistribution, accurateStats.totalValidators);
+      const geoRisks = this.analyzeGeographicRisks(geoDistribution, accurateStats.totalValidators);
       
       const risks = {
-        centralizationRisk: this.calculateCentralizationRisk(ispDistribution, stats.totalValidators),
+        centralizationRisk: this.calculateCentralizationRisk(ispDistribution, accurateStats.totalValidators),
         diversityScore: this.calculateDiversityScore(geoDistribution),
         providerRisks: Object.fromEntries(
-          Array.from(ispDistribution.entries()).map(([provider, count]) => [
-            provider,
-            {
-              validatorCount: count,
-              riskScore: (count / stats.totalValidators) * 100,
-              avgPerformance: 85, // Default value - could be enhanced
-              regions: [`Region for ${provider}`],
-              datacenters: [provider]
-            }
-          ])
+          Array.from(ispDistribution.entries()).map(([provider, count]) => {
+            const providerPerformance = performanceData.get(provider);
+            return [
+              provider,
+              {
+                validatorCount: count,
+                riskScore: (count / accurateStats.totalValidators) * 100,
+                avgPerformance: providerPerformance?.avgPerformance || 0,
+                regions: providerPerformance?.regions || ['unknown'],
+                datacenters: providerPerformance?.datacenters || [provider]
+              }
+            ];
+          })
         ),
         riskFactors: {
-          providerConcentration: Math.max(...Array.from(ispDistribution.values())) / stats.totalValidators * 100,
-          geographicConcentration: Math.max(...Array.from(geoDistribution.values())) / stats.totalValidators * 100,
+          providerConcentration: Math.max(...Array.from(ispDistribution.values())) / accurateStats.totalValidators * 100,
+          geographicConcentration: Math.max(...Array.from(geoDistribution.values())) / accurateStats.totalValidators * 100,
           infrastructureDiversity: this.calculateDiversityScore(ispDistribution)
         }
       };
@@ -243,18 +247,22 @@ export class DNSAnalyticsController {
    */
   async getProviderDistribution(req: Request, res: Response): Promise<void> {
     try {
+      const accurateStats = await this.getAccurateValidatorStats();
       const ispDistribution = this.validatorService.getIspDistribution();
-      const stats = this.validatorService.getStats();
-      const totalValidators = stats.totalValidators;
+      const performanceData = await this.getProviderPerformanceData();
+      const totalValidators = accurateStats.totalValidators;
       
-      const distribution = Array.from(ispDistribution.entries()).map(([provider, count]) => ({
-        provider,
-        validatorCount: count,
-        percentage: totalValidators > 0 ? (count / totalValidators) * 100 : 0,
-        avgPerformance: 85, // Default value - could be enhanced with actual performance data
-        regions: [`Region for ${provider}`], // Could be enhanced with actual region data
-        riskScore: (count / totalValidators) * 100
-      }));
+      const distribution = Array.from(ispDistribution.entries()).map(([provider, count]) => {
+        const providerPerformance = performanceData.get(provider);
+        return {
+          provider,
+          validatorCount: count,
+          percentage: totalValidators > 0 ? (count / totalValidators) * 100 : 0,
+          avgPerformance: providerPerformance?.avgPerformance || 0,
+          regions: providerPerformance?.regions || ['unknown'],
+          riskScore: (count / totalValidators) * 100
+        };
+      });
 
       res.json({
         success: true,
@@ -281,9 +289,9 @@ export class DNSAnalyticsController {
    */
   async getGeographicDistribution(req: Request, res: Response): Promise<void> {
     try {
+      const accurateStats = await this.getAccurateValidatorStats();
       const geoDistribution = this.validatorService.getGeographicDistribution();
-      const stats = this.validatorService.getStats();
-      const totalValidators = stats.totalValidators;
+      const totalValidators = accurateStats.totalValidators;
       
       const distribution = Array.from(geoDistribution.entries()).map(([location, count]) => ({
         location,
@@ -538,5 +546,138 @@ export class DNSAnalyticsController {
       };
     });
     return risks;
+  }
+
+  /**
+   * Get accurate validator statistics from database
+   */
+  private async getAccurateValidatorStats(): Promise<{
+    totalValidators: number;
+    validatorsWithLocation: number;
+    locationCoverage: number;
+    uniqueLocations: number;
+    uniqueProviders: number;
+  }> {
+    try {
+      // Get total unique validators from both tables
+      const totalValidatorsQuery = `
+        SELECT COUNT(DISTINCT validator_id) as total_validators
+        FROM (
+          SELECT validator_id FROM block_proposals 
+          WHERE timestamp >= now() - INTERVAL 24 HOUR
+          UNION DISTINCT
+          SELECT validator_id FROM qc_participation 
+          WHERE timestamp >= now() - INTERVAL 24 HOUR
+        )
+      `;
+
+      // Get validators with location data
+      const locationStatsQuery = `
+        SELECT 
+          COUNT(DISTINCT validator_id) as validators_with_location,
+          COUNT(DISTINCT location) as unique_locations,
+          COUNT(DISTINCT provider) as unique_providers
+        FROM (
+          SELECT validator_id, location, provider FROM block_proposals 
+          WHERE timestamp >= now() - INTERVAL 24 HOUR 
+            AND location IS NOT NULL AND location != '' AND location != 'unknown'
+            AND provider IS NOT NULL AND provider != '' AND provider != 'unknown'
+          UNION DISTINCT
+          SELECT validator_id, location, provider FROM qc_participation 
+          WHERE timestamp >= now() - INTERVAL 24 HOUR 
+            AND location IS NOT NULL AND location != '' AND location != 'unknown'
+            AND provider IS NOT NULL AND provider != '' AND provider != 'unknown'
+        )
+      `;
+
+      const [totalResult, locationResult] = await Promise.all([
+        this.clickhouseClient.executeRawQuery(totalValidatorsQuery),
+        this.clickhouseClient.executeRawQuery(locationStatsQuery)
+      ]);
+
+      const totalValidators = parseInt(totalResult[0]?.total_validators || 0);
+      const validatorsWithLocation = parseInt(locationResult[0]?.validators_with_location || 0);
+      const uniqueLocations = parseInt(locationResult[0]?.unique_locations || 0);
+      const uniqueProviders = parseInt(locationResult[0]?.unique_providers || 0);
+
+      return {
+        totalValidators,
+        validatorsWithLocation,
+        locationCoverage: totalValidators > 0 ? (validatorsWithLocation / totalValidators) * 100 : 0,
+        uniqueLocations,
+        uniqueProviders
+      };
+    } catch (error) {
+      console.error('Failed to get accurate validator stats:', error);
+      // Fallback to service stats
+      const serviceStats = this.validatorService.getStats();
+      return {
+        totalValidators: serviceStats.totalValidators,
+        validatorsWithLocation: serviceStats.validatorsWithLocation,
+        locationCoverage: serviceStats.locationCoverage,
+        uniqueLocations: 0,
+        uniqueProviders: 0
+      };
+    }
+  }
+
+  /**
+   * Get provider performance data from database
+   */
+  private async getProviderPerformanceData(): Promise<Map<string, {
+    avgPerformance: number;
+    regions: string[];
+    datacenters: string[];
+  }>> {
+    try {
+      const performanceQuery = `
+        WITH provider_stats AS (
+          SELECT 
+            provider,
+            COUNT(DISTINCT validator_id) as validator_count,
+            COUNT(DISTINCT location) as location_count,
+            -- Calculate performance based on block proposals and QC participation
+            AVG(CASE 
+              WHEN bp.status = 'proposed' THEN 100 
+              WHEN bp.status = 'skipped' THEN 0 
+              ELSE NULL 
+            END) as block_performance,
+            AVG(qc.participation_rate) as qc_performance,
+            arrayDistinct(groupArray(location)) as regions
+          FROM (
+            SELECT DISTINCT validator_id, provider, location FROM block_proposals 
+            WHERE timestamp >= now() - INTERVAL 24 HOUR
+              AND provider IS NOT NULL AND provider != '' AND provider != 'unknown'
+              AND location IS NOT NULL AND location != '' AND location != 'unknown'
+          ) v
+          LEFT JOIN block_proposals bp ON v.validator_id = bp.validator_id 
+            AND bp.timestamp >= now() - INTERVAL 24 HOUR
+          LEFT JOIN qc_participation qc ON v.validator_id = qc.validator_id 
+            AND qc.timestamp >= now() - INTERVAL 24 HOUR
+          GROUP BY provider
+        )
+        SELECT 
+          provider,
+          COALESCE(block_performance, 0) * 0.4 + COALESCE(qc_performance, 0) * 0.6 as avg_performance,
+          regions
+        FROM provider_stats
+      `;
+
+      const result = await this.clickhouseClient.executeRawQuery(performanceQuery);
+      const performanceMap = new Map<string, { avgPerformance: number; regions: string[]; datacenters: string[]; }>();
+
+      result.forEach(row => {
+        performanceMap.set(row.provider, {
+          avgPerformance: parseFloat(row.avg_performance || 0),
+          regions: Array.isArray(row.regions) ? row.regions : [row.regions || row.provider],
+          datacenters: [row.provider] // Provider acts as datacenter for now
+        });
+      });
+
+      return performanceMap;
+    } catch (error) {
+      console.error('Failed to get provider performance data:', error);
+      return new Map();
+    }
   }
 } 

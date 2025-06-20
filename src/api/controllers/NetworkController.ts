@@ -332,89 +332,84 @@ export class NetworkController {
           break;
       }
 
-      // Get geographic distribution from block proposals
-      const blockGeoQuery = `
+      // Fixed query: Get unique validators per location to avoid double counting
+      const geoQuery = `
+        WITH validator_locations AS (
+          SELECT DISTINCT 
+            validator_id,
+            COALESCE(location, 'unknown') as location
+          FROM (
+            SELECT validator_id, location FROM block_proposals 
+            WHERE timestamp >= now() - INTERVAL ${intervalClause}
+              AND location IS NOT NULL AND location != ''
+            UNION DISTINCT
+            SELECT validator_id, location FROM qc_participation 
+            WHERE timestamp >= now() - INTERVAL ${intervalClause}
+              AND location IS NOT NULL AND location != ''
+          )
+        ),
+        location_stats AS (
+          SELECT 
+            location,
+            COUNT(DISTINCT validator_id) as validator_count
+          FROM validator_locations
+          GROUP BY location
+        ),
+        block_metrics AS (
+          SELECT 
+            COALESCE(location, 'unknown') as location,
+            COUNT(*) as total_block_events,
+            COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_block_events,
+            (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate
+          FROM block_proposals
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+            AND location IS NOT NULL AND location != ''
+          GROUP BY location
+        ),
+        qc_metrics AS (
+          SELECT 
+            COALESCE(location, 'unknown') as location,
+            COUNT(*) as total_qc_events,
+            COUNT(CASE WHEN participated = 1 THEN 1 END) as successful_qc_events,
+            (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_success_rate
+          FROM qc_participation
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+            AND location IS NOT NULL AND location != ''
+          GROUP BY location
+        )
         SELECT 
-          location,
-          COUNT(DISTINCT validator_id) as validator_count,
-          COUNT(*) as total_events,
-          COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_events,
-          (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as success_rate
-        FROM block_proposals
-        WHERE timestamp >= now() - INTERVAL ${intervalClause}
-          AND location IS NOT NULL 
-          AND location != ''
-        GROUP BY location
+          l.location,
+          l.validator_count,
+          COALESCE(b.total_block_events, 0) as block_events,
+          COALESCE(b.block_success_rate, 0) as block_success_rate,
+          COALESCE(q.total_qc_events, 0) as qc_events,
+          COALESCE(q.qc_success_rate, 0) as qc_success_rate,
+          (COALESCE(b.total_block_events, 0) + COALESCE(q.total_qc_events, 0)) as total_events,
+          CASE 
+            WHEN (COALESCE(b.total_block_events, 0) + COALESCE(q.total_qc_events, 0)) > 0
+            THEN ((COALESCE(b.successful_block_events, 0) + COALESCE(q.successful_qc_events, 0)) * 100.0 / 
+                  (COALESCE(b.total_block_events, 0) + COALESCE(q.total_qc_events, 0)))
+            ELSE 0
+          END as overall_success_rate
+        FROM location_stats l
+        LEFT JOIN block_metrics b ON l.location = b.location
+        LEFT JOIN qc_metrics q ON l.location = q.location
+        ORDER BY l.validator_count DESC
       `;
 
-      // Get geographic distribution from QC participation (for cross-validation)
-      const qcGeoQuery = `
-        SELECT 
-          location,
-          COUNT(DISTINCT validator_id) as validator_count,
-          COUNT(*) as total_events,
-          COUNT(CASE WHEN participated = 1 THEN 1 END) as successful_events,
-          (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as success_rate
-        FROM qc_participation
-        WHERE timestamp >= now() - INTERVAL ${intervalClause}
-          AND location IS NOT NULL 
-          AND location != ''
-        GROUP BY location
-      `;
+      const result = await this.clickhouseClient.executeRawQuery(geoQuery);
+      const geoData = result;
 
-      const [blockResult, qcResult] = await Promise.all([
-        this.clickhouseClient.executeRawQuery(blockGeoQuery),
-        this.clickhouseClient.executeRawQuery(qcGeoQuery)
-      ]);
-
-      const blockGeoData = blockResult;
-      const qcGeoData = qcResult;
-
-      // Combine geographic data from both sources
-      const geoMap = new Map<string, any>();
-      
-      blockGeoData.forEach(b => {
-        geoMap.set(b.location, {
-          location: b.location,
-          validator_count: parseInt(b.validator_count),
-          block_events: parseInt(b.total_events),
-          block_success_rate: parseFloat(b.success_rate),
-          qc_events: 0,
-          qc_success_rate: 0,
-          total_events: parseInt(b.total_events)
-        });
-      });
-
-      qcGeoData.forEach(q => {
-        const existing = geoMap.get(q.location) || {
-          location: q.location,
-          validator_count: parseInt(q.validator_count),
-          block_events: 0,
-          block_success_rate: 0,
-          total_events: 0
-        };
-        
-        existing.validator_count = Math.max(existing.validator_count, parseInt(q.validator_count));
-        existing.qc_events = parseInt(q.total_events);
-        existing.qc_success_rate = parseFloat(q.success_rate);
-        existing.total_events += parseInt(q.total_events);
-        
-        geoMap.set(q.location, existing);
-      });
-
-      const distribution = Array.from(geoMap.values())
-        .map(d => ({
-          location: d.location,
-          validator_count: d.validator_count,
-          total_events: d.total_events,
-          block_events: d.block_events,
-          qc_events: d.qc_events,
-          block_success_rate: d.block_success_rate,
-          qc_success_rate: d.qc_success_rate,
-          overall_success_rate: d.total_events > 0 ? 
-            ((d.block_events * d.block_success_rate / 100) + (d.qc_events * d.qc_success_rate / 100)) / d.total_events * 100 : 0
-        }))
-        .sort((a, b) => b.validator_count - a.validator_count);
+      const distribution = geoData.map(d => ({
+        location: d.location,
+        validator_count: parseInt(d.validator_count),
+        total_events: parseInt(d.total_events),
+        block_events: parseInt(d.block_events),
+        qc_events: parseInt(d.qc_events),
+        block_success_rate: parseFloat(d.block_success_rate),
+        qc_success_rate: parseFloat(d.qc_success_rate),
+        overall_success_rate: parseFloat(d.overall_success_rate)
+      }));
       
       // Cache result for 5 minutes
       await this.redisClient['client'].setex('geographic_distribution', 300, JSON.stringify(distribution));
@@ -495,31 +490,87 @@ export class NetworkController {
     try {
       const timeWindow = (req.query.window as string) || '1h';
       
+      // Get interval for query
+      let intervalClause = '1 HOUR';
+      switch (timeWindow) {
+        case '1h':
+          intervalClause = '1 HOUR';
+          break;
+        case '24h':
+          intervalClause = '24 HOUR';
+          break;
+        case '7d':
+          intervalClause = '7 DAY';
+          break;
+      }
+
+      // Fixed query using actual tables with data
       const query = `
+        WITH consensus_blocks AS (
+          SELECT 
+            toStartOfMinute(timestamp) as minute,
+            COUNT(*) as total_proposals,
+            COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_proposals,
+            COUNT(CASE WHEN status = 'skipped' THEN 1 END) as skipped_proposals,
+            COUNT(DISTINCT validator_id) as active_validators
+          FROM block_proposals
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY minute
+        ),
+        consensus_qc AS (
+          SELECT 
+            toStartOfMinute(timestamp) as minute,
+            COUNT(*) as total_qc_events,
+            COUNT(CASE WHEN participated = 1 THEN 1 END) as successful_participations,
+            AVG(participation_rate) as avg_participation_rate,
+            COUNT(DISTINCT validator_id) as participating_validators
+          FROM qc_participation
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY minute
+        )
         SELECT 
-          toStartOfMinute(timestamp) as minute,
-          COUNT(*) as total_consensus_events,
-          COUNT(CASE WHEN toString(event_type) LIKE '%vote%' THEN 1 END) as vote_events,
-          COUNT(CASE WHEN toString(event_type) LIKE '%qc%' THEN 1 END) as qc_events,
-          COUNT(CASE WHEN toString(event_type) LIKE '%block%' THEN 1 END) as block_events,
-          AVG(processing_delay_ms) as avg_processing_time,
-          COUNT(DISTINCT validator_id) as participating_validators
-        FROM validator_events
-        WHERE timestamp >= now() - INTERVAL 1 HOUR
-          AND event_type IN ('vote_attempt', 'vote_result', 'qc_commit_attempt', 'block_committed')
-        GROUP BY minute
+          COALESCE(b.minute, q.minute) as minute,
+          COALESCE(b.total_proposals, 0) as total_proposals,
+          COALESCE(b.successful_proposals, 0) as successful_proposals,
+          COALESCE(b.skipped_proposals, 0) as skipped_proposals,
+          COALESCE(q.total_qc_events, 0) as total_qc_events,
+          COALESCE(q.successful_participations, 0) as successful_participations,
+          COALESCE(q.avg_participation_rate, 0) as avg_participation_rate,
+          COALESCE(b.active_validators, 0) as block_validators,
+          COALESCE(q.participating_validators, 0) as qc_validators,
+          -- Calculate consensus efficiency: (successful events / total events) * participation rate
+          CASE 
+            WHEN (COALESCE(b.total_proposals, 0) + COALESCE(q.total_qc_events, 0)) > 0
+            THEN ((COALESCE(b.successful_proposals, 0) + COALESCE(q.successful_participations, 0)) * 100.0 / 
+                  (COALESCE(b.total_proposals, 0) + COALESCE(q.total_qc_events, 0))) * 
+                 (COALESCE(q.avg_participation_rate, 0) / 100.0)
+            ELSE 0
+          END as consensus_efficiency
+        FROM consensus_blocks b
+        FULL OUTER JOIN consensus_qc q ON b.minute = q.minute
         ORDER BY minute
       `;
 
       const result = await this.clickhouseClient.executeRawQuery(query);
-
-      const efficiency = result
+      const efficiency = result;
       
       res.json({
-        consensus_efficiency: efficiency,
+        consensus_efficiency: efficiency.map(e => ({
+          minute: e.minute,
+          total_proposals: parseInt(e.total_proposals || 0),
+          successful_proposals: parseInt(e.successful_proposals || 0),
+          skipped_proposals: parseInt(e.skipped_proposals || 0),
+          total_qc_events: parseInt(e.total_qc_events || 0),
+          successful_participations: parseInt(e.successful_participations || 0),
+          avg_participation_rate: parseFloat(e.avg_participation_rate || 0),
+          block_validators: parseInt(e.block_validators || 0),
+          qc_validators: parseInt(e.qc_validators || 0),
+          consensus_efficiency: parseFloat(e.consensus_efficiency || 0)
+        })),
         metadata: {
           timeWindow,
-          dataPoints: efficiency.length
+          dataPoints: efficiency.length,
+          source: 'database'
         },
         timestamp: new Date().toISOString()
       });
