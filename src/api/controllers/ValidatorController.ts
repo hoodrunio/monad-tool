@@ -61,7 +61,7 @@ export class ValidatorController {
             limit,
             sortBy,
             source: 'cache',
-            formula: 'block_proposal_ratio * 0.3 + qc_participation_rate * 0.7'
+            formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
           },
           timestamp: new Date().toISOString()
         });
@@ -82,7 +82,7 @@ export class ValidatorController {
           sortBy,
           source: 'database',
           count: rankings.length,
-          formula: 'block_proposal_ratio * 0.3 + qc_participation_rate * 0.7'
+          formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
         },
         timestamp: new Date().toISOString()
       });
@@ -169,7 +169,7 @@ export class ValidatorController {
       // Calculate combined uptime score
       const blockRatio = parseFloat(blockData?.block_proposal_ratio || 0);
       const qcRate = parseFloat(qcData?.qc_participation_rate || 0);
-      const uptimeScore = blockRatio * 0.3 + qcRate * 0.7;
+      const uptimeScore = blockRatio * 0.7 + qcRate * 0.3;
 
       // Format response with separate metrics
       res.json({
@@ -202,7 +202,7 @@ export class ValidatorController {
         },
         metadata: {
           time_window: '24h',
-          uptime_formula: 'block_proposal_ratio * 0.3 + qc_participation_rate * 0.7'
+          uptime_formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
         },
         timestamp: new Date().toISOString()
       });
@@ -370,7 +370,7 @@ export class ValidatorController {
         COALESCE(b.validator_id, q.validator_id) as validator_id,
         COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
         COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
-        (COALESCE(b.block_proposal_ratio, 0) * 0.3 + COALESCE(q.qc_participation_rate, 0) * 0.7) as uptime_score,
+        (COALESCE(b.block_proposal_ratio, 0) * 0.7 + COALESCE(q.qc_participation_rate, 0) * 0.3) as uptime_score,
         COALESCE(b.total_block_opportunities, 0) as total_block_opportunities,
         COALESCE(b.blocks_proposed, 0) as blocks_proposed,
         COALESCE(b.blocks_skipped, 0) as blocks_skipped,
@@ -490,7 +490,7 @@ export class ValidatorController {
       metrics: {
         block_proposal_ratio: h.block_proposal_ratio,
         qc_participation_rate: h.qc_participation_rate,
-        uptime_score: h.block_proposal_ratio * 0.3 + h.qc_participation_rate * 0.7
+        uptime_score: h.block_proposal_ratio * 0.7 + h.qc_participation_rate * 0.3
       },
       activity: {
         block_opportunities: h.block_opportunities,
@@ -535,7 +535,7 @@ export class ValidatorController {
         COALESCE(b.validator_id, q.validator_id) as validator_id,
         COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
         COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
-        (COALESCE(b.block_proposal_ratio, 0) * 0.3 + COALESCE(q.qc_participation_rate, 0) * 0.7) as uptime_score,
+        (COALESCE(b.block_proposal_ratio, 0) * 0.7 + COALESCE(q.qc_participation_rate, 0) * 0.3) as uptime_score,
         COALESCE(b.total_block_opportunities, 0) as total_block_opportunities,
         COALESCE(b.blocks_proposed, 0) as blocks_proposed,
         COALESCE(b.blocks_skipped, 0) as blocks_skipped,

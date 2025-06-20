@@ -87,7 +87,7 @@ SELECT
     AVG(qc_participation_rate) as avg_qc_participation_rate,
     AVG(CASE 
         WHEN block_proposal_ratio > 0 AND qc_participation_rate > 0
-        THEN block_proposal_ratio * 0.3 + qc_participation_rate * 0.7
+        THEN block_proposal_ratio * 0.7 + qc_participation_rate * 0.3
         ELSE GREATEST(block_proposal_ratio, qc_participation_rate)
     END) as avg_uptime_score,
     
@@ -121,7 +121,7 @@ SELECT
     AVG(qc_participation_rate) as avg_qc_participation_rate,
     AVG(CASE 
         WHEN block_proposal_ratio > 0 AND qc_participation_rate > 0
-        THEN block_proposal_ratio * 0.3 + qc_participation_rate * 0.7
+        THEN block_proposal_ratio * 0.7 + qc_participation_rate * 0.3
         ELSE GREATEST(block_proposal_ratio, qc_participation_rate)
     END) as avg_uptime_score,
     
@@ -155,7 +155,7 @@ SELECT
     AVG(qc_participation_rate) as avg_qc_participation_rate,
     AVG(CASE 
         WHEN block_proposal_ratio > 0 AND qc_participation_rate > 0
-        THEN block_proposal_ratio * 0.3 + qc_participation_rate * 0.7
+        THEN block_proposal_ratio * 0.7 + qc_participation_rate * 0.3
         ELSE GREATEST(block_proposal_ratio, qc_participation_rate)
     END) as avg_uptime_score,
     
