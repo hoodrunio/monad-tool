@@ -31,9 +31,11 @@ export interface DatabaseValidatorStats {
   totalValidators: number;
   validatorsWithDns: number;
   validatorsWithLocation: number;
+  validatorsWithProvider: number;
   epochs: number[];
   lastUpdated: Date | null;
   completionRate: number;
+  providerCompletionRate: number;
 }
 
 export class DatabaseValidatorInitializer {
@@ -87,13 +89,17 @@ export class DatabaseValidatorInitializer {
   /**
    * Get current validator statistics from database
    */
-  async getDatabaseValidatorStats(): Promise<DatabaseValidatorStats> {
+  async getDatabaseValidatorStats(): Promise<DatabaseValidatorStats & { 
+    validatorsWithProvider: number; 
+    providerCompletionRate: number; 
+  }> {
     try {
       const query = `
         SELECT 
           COUNT(*) as total_validators,
           SUM(CASE WHEN dns_address != '' THEN 1 ELSE 0 END) as validators_with_dns,
           SUM(CASE WHEN location != 'unknown' AND location != '' THEN 1 ELSE 0 END) as validators_with_location,
+          SUM(CASE WHEN provider != 'unknown' AND provider != '' THEN 1 ELSE 0 END) as validators_with_provider,
           uniq(epoch) as unique_epochs,
           groupArray(DISTINCT epoch) as epochs,
           MAX(last_updated) as last_updated
@@ -108,23 +114,28 @@ export class DatabaseValidatorInitializer {
           totalValidators: 0,
           validatorsWithDns: 0,
           validatorsWithLocation: 0,
+          validatorsWithProvider: 0,
           epochs: [],
           lastUpdated: null,
-          completionRate: 0
+          completionRate: 0,
+          providerCompletionRate: 0
         };
       }
 
       const row = results[0];
       const totalValidators = row.total_validators || 0;
       const validatorsWithLocation = row.validators_with_location || 0;
+      const validatorsWithProvider = row.validators_with_provider || 0;
 
       return {
         totalValidators,
         validatorsWithDns: row.validators_with_dns || 0,
         validatorsWithLocation,
+        validatorsWithProvider,
         epochs: row.epochs || [],
         lastUpdated: row.last_updated ? new Date(row.last_updated) : null,
-        completionRate: totalValidators > 0 ? (validatorsWithLocation / totalValidators) * 100 : 0
+        completionRate: totalValidators > 0 ? (validatorsWithLocation / totalValidators) * 100 : 0,
+        providerCompletionRate: totalValidators > 0 ? (validatorsWithProvider / totalValidators) * 100 : 0
       };
 
     } catch (error) {
@@ -133,9 +144,11 @@ export class DatabaseValidatorInitializer {
         totalValidators: 0,
         validatorsWithDns: 0,
         validatorsWithLocation: 0,
+        validatorsWithProvider: 0,
         epochs: [],
         lastUpdated: null,
-        completionRate: 0
+        completionRate: 0,
+        providerCompletionRate: 0
       };
     }
   }
@@ -143,7 +156,10 @@ export class DatabaseValidatorInitializer {
   /**
    * Determine if validator initialization is needed
    */
-  private async needsValidatorInitialization(stats: DatabaseValidatorStats): Promise<boolean> {
+  private async needsValidatorInitialization(stats: DatabaseValidatorStats & { 
+    validatorsWithProvider: number; 
+    providerCompletionRate: number; 
+  }): Promise<boolean> {
     // No validators at all - definitely need initialization
     if (stats.totalValidators === 0) {
       logger.info('❌ No validators found in database - initialization required');
@@ -166,12 +182,20 @@ export class DatabaseValidatorInitializer {
       return true;
     }
 
+    // CRITICAL: Check provider data quality - we want at least 20% of validators to have real provider data
+    // TODO: Investigate why provider completion is low and potentially improve fallback logic
+    if (stats.providerCompletionRate < 20) {
+      logger.info(`❌ Only ${stats.providerCompletionRate.toFixed(1)}% of validators have provider data (${stats.validatorsWithProvider}/${stats.totalValidators}) - initialization required`);
+      return true;
+    }
+
     // Check if data is too old (more than 24 hours)
     if (stats.lastUpdated && (Date.now() - stats.lastUpdated.getTime()) > 24 * 60 * 60 * 1000) {
       logger.info('❌ Validator data is more than 24 hours old - initialization required');
       return true;
     }
 
+    logger.info(`✅ Database validation passed: ${stats.totalValidators} validators, ${stats.completionRate.toFixed(1)}% location completion, ${stats.providerCompletionRate.toFixed(1)}% provider completion`);
     return false;
   }
 
@@ -184,26 +208,44 @@ export class DatabaseValidatorInitializer {
     // Initialize the ValidatorService
     await this.validatorService.initialize();
 
-    // Use efficient batch processing for location data
-    logger.info('🚀 Using efficient batch processing for validator locations...');
-    const locationService = (this.validatorService as any).locationService;
+    // CRITICAL: Use ValidatorService.processAllValidatorLocations() 
+    // This now uses batch geolocation API to avoid rate limits
+    logger.info('🚀 Processing validator locations through ValidatorService...');
+    await this.validatorService.processAllValidatorLocations();
     
-    if (locationService && 'processAllValidatorLocationsBatch' in locationService) {
-      logger.info('📡 Using ip-api.com batch API for maximum efficiency...');
-      
-      const batchResult = await locationService.processAllValidatorLocationsBatch();
-      logger.info(`✅ Batch processing complete: ${batchResult.successful}/${batchResult.processed} validators processed in ${batchResult.timeMs}ms`);
-    } else {
-      logger.info('⚠️ Falling back to regular location processing...');
-      await this.validatorService.processAllValidatorLocations();
+    // Verify location processing worked
+    const locationStats = this.validatorService.getStats();
+    logger.info(`✅ Location processing complete: ${locationStats.validatorsWithLocation}/${locationStats.totalValidators} validators have location data`);
+    
+    if (locationStats.validatorsWithLocation === 0) {
+      throw new Error('CRITICAL: Location processing failed - no validators have location data');
     }
 
-    // Get all validators from the service
+    // Get all validators from the service (now with proper location data)
     const allValidators = await this.validatorService.getAllValidators();
-    logger.info(`📋 Found ${allValidators.length} validators to process`);
+    logger.info(`📋 Retrieved ${allValidators.length} validators for database insertion`);
 
     if (allValidators.length === 0) {
       throw new Error('No validators found in ValidatorService - cannot initialize database');
+    }
+
+    // VALIDATION: Ensure all validators have necessary data
+    let validatorsWithLocation = 0;
+    let validatorsWithProvider = 0;
+    
+    for (const validator of allValidators) {
+      if (validator.location) {
+        validatorsWithLocation++;
+        if (validator.location.isp && validator.location.isp !== 'unknown') {
+          validatorsWithProvider++;
+        }
+      }
+    }
+    
+    logger.info(`📊 Data validation: ${validatorsWithLocation}/${allValidators.length} validators have location, ${validatorsWithProvider}/${allValidators.length} have provider data`);
+    
+    if (validatorsWithLocation < allValidators.length * 0.8) {
+      throw new Error(`CRITICAL: Only ${validatorsWithLocation}/${allValidators.length} validators have location data - expected at least 80%`);
     }
 
     // Batch process validators for database insertion
@@ -331,7 +373,11 @@ export class DatabaseValidatorInitializer {
     }
     
     if (stats.completionRate < 80) {
-      issues.push(`Low completion rate: ${stats.completionRate.toFixed(1)}%`);
+      issues.push(`Low location completion rate: ${stats.completionRate.toFixed(1)}%`);
+    }
+    
+    if (stats.providerCompletionRate < 20) {
+      issues.push(`Low provider completion rate: ${stats.providerCompletionRate.toFixed(1)}%`);
     }
     
     if (stats.lastUpdated && (Date.now() - stats.lastUpdated.getTime()) > 24 * 60 * 60 * 1000) {

@@ -141,48 +141,136 @@ export class ValidatorLocationService implements IValidatorLocationService {
     console.log('🔄 Processing all validator locations...');
     
     const mappings = this.locationMapper.getAllMappings();
+    console.log(`📋 Processing ${mappings.length} validators with batch geolocation API`);
+    
+    return await this.processValidatorLocationsBatch(mappings);
+  }
+
+  /**
+   * Process validator locations using batch API to avoid rate limits
+   */
+  async processValidatorLocationsBatch(mappings: ValidatorMapping[]): Promise<LocationProcessResult[]> {
+    const startTime = Date.now();
     const results: LocationProcessResult[] = [];
-    const batchSize = 50;
     
-    console.log(`📋 Processing ${mappings.length} validators in batches of ${batchSize}`);
+    // Step 1: Resolve all hostnames to IPs in parallel (DNS rarely rate limits)
+    console.log('🌐 Step 1: Resolving all hostnames to IPs...');
+    const hostnameToIpMap = new Map<string, string>();
     
-    for (let i = 0; i < mappings.length; i += batchSize) {
-      const batch = mappings.slice(i, i + batchSize);
-      
-      const batchPromises = batch.map(mapping => this.processValidatorLocation(mapping));
-      const batchResults = await Promise.allSettled(batchPromises);
-      
-      batchResults.forEach((result, index) => {
-        if (result.status === 'fulfilled') {
-          results.push(result.value);
-          
-          // Cache successful results
-          if (result.value.success && this.config.enableCaching) {
-            this.validatorLocations.set(result.value.validator.nodeId, result.value.validator);
-          }
-        } else {
-          // Create error result
-          results.push({
-            success: false,
-            validator: this.createBasicValidatorLocation(batch[index]),
-            error: result.reason?.message || 'Unknown processing error',
-            processingTime: 0
-          });
+    for (const mapping of mappings) {
+      try {
+        const ip = await this.dnsService.resolveHostname(mapping.hostname);
+        if (ip) {
+          hostnameToIpMap.set(mapping.hostname, ip);
+          this.dnsSuccesses++;
         }
-      });
+      } catch (error) {
+        console.warn(`DNS resolution failed for ${mapping.hostname}:`, error);
+      }
+      this.totalProcessed++;
+    }
+    
+    console.log(`✅ DNS resolution complete: ${hostnameToIpMap.size}/${mappings.length} successful`);
+    
+    // Step 2: Batch geolocate all unique IPs using batch API
+    const uniqueIps = [...new Set(hostnameToIpMap.values())];
+    console.log(`🌍 Step 2: Batch geolocating ${uniqueIps.length} unique IPs...`);
+    
+    let ipToGeoMap = new Map<string, any>();
+    
+    try {
+      // Use batch geolocation if available
+      if ('getLocationsBatch' in this.geolocationService) {
+        console.log('📡 Using ip-api.com batch API...');
+        ipToGeoMap = await (this.geolocationService as any).getLocationsBatch(uniqueIps);
+        console.log(`✅ Batch geolocation complete: ${ipToGeoMap.size}/${uniqueIps.length} successful`);
+      } else {
+        console.log('⚠️ Batch API not available, using individual requests...');
+        // Fallback to individual requests with delays
+        for (const ip of uniqueIps) {
+          try {
+            const geoData = await this.geolocationService.getLocationForIp(ip);
+            if (geoData) {
+              ipToGeoMap.set(ip, geoData);
+              this.geolocationSuccesses++;
+            }
+            // Add delay to avoid rate limits
+            await this.delay(200);
+          } catch (error) {
+            console.warn(`Geolocation failed for ${ip}:`, error);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('❌ Batch geolocation failed:', error);
+    }
+    
+    // Step 3: Combine results for each validator
+    console.log('🔧 Step 3: Combining results for each validator...');
+    
+    for (const mapping of mappings) {
+      const processingStartTime = Date.now();
       
-      // Progress logging
-      const processed = Math.min(i + batchSize, mappings.length);
-      const successful = results.filter(r => r.success).length;
-      console.log(`Processed ${processed}/${mappings.length} validators (${successful} successful)`);
-      
-      // Add delay between batches
-      if (i + batchSize < mappings.length) {
-        await this.delay(this.config.processingDelay);
+      try {
+        const validatorLocation = this.createBasicValidatorLocation(mapping);
+        
+        // Get IP for this hostname
+        const ip = hostnameToIpMap.get(mapping.hostname);
+        if (ip) {
+          validatorLocation.ip = ip;
+          
+          // Get geolocation data for this IP
+          const geoData = ipToGeoMap.get(ip);
+          if (geoData) {
+            validatorLocation.country = geoData.country;
+            validatorLocation.region = geoData.region;
+            validatorLocation.city = geoData.city;
+            validatorLocation.latitude = geoData.latitude;
+            validatorLocation.longitude = geoData.longitude;
+            validatorLocation.isp = geoData.isp;
+            validatorLocation.organization = geoData.organization;
+            validatorLocation.timezone = geoData.timezone;
+            validatorLocation.countryCode = geoData.countryCode;
+            validatorLocation.regionCode = geoData.regionCode;
+            validatorLocation.resolvedAt = new Date();
+          }
+        }
+        
+        const processingTime = Date.now() - processingStartTime;
+        this.totalProcessingTime += processingTime;
+        validatorLocation.lastUpdated = new Date();
+        
+        const result: LocationProcessResult = {
+          success: true,
+          validator: validatorLocation,
+          processingTime
+        };
+        
+        results.push(result);
+        
+        // Cache successful results
+        if (this.config.enableCaching) {
+          this.validatorLocations.set(validatorLocation.nodeId, validatorLocation);
+        }
+        
+      } catch (error) {
+        const processingTime = Date.now() - processingStartTime;
+        this.totalProcessingTime += processingTime;
+        
+        results.push({
+          success: false,
+          validator: this.createBasicValidatorLocation(mapping),
+          error: error instanceof Error ? error.message : 'Unknown error',
+          processingTime
+        });
       }
     }
     
-    console.log(`✅ Completed processing: ${results.filter(r => r.success).length}/${results.length} successful`);
+    const totalTime = Date.now() - startTime;
+    const successful = results.filter(r => r.success).length;
+    
+    console.log(`✅ Batch processing complete: ${successful}/${results.length} successful in ${totalTime}ms`);
+    
     return results;
   }
   
