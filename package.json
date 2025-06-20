@@ -20,6 +20,7 @@
     "api:test": "ts-node scripts/test-api.ts",
     "api:fix": "ts-node scripts/fix-api-issues.ts",
     "query:setup": "ts-node scripts/setup-query-monitoring.ts",
+    "clear-api-cache": "ts-node scripts/clear-api-cache.ts",
     "docker:build": "docker build -t monad-analytics .",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down"

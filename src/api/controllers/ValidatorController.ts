@@ -115,22 +115,23 @@ export class ValidatorController {
 
       const timeWindow = this.getIntervalClause('24h');
       
-      // Get block proposal metrics
+      // Get block proposal metrics with provider info from validator_registry
       const blockProposalQuery = `
         SELECT 
-          validator_id,
+          b.validator_id,
           COUNT(*) as total_proposals,
-          COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_proposals,
-          COUNT(CASE WHEN status = 'skipped' THEN 1 END) as skipped_proposals,
-          (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio,
-          any(provider) as provider,
-          any(location) as location,
-          MIN(timestamp) as first_seen,
-          MAX(timestamp) as last_activity
-        FROM block_proposals
-        WHERE validator_id = '${validatorId}'
-          AND timestamp >= now() - INTERVAL ${timeWindow}
-        GROUP BY validator_id
+          COUNT(CASE WHEN b.status = 'proposed' THEN 1 END) as successful_proposals,
+          COUNT(CASE WHEN b.status = 'skipped' THEN 1 END) as skipped_proposals,
+          (COUNT(CASE WHEN b.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio,
+          COALESCE(vr.provider, 'unknown') as provider,
+          COALESCE(vr.location, 'unknown') as location,
+          MIN(b.timestamp) as first_seen,
+          MAX(b.timestamp) as last_activity
+        FROM block_proposals b
+        LEFT JOIN validator_registry vr ON vr.validator_id = b.validator_id AND vr.is_active = 1
+        WHERE b.validator_id = '${validatorId}'
+          AND b.timestamp >= now() - INTERVAL ${timeWindow}
+        GROUP BY b.validator_id, vr.provider, vr.location
       `;
 
       // Get QC participation metrics
@@ -339,6 +340,7 @@ export class ValidatorController {
     const intervalClause = this.getIntervalClause(timeWindow);
     
     // Combined query to get both block proposal and QC participation metrics
+    // IMPORTANT: Get provider/location from validator_registry table (has correct data)
     const query = `
       WITH 
         block_metrics AS (
@@ -347,9 +349,7 @@ export class ValidatorController {
             COUNT(*) as total_block_opportunities,
             COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
             COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
-            (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio,
-            any(provider) as provider,
-            any(location) as location
+            (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
           FROM block_proposals
           WHERE timestamp >= now() - INTERVAL ${intervalClause}
           GROUP BY validator_id
@@ -374,10 +374,11 @@ export class ValidatorController {
         COALESCE(b.blocks_skipped, 0) as blocks_skipped,
         COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
         COALESCE(q.qc_participations, 0) as qc_participations,
-        COALESCE(b.provider, 'unknown') as provider,
-        COALESCE(b.location, 'unknown') as location
+        COALESCE(vr.provider, 'unknown') as provider,
+        COALESCE(vr.location, 'unknown') as location
       FROM block_metrics b
       FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
+      LEFT JOIN validator_registry vr ON vr.validator_id = COALESCE(b.validator_id, q.validator_id) AND vr.is_active = 1
       WHERE COALESCE(b.validator_id, q.validator_id) IS NOT NULL
       ORDER BY ${this.getSortByClause(sortBy)}
       LIMIT ${limit}
@@ -509,9 +510,7 @@ export class ValidatorController {
             COUNT(*) as total_block_opportunities,
             COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
             COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
-            (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio,
-            any(provider) as provider,
-            any(location) as location
+            (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
           FROM block_proposals
           WHERE validator_id IN (${validatorIdList})
             AND timestamp >= now() - INTERVAL ${intervalClause}
@@ -538,10 +537,11 @@ export class ValidatorController {
         COALESCE(b.blocks_skipped, 0) as blocks_skipped,
         COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
         COALESCE(q.qc_participations, 0) as qc_participations,
-        COALESCE(b.provider, 'unknown') as provider,
-        COALESCE(b.location, 'unknown') as location
+        COALESCE(vr.provider, 'unknown') as provider,
+        COALESCE(vr.location, 'unknown') as location
       FROM block_metrics b
       FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
+      LEFT JOIN validator_registry vr ON vr.validator_id = COALESCE(b.validator_id, q.validator_id) AND vr.is_active = 1
       ORDER BY uptime_score DESC
     `;
 
