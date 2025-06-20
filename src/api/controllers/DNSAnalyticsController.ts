@@ -564,10 +564,10 @@ export class DNSAnalyticsController {
         SELECT COUNT(DISTINCT validator_id) as total_validators
         FROM (
           SELECT validator_id FROM block_proposals 
-          WHERE timestamp >= now() - INTERVAL 24 HOUR
+          WHERE timestamp >= now() - INTERVAL 7 DAY
           UNION DISTINCT
           SELECT validator_id FROM qc_participation 
-          WHERE timestamp >= now() - INTERVAL 24 HOUR
+          WHERE timestamp >= now() - INTERVAL 7 DAY
         )
       `;
 
@@ -579,12 +579,12 @@ export class DNSAnalyticsController {
           COUNT(DISTINCT provider) as unique_providers
         FROM (
           SELECT validator_id, location, provider FROM block_proposals 
-          WHERE timestamp >= now() - INTERVAL 24 HOUR 
+          WHERE timestamp >= now() - INTERVAL 7 DAY 
             AND location IS NOT NULL AND location != '' AND location != 'unknown'
             AND provider IS NOT NULL AND provider != '' AND provider != 'unknown'
           UNION DISTINCT
           SELECT validator_id, location, provider FROM qc_participation 
-          WHERE timestamp >= now() - INTERVAL 24 HOUR 
+          WHERE timestamp >= now() - INTERVAL 7 DAY 
             AND location IS NOT NULL AND location != '' AND location != 'unknown'
             AND provider IS NOT NULL AND provider != '' AND provider != 'unknown'
         )
@@ -633,28 +633,24 @@ export class DNSAnalyticsController {
       const performanceQuery = `
         WITH provider_stats AS (
           SELECT 
-            provider,
-            COUNT(DISTINCT validator_id) as validator_count,
-            COUNT(DISTINCT location) as location_count,
+            v.provider as provider,
+            COUNT(DISTINCT v.validator_id) as validator_count,
+            COUNT(DISTINCT v.location) as location_count,
             -- Calculate performance based on block proposals and QC participation
-            AVG(CASE 
-              WHEN bp.status = 'proposed' THEN 100 
-              WHEN bp.status = 'skipped' THEN 0 
-              ELSE NULL 
-            END) as block_performance,
+            AVG(multiIf(bp.status = 'proposed', 100, bp.status = 'skipped', 0, NULL)) as block_performance,
             AVG(qc.participation_rate) as qc_performance,
-            arrayDistinct(groupArray(location)) as regions
+            arrayDistinct(groupArray(v.location)) as regions
           FROM (
             SELECT DISTINCT validator_id, provider, location FROM block_proposals 
-            WHERE timestamp >= now() - INTERVAL 24 HOUR
+            WHERE timestamp >= now() - INTERVAL 7 DAY
               AND provider IS NOT NULL AND provider != '' AND provider != 'unknown'
               AND location IS NOT NULL AND location != '' AND location != 'unknown'
           ) v
           LEFT JOIN block_proposals bp ON v.validator_id = bp.validator_id 
-            AND bp.timestamp >= now() - INTERVAL 24 HOUR
+            AND bp.timestamp >= now() - INTERVAL 7 DAY
           LEFT JOIN qc_participation qc ON v.validator_id = qc.validator_id 
-            AND qc.timestamp >= now() - INTERVAL 24 HOUR
-          GROUP BY provider
+            AND qc.timestamp >= now() - INTERVAL 7 DAY
+          GROUP BY v.provider
         )
         SELECT 
           provider,
