@@ -33,11 +33,27 @@ export class FocusedLogProcessor {
     if (!this.isInitialized) {
       logger.info('🔧 Initializing Focused Log Processor...');
       
-      // Initialize both services but avoid double initialization
+      // Initialize validator service
       await this.validatorService.initialize();
       
+      // Get current epoch and populate validator registry maps
+      const currentEpoch = this.validatorService.getCurrentEpoch();
+      const validators = await this.validatorService.getAllValidators(currentEpoch);
+      
+      // Convert CompleteValidator[] to ValidatorRegistryEntry[] and populate registry
+      const registryEntries = validators.map((validator: CompleteValidator) => ({
+        validatorId: validator.nodeId, // Use nodeId as validatorId
+        nodeId: validator.nodeId,
+        position: validator.position, // Use the validator's actual position
+        epoch: currentEpoch,
+        stake: validator.stake || 0,
+        isActive: validator.isActive
+      }));
+      
+      this.updateValidatorRegistry(currentEpoch, registryEntries);
+      
       this.isInitialized = true;
-      logger.info('✅ Focused processor initialized with validator registry');
+      logger.info(`✅ Focused processor initialized with ${registryEntries.length} validators for epoch ${currentEpoch}`);
     }
   }
 
