@@ -1,22 +1,15 @@
 /**
  * Domain Extractor Service
  * 
- * Extracts validator names from DNS hostnames by taking the main domain name.
- * Simple approach: take the second-to-last part of the domain.
- * 
- * Examples:
- * - mf-testnet-2-val-tsw-pit-004.monadinfra.com → monadinfra
- * - bue-004.devcore4.com → devcore4
- * - monad.testnet.lux8.net → lux8
- * - monad-testnet.stakecraft.com → stakecraft
- * - monad.0xhub.xyz → 0xhub
+ * Extracts validator names from DNS hostnames using the simple pattern:
+ * xxx.domain_name.tld → domain_name 
  */
 
 export class DomainExtractor {
   
   /**
    * Extract validator name from hostname
-   * Simply takes the main domain name (second-to-last part)
+   * Takes the domain name (second-to-last part before TLD)
    */
   extractValidatorName(hostname: string): string {
     const cleanHostname = hostname.toLowerCase().trim().split(':')[0];
@@ -26,8 +19,11 @@ export class DomainExtractor {
       return 'unknown';
     }
     
-    // Take the second-to-last part (main domain name)
-    return parts[parts.length - 2];
+    // Take the second-to-last part (domain_name before TLD)
+    const domainName = parts[parts.length - 2];
+    
+    // Capitalize first letter
+    return domainName.charAt(0).toUpperCase() + domainName.slice(1);
   }
   
   /**
