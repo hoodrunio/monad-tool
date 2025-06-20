@@ -11,6 +11,12 @@ interface ValidatorRecord {
   location: string;
 }
 
+interface ExtractionResult {
+  validatorName: string;
+  method: 'custom_mapping' | 'default_extraction' | 'provider_fallback' | 'unknown';
+  source: string;
+}
+
 class ValidatorNamesFixer {
   private clickhouseClient: MonadClickHouseClient;
   private domainExtractor: DomainExtractor;
@@ -34,6 +40,9 @@ class ValidatorNamesFixer {
   async run(): Promise<void> {
     try {
       console.log('🔧 Starting Validator Names Schema Fix...\n');
+
+      // Step 0: Show current custom mappings
+      await this.showCustomMappings();
 
       // Step 1: Check current table structure
       await this.checkTableStructure();
@@ -59,6 +68,20 @@ class ValidatorNamesFixer {
     } finally {
       await this.clickhouseClient.close();
     }
+  }
+
+  private async showCustomMappings(): Promise<void> {
+    console.log('🗺️  Current Custom Domain Mappings:');
+    const mappings = DomainExtractor.getCustomMappings();
+    
+    if (mappings.size === 0) {
+      console.log('   No custom mappings configured');
+    } else {
+      mappings.forEach((validatorName, hostname) => {
+        console.log(`   ${hostname} → ${validatorName}`);
+      });
+    }
+    console.log(`   Total: ${mappings.size} custom mappings\n`);
   }
 
   private async checkTableStructure(): Promise<void> {
@@ -144,6 +167,9 @@ class ValidatorNamesFixer {
     console.log('\n🏷️  Extracting and updating validator names...');
 
     let updatedCount = 0;
+    let customMappingCount = 0;
+    let defaultExtractionCount = 0;
+    let providerFallbackCount = 0;
     const batchSize = 50;
 
     for (let i = 0; i < validators.length; i += batchSize) {
@@ -153,12 +179,27 @@ class ValidatorNamesFixer {
 
       for (const validator of batch) {
         try {
-          const validatorName = this.extractValidatorName(validator);
+          const extractionResult = this.extractValidatorNameWithMethod(validator);
           
-          if (validatorName && validatorName !== 'unknown') {
-            await this.updateValidatorName(validator.validator_id, validatorName);
+          if (extractionResult.validatorName && extractionResult.validatorName !== 'unknown') {
+            await this.updateValidatorName(validator.validator_id, extractionResult.validatorName);
             updatedCount++;
-            console.log(`  ✅ ${validator.validator_id}: "${validatorName}"`);
+            
+            // Count extraction methods
+            switch (extractionResult.method) {
+              case 'custom_mapping':
+                customMappingCount++;
+                console.log(`  🎯 ${validator.validator_id}: "${extractionResult.validatorName}" (custom mapping from ${extractionResult.source})`);
+                break;
+              case 'default_extraction':
+                defaultExtractionCount++;
+                console.log(`  ✅ ${validator.validator_id}: "${extractionResult.validatorName}" (extracted from ${extractionResult.source})`);
+                break;
+              case 'provider_fallback':
+                providerFallbackCount++;
+                console.log(`  📍 ${validator.validator_id}: "${extractionResult.validatorName}" (provider fallback)`);
+                break;
+            }
           } else {
             console.log(`  ⚠️  ${validator.validator_id}: No name extracted (DNS: ${validator.dns_address || 'none'})`);
           }
@@ -173,31 +214,57 @@ class ValidatorNamesFixer {
       }
     }
 
-    console.log(`\n📊 Updated ${updatedCount}/${validators.length} validator names`);
+    console.log(`\n📊 Extraction Summary:`);
+    console.log(`   Total Updated: ${updatedCount}/${validators.length}`);
+    console.log(`   Custom Mappings: ${customMappingCount}`);
+    console.log(`   Default Extraction: ${defaultExtractionCount}`);
+    console.log(`   Provider Fallback: ${providerFallbackCount}`);
   }
 
-  private extractValidatorName(validator: ValidatorRecord): string {
-    // Strategy 1: Extract from DNS host (primary)
+  private extractValidatorNameWithMethod(validator: ValidatorRecord): ExtractionResult {
+    // Strategy 1: Check DNS host with custom mappings first
     if (validator.dns_host) {
+      const hasCustomMapping = DomainExtractor.hasCustomMapping(validator.dns_host);
       const name = this.domainExtractor.extractValidatorName(validator.dns_host);
-      if (name && name !== 'unknown') return name;
+      
+      if (name && name !== 'unknown') {
+        return {
+          validatorName: name,
+          method: hasCustomMapping ? 'custom_mapping' : 'default_extraction',
+          source: validator.dns_host
+        };
+      }
     }
 
-    // Strategy 2: Extract from DNS address (fallback)  
+    // Strategy 2: Check DNS address with custom mappings
     if (validator.dns_address) {
+      const hasCustomMapping = DomainExtractor.hasCustomMapping(validator.dns_address);
       const name = this.domainExtractor.extractValidatorName(validator.dns_address);
-      if (name && name !== 'unknown') return name;
+      
+      if (name && name !== 'unknown') {
+        return {
+          validatorName: name,
+          method: hasCustomMapping ? 'custom_mapping' : 'default_extraction',
+          source: validator.dns_address
+        };
+      }
     }
 
     // Strategy 3: Use provider as fallback
     if (validator.provider && validator.provider !== 'unknown') {
-      return `${validator.provider}_validator`;
+      return {
+        validatorName: `${validator.provider}_validator`,
+        method: 'provider_fallback',
+        source: 'provider'
+      };
     }
 
-    return 'unknown';
+    return {
+      validatorName: 'unknown',
+      method: 'unknown',
+      source: 'none'
+    };
   }
-
-
 
   private async updateValidatorName(validatorId: string, validatorName: string): Promise<void> {
     // First, get the current record data
@@ -300,13 +367,13 @@ class ValidatorNamesFixer {
     console.log(`Without Names: ${result.validators_without_names}`);
     console.log(`Completion Rate: ${parseFloat(result.name_completion_rate).toFixed(1)}%`);
 
-    // Show some examples
+    // Show some examples with method breakdown
     const examplesQuery = `
-      SELECT validator_id, validator_name, dns_address, provider
+      SELECT validator_id, validator_name, dns_address, dns_host, provider
       FROM validator_registry 
       WHERE is_active = 1 AND validator_name != 'unknown'
       ORDER BY validator_name
-      LIMIT 10
+      LIMIT 15
     `;
 
     const examples = await this.clickhouseClient.executeRawQuery(examplesQuery);
@@ -314,8 +381,17 @@ class ValidatorNamesFixer {
     if (examples.length > 0) {
       console.log('\n🏷️  Sample Validator Names:');
       examples.forEach(v => {
-        console.log(`  ${v.validator_name} (${v.validator_id.slice(0, 8)}...) - ${v.dns_address || 'no DNS'}`);
+        const source = v.dns_host || v.dns_address || 'provider';
+        const hasCustomMapping = DomainExtractor.hasCustomMapping(source);
+        const method = hasCustomMapping ? '🎯' : (source === 'provider' ? '📍' : '✅');
+        
+        console.log(`  ${method} ${v.validator_name} (${v.validator_id.slice(0, 8)}...) - ${source}`);
       });
+      
+      console.log('\n🏷️  Legend:');
+      console.log('   🎯 = Custom mapping');
+      console.log('   ✅ = Default extraction');
+      console.log('   📍 = Provider fallback');
     }
   }
 }
