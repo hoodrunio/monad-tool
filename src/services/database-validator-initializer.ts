@@ -1,0 +1,339 @@
+/**
+ * Database Validator Initializer
+ * 
+ * Ensures all validators are properly recorded in the database before program startup.
+ * This is a critical dependency check that must pass before any log processing begins.
+ */
+
+import { MonadClickHouseClient } from '../database/clickhouse-client';
+import { ValidatorService } from './unified-validator';
+import { logger } from '../utils/logger';
+
+export interface ValidatorDatabaseRecord {
+  validator_id: string;
+  node_id: string;
+  epoch: number;
+  stake: number;
+  position: number;
+  is_active: boolean;
+  dns_address: string;
+  dns_host: string;
+  dns_port: number;
+  provider: string;
+  location: string;
+  country: string;
+  datacenter: string;
+  first_seen: Date;
+  last_updated: Date;
+}
+
+export interface DatabaseValidatorStats {
+  totalValidators: number;
+  validatorsWithDns: number;
+  validatorsWithLocation: number;
+  epochs: number[];
+  lastUpdated: Date | null;
+  completionRate: number;
+}
+
+export class DatabaseValidatorInitializer {
+  private clickhouseClient: MonadClickHouseClient;
+  private validatorService: ValidatorService;
+
+  constructor(clickhouseClient: MonadClickHouseClient) {
+    this.clickhouseClient = clickhouseClient;
+    this.validatorService = new ValidatorService();
+  }
+
+  /**
+   * Main initialization method - ensures validators are in database
+   */
+  async ensureValidatorsInDatabase(): Promise<void> {
+    logger.info('🔍 Starting database validator initialization check...');
+
+    try {
+      // Step 1: Check current database state
+      const currentStats = await this.getDatabaseValidatorStats();
+      logger.info('📊 Current database validator stats:', currentStats);
+
+      // Step 2: Determine if we need to initialize
+      const needsInitialization = await this.needsValidatorInitialization(currentStats);
+
+      if (!needsInitialization) {
+        logger.info('✅ Database validator check passed - all validators are recorded');
+        return;
+      }
+
+      // Step 3: Perform validator mapping and database population
+      logger.info('🔧 Database validation failed - performing validator initialization...');
+      await this.initializeValidatorsInDatabase();
+
+      // Step 4: Verify initialization was successful
+      const finalStats = await this.getDatabaseValidatorStats();
+      logger.info('📈 Post-initialization validator stats:', finalStats);
+
+      if (!await this.needsValidatorInitialization(finalStats)) {
+        logger.info('✅ Database validator initialization completed successfully');
+      } else {
+        throw new Error('Database validator initialization failed - some validators are still missing');
+      }
+
+    } catch (error) {
+      logger.error('❌ Database validator initialization failed:', error);
+      throw new Error(`Critical startup dependency failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  /**
+   * Get current validator statistics from database
+   */
+  async getDatabaseValidatorStats(): Promise<DatabaseValidatorStats> {
+    try {
+      const query = `
+        SELECT 
+          COUNT(*) as total_validators,
+          SUM(CASE WHEN dns_address != '' THEN 1 ELSE 0 END) as validators_with_dns,
+          SUM(CASE WHEN location != 'unknown' AND location != '' THEN 1 ELSE 0 END) as validators_with_location,
+          uniq(epoch) as unique_epochs,
+          groupArray(DISTINCT epoch) as epochs,
+          MAX(last_updated) as last_updated
+        FROM validator_registry
+        WHERE is_active = 1
+      `;
+
+      const results = await this.clickhouseClient.executeRawQuery(query);
+      
+      if (results.length === 0) {
+        return {
+          totalValidators: 0,
+          validatorsWithDns: 0,
+          validatorsWithLocation: 0,
+          epochs: [],
+          lastUpdated: null,
+          completionRate: 0
+        };
+      }
+
+      const row = results[0];
+      const totalValidators = row.total_validators || 0;
+      const validatorsWithLocation = row.validators_with_location || 0;
+
+      return {
+        totalValidators,
+        validatorsWithDns: row.validators_with_dns || 0,
+        validatorsWithLocation,
+        epochs: row.epochs || [],
+        lastUpdated: row.last_updated ? new Date(row.last_updated) : null,
+        completionRate: totalValidators > 0 ? (validatorsWithLocation / totalValidators) * 100 : 0
+      };
+
+    } catch (error) {
+      logger.warn('Could not query database validator stats:', error);
+      return {
+        totalValidators: 0,
+        validatorsWithDns: 0,
+        validatorsWithLocation: 0,
+        epochs: [],
+        lastUpdated: null,
+        completionRate: 0
+      };
+    }
+  }
+
+  /**
+   * Determine if validator initialization is needed
+   */
+  private async needsValidatorInitialization(stats: DatabaseValidatorStats): Promise<boolean> {
+    // No validators at all - definitely need initialization
+    if (stats.totalValidators === 0) {
+      logger.info('❌ No validators found in database - initialization required');
+      return true;
+    }
+
+    // Get expected validator count from ValidatorService
+    await this.validatorService.initialize();
+    const expectedValidators = this.validatorService.getStats().totalValidators;
+
+    // Check if we have the expected number of validators
+    if (stats.totalValidators < expectedValidators) {
+      logger.info(`❌ Database has ${stats.totalValidators} validators, expected ${expectedValidators} - initialization required`);
+      return true;
+    }
+
+    // Check completion rate - we want at least 80% of validators to have location data
+    if (stats.completionRate < 80) {
+      logger.info(`❌ Only ${stats.completionRate.toFixed(1)}% of validators have location data - initialization required`);
+      return true;
+    }
+
+    // Check if data is too old (more than 24 hours)
+    if (stats.lastUpdated && (Date.now() - stats.lastUpdated.getTime()) > 24 * 60 * 60 * 1000) {
+      logger.info('❌ Validator data is more than 24 hours old - initialization required');
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Initialize validators in database using ValidatorService
+   */
+  private async initializeValidatorsInDatabase(): Promise<void> {
+    logger.info('🔧 Starting validator mapping and database population...');
+
+    // Initialize the ValidatorService
+    await this.validatorService.initialize();
+
+    // Get all validators from the service
+    const allValidators = await this.validatorService.getAllValidators();
+    logger.info(`📋 Found ${allValidators.length} validators to process`);
+
+    if (allValidators.length === 0) {
+      throw new Error('No validators found in ValidatorService - cannot initialize database');
+    }
+
+    // Batch process validators for database insertion
+    const batchSize = 10;
+    const batches = [];
+    
+    for (let i = 0; i < allValidators.length; i += batchSize) {
+      batches.push(allValidators.slice(i, i + batchSize));
+    }
+
+    logger.info(`📦 Processing ${batches.length} batches of validators...`);
+
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      logger.info(`📦 Processing batch ${i + 1}/${batches.length} (${batch.length} validators)...`);
+      await this.insertValidatorBatch(batch);
+    }
+
+    logger.info('✅ All validator batches processed successfully');
+  }
+
+  /**
+   * Insert a batch of validators into the database
+   */
+  private async insertValidatorBatch(validators: any[]): Promise<void> {
+    const now = new Date();
+    
+    const data = validators.map(validator => ({
+      validator_id: validator.nodeId,
+      node_id: validator.nodeId,
+      epoch: validator.epoch || 1,
+      stake: validator.stake,
+      position: validator.position,
+      is_active: 1,
+      dns_address: validator.location?.dnsAddress || '',
+      dns_host: validator.location?.dnsAddress ? validator.location.dnsAddress.split(':')[0] || '' : '',
+      dns_port: validator.location?.dnsAddress ? parseInt(validator.location.dnsAddress.split(':')[1] || '8000') : 8000,
+      provider: validator.location?.isp || 'unknown',
+      location: validator.location ? `${validator.location.city || 'unknown'}, ${validator.location.country || 'unknown'}` : 'unknown',
+      country: validator.location?.country || 'unknown',
+      datacenter: validator.location?.isp || 'unknown',
+      first_seen: now,
+      last_updated: now
+    }));
+
+    try {
+      // Use a raw query to insert data into validator_registry with proper DateTime formatting
+      const values = data.map(d => 
+        `('${d.validator_id}', '${d.node_id}', ${d.epoch}, ${d.stake}, ${d.position}, ${d.is_active}, ` +
+        `'${d.dns_address}', '${d.dns_host}', ${d.dns_port}, '${d.provider}', '${d.location}', ` +
+        `'${d.country}', '${d.datacenter}', '${this.formatTimestamp(d.first_seen)}', '${this.formatTimestamp(d.last_updated)}')`
+      ).join(',');
+
+      const insertQuery = `
+        INSERT INTO validator_registry 
+        (validator_id, node_id, epoch, stake, position, is_active, dns_address, dns_host, dns_port, 
+         provider, location, country, datacenter, first_seen, last_updated)
+        VALUES ${values}
+      `;
+
+      await this.clickhouseClient.executeCommand(insertQuery);
+      logger.info(`💾 Successfully inserted ${data.length} validators into database`);
+    } catch (error) {
+      logger.error('Failed to insert validator batch:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get detailed validator information from database
+   */
+  async getValidatorFromDatabase(validatorId: string): Promise<ValidatorDatabaseRecord | null> {
+    const query = `
+      SELECT *
+      FROM validator_registry
+      WHERE validator_id = '${validatorId}' 
+        AND is_active = 1
+      ORDER BY last_updated DESC
+      LIMIT 1
+    `;
+
+    try {
+      const results = await this.clickhouseClient.executeRawQuery(query);
+      return results.length > 0 ? results[0] as ValidatorDatabaseRecord : null;
+    } catch (error) {
+      logger.error(`Failed to get validator ${validatorId} from database:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Update validator information in database
+   */
+  async updateValidatorInDatabase(validatorId: string, updates: Partial<ValidatorDatabaseRecord>): Promise<void> {
+    const current = await this.getValidatorFromDatabase(validatorId);
+    if (!current) {
+      throw new Error(`Validator ${validatorId} not found in database`);
+    }
+
+    const updatedValidator = {
+      ...current,
+      ...updates,
+      last_updated: new Date()
+    };
+
+    await this.insertValidatorBatch([updatedValidator]);
+    logger.info(`🔄 Updated validator ${validatorId} in database`);
+  }
+
+  /**
+   * Health check for database validator system
+   */
+  async healthCheck(): Promise<{
+    healthy: boolean;
+    stats: DatabaseValidatorStats;
+    issues: string[];
+  }> {
+    const stats = await this.getDatabaseValidatorStats();
+    const issues: string[] = [];
+    
+    if (stats.totalValidators === 0) {
+      issues.push('No validators found in database');
+    }
+    
+    if (stats.completionRate < 80) {
+      issues.push(`Low completion rate: ${stats.completionRate.toFixed(1)}%`);
+    }
+    
+    if (stats.lastUpdated && (Date.now() - stats.lastUpdated.getTime()) > 24 * 60 * 60 * 1000) {
+      issues.push('Validator data is more than 24 hours old');
+    }
+
+    return {
+      healthy: issues.length === 0,
+      stats,
+      issues
+    };
+  }
+
+  /**
+   * Format Date to ClickHouse DateTime64 format
+   */
+  private formatTimestamp(date: Date): string {
+    // Format Date to ClickHouse DateTime64 format: 'YYYY-MM-DD HH:mm:ss.SSS'
+    return date.toISOString().replace('T', ' ').replace('Z', '');
+  }
+} 

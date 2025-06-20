@@ -1,5 +1,6 @@
 // Monad Validator Analytics - Main Application Entry Point
 import 'dotenv/config';
+import { ApplicationInitializer } from './startup/application-initializer';
 import { DataIngestionService, IngestionConfig } from './services/data-ingestion';
 import { SystemdLogStream, SystemdLogStreamConfig } from './services/systemd-log-stream';
 import { AnalyticsAPIServer } from './api/server';
@@ -7,8 +8,33 @@ import { logger } from './utils/logger';
 
 async function main() {
   logger.info('🚀 Starting Monad Validator Analytics System');
+  logger.info('⚠️  CRITICAL: System will validate all validators are in database before proceeding');
 
   try {
+    // =============================================
+    // PHASE 1: CRITICAL STARTUP VALIDATION
+    // =============================================
+    
+    logger.info('🔍 Phase 1: Starting critical application initialization...');
+    
+    // Initialize application with validator database validation
+    const applicationInitializer = new ApplicationInitializer(ApplicationInitializer.createDefaultConfig());
+    const startupResult = await applicationInitializer.initialize();
+    
+    if (!startupResult.success) {
+      logger.error('❌ Application initialization failed');
+      throw new Error(`Startup validation failed: ${startupResult.errors.join(', ')}`);
+    }
+    
+    logger.info('✅ Critical startup validation completed successfully');
+    logger.info(`📊 Database initialized with ${startupResult.validatorStats.totalValidators} validators (${startupResult.validatorStats.completionRate.toFixed(1)}% with location data)`);
+    
+    // =============================================
+    // PHASE 2: REGULAR APPLICATION STARTUP
+    // =============================================
+    
+    logger.info('🔧 Phase 2: Starting application services...');
+    
     // Load configuration
     const config = loadConfiguration();
     
@@ -30,8 +56,8 @@ async function main() {
       enableRateLimit: true
     }, ingestionService);
     
-    // Setup graceful shutdown
-    setupGracefulShutdown(ingestionService, apiServer, logStream);
+    // Setup graceful shutdown with application initializer
+    setupGracefulShutdown(ingestionService, apiServer, logStream, applicationInitializer);
     
     // Start services
     await ingestionService.start();
@@ -54,10 +80,13 @@ async function main() {
       logger.info('✅ Demo log files processed');
     }
     
-    logger.info('✅ Monad Validator Analytics System started successfully');
+    logger.info('🎉 Monad Validator Analytics System started successfully');
+    logger.info(`⚡ Total startup time: ${startupResult.timeMs + (Date.now() - Date.now())}ms`);
+    logger.info('🔄 System is ready to process validator analytics with validated database');
     
   } catch (error) {
     logger.error('❌ Failed to start Monad Validator Analytics System:', error);
+    logger.error('🚫 Startup failed - ensure ClickHouse is running and validator data is available');
     process.exit(1);
   }
 }
@@ -145,7 +174,8 @@ function setupLogStreamHandlers(logStream: SystemdLogStream): void {
 function setupGracefulShutdown(
   ingestionService: DataIngestionService, 
   apiServer: AnalyticsAPIServer,
-  logStream?: SystemdLogStream | null
+  logStream?: SystemdLogStream | null,
+  applicationInitializer?: ApplicationInitializer
 ) {
   const gracefulShutdown = async (signal: string) => {
     logger.info(`🛑 Received ${signal}, starting graceful shutdown...`);
@@ -164,6 +194,12 @@ function setupGracefulShutdown(
       // Stop data ingestion service
       await ingestionService.stop();
       logger.info('✅ Data ingestion service stopped');
+      
+      // Cleanup application initializer resources
+      if (applicationInitializer) {
+        await applicationInitializer.shutdown();
+        logger.info('✅ Application initializer cleaned up');
+      }
       
       logger.info('✅ Graceful shutdown completed');
       process.exit(0);
