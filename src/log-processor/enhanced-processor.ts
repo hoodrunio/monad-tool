@@ -15,7 +15,6 @@ import {
 import { ValidatorService, CompleteValidator } from '../services/unified-validator';
 import { MonadClickHouseClient } from '../database/clickhouse-client';
 import { logger } from '../utils/logger';
-import { validatorRegistry } from '../services/validator-registry';
 
 export class FocusedLogProcessor {
   private validatorService: ValidatorService;
@@ -35,7 +34,8 @@ export class FocusedLogProcessor {
       logger.info('🔧 Initializing Focused Log Processor...');
       
       // Initialize both services but avoid double initialization
-      await this.validatorService.initialize();      
+      await this.validatorService.initialize();
+      
       this.isInitialized = true;
       logger.info('✅ Focused processor initialized with validator registry');
     }
@@ -303,39 +303,6 @@ export class FocusedLogProcessor {
   // VALIDATOR REGISTRY MANAGEMENT
   // =============================================
 
-  private async loadValidatorRegistry(): Promise<void> {
-    try {
-      // Initialize validator registry (has internal guard against double initialization)
-      await validatorRegistry.initialize();
-      
-      // Get all validators for current epoch
-      const validators = validatorRegistry.getAllValidators();
-      
-      // Populate our internal registry map with validator positions
-      this.validatorRegistry.clear();
-      this.bitVecIndexToPosition.clear();
-      
-      validators.forEach((validator, index) => {
-        const registryEntry = {
-          position: validator.position,
-          validatorId: validator.node_id,
-          nodeId: validator.node_id,
-          stake: validator.stake
-        };
-        
-        this.validatorRegistry.set(validator.position, registryEntry);
-        // For now, assume BitVec index matches registry index
-        // This mapping can be updated if we discover the actual relationship
-        this.bitVecIndexToPosition.set(index, validator.position);
-      });
-      
-      logger.info(`📋 Loaded ${validators.length} validators from registry for epoch ${validatorRegistry.getCurrentEpoch()}`);
-    } catch (error) {
-      logger.error('Failed to load validator registry:', error);
-      // Fall back to dynamic population
-      logger.warn('📋 Falling back to dynamic validator population');
-    }
-  }
 
   updateValidatorRegistry(epoch: number, validators: ValidatorRegistryEntry[]): void {
     this.validatorRegistry.clear();
