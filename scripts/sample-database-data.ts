@@ -46,9 +46,12 @@ class DatabaseSampler {
 
   async getTableRowCount(tableName: string): Promise<number> {
     try {
-      const query = `SELECT count() as total FROM ${tableName}`;
+      // Use count(*) which is more reliable than count()
+      const query = `SELECT count(*) as total FROM ${tableName}`;
       const result = await this.client.executeRawQuery(query);
-      return result[0]?.total || 0;
+      const count = result[0]?.total || 0;
+      logger.debug(`📊 Table ${tableName} has ${count} rows`);
+      return count;
     } catch (error) {
       logger.error(`Failed to get row count for ${tableName}:`, error);
       return 0;
@@ -70,20 +73,42 @@ class DatabaseSampler {
         };
       }
 
-      // Get random sample data using ClickHouse's SAMPLE function for better randomization
+      // Try to get random sample data with fallback strategy
+      let sampleData: any[] = [];
       let query: string;
       
       if (rowCount <= limit) {
         // If table has fewer rows than limit, get all rows
         query = `SELECT * FROM ${tableName} ORDER BY rand() LIMIT ${limit}`;
+        sampleData = await this.client.executeRawQuery(query);
       } else {
-        // Use sampling for better performance on large tables
-        // SAMPLE 0.1 means sample ~10% of data, then randomize and limit
-        const sampleRatio = Math.min(0.5, (limit * 10) / rowCount); // Sample at least 10x the needed records for better randomization
-        query = `SELECT * FROM ${tableName} SAMPLE ${sampleRatio} ORDER BY rand() LIMIT ${limit}`;
+        // First try SAMPLE for better performance on large tables
+        try {
+          const sampleRatio = Math.min(0.5, (limit * 10) / rowCount);
+          query = `SELECT * FROM ${tableName} SAMPLE ${sampleRatio} ORDER BY rand() LIMIT ${limit}`;
+          sampleData = await this.client.executeRawQuery(query);
+        } catch (sampleError: any) {
+          // If SAMPLE is not supported, fallback to simple random ordering
+          if (sampleError.message?.includes('SAMPLE')) {
+            logger.info(`⚠️  SAMPLE not supported for ${tableName}, using ORDER BY rand() fallback`);
+            
+            // For very large tables, use a more efficient approach
+            if (rowCount > 100000) {
+              // Use OFFSET with random position for large tables
+              const maxOffset = Math.max(0, rowCount - limit);
+              const randomOffset = Math.floor(Math.random() * maxOffset);
+              query = `SELECT * FROM ${tableName} LIMIT ${limit} OFFSET ${randomOffset}`;
+            } else {
+              // Use ORDER BY rand() for smaller tables
+              query = `SELECT * FROM ${tableName} ORDER BY rand() LIMIT ${limit}`;
+            }
+            
+            sampleData = await this.client.executeRawQuery(query);
+          } else {
+            throw sampleError;
+          }
+        }
       }
-
-      const sampleData = await this.client.executeRawQuery(query);
 
       return {
         tableName,
