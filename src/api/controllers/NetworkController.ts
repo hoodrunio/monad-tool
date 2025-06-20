@@ -337,15 +337,15 @@ export class NetworkController {
         WITH validator_locations AS (
           SELECT DISTINCT 
             validator_id,
-            COALESCE(location, 'unknown') as location
+            location
           FROM (
-            SELECT validator_id, location FROM block_proposals 
+            SELECT validator_id, COALESCE(location, 'unknown') as location FROM block_proposals 
             WHERE timestamp >= now() - INTERVAL ${intervalClause}
-              AND location IS NOT NULL AND location != ''
+              AND validator_id IS NOT NULL AND validator_id != ''
             UNION DISTINCT
-            SELECT validator_id, location FROM qc_participation 
+            SELECT validator_id, COALESCE(location, 'unknown') as location FROM qc_participation 
             WHERE timestamp >= now() - INTERVAL ${intervalClause}
-              AND location IS NOT NULL AND location != ''
+              AND validator_id IS NOT NULL AND validator_id != ''
           )
         ),
         location_stats AS (
@@ -353,6 +353,7 @@ export class NetworkController {
             location,
             COUNT(DISTINCT validator_id) as validator_count
           FROM validator_locations
+          WHERE location IS NOT NULL AND location != ''
           GROUP BY location
         ),
         block_metrics AS (
@@ -363,7 +364,6 @@ export class NetworkController {
             (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate
           FROM block_proposals
           WHERE timestamp >= now() - INTERVAL ${intervalClause}
-            AND location IS NOT NULL AND location != ''
           GROUP BY location
         ),
         qc_metrics AS (
@@ -374,12 +374,11 @@ export class NetworkController {
             (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_success_rate
           FROM qc_participation
           WHERE timestamp >= now() - INTERVAL ${intervalClause}
-            AND location IS NOT NULL AND location != ''
           GROUP BY location
         )
         SELECT 
-          l.location,
-          l.validator_count,
+          COALESCE(l.location, b.location, q.location) as location,
+          COALESCE(l.validator_count, 0) as validator_count,
           COALESCE(b.total_block_events, 0) as block_events,
           COALESCE(b.block_success_rate, 0) as block_success_rate,
           COALESCE(q.total_qc_events, 0) as qc_events,
@@ -392,9 +391,11 @@ export class NetworkController {
             ELSE 0
           END as overall_success_rate
         FROM location_stats l
-        LEFT JOIN block_metrics b ON l.location = b.location
-        LEFT JOIN qc_metrics q ON l.location = q.location
-        ORDER BY l.validator_count DESC
+        FULL OUTER JOIN block_metrics b ON l.location = b.location
+        FULL OUTER JOIN qc_metrics q ON l.location = q.location
+        WHERE COALESCE(l.location, b.location, q.location) IS NOT NULL 
+          AND COALESCE(l.location, b.location, q.location) != ''
+        ORDER BY COALESCE(l.validator_count, 0) DESC
       `;
 
       const result = await this.clickhouseClient.executeRawQuery(geoQuery);
