@@ -57,13 +57,32 @@ class DatabaseSampler {
 
   async getTableSample(tableName: string, limit: number = 5): Promise<TableSample> {
     try {
-      logger.info(`📊 Sampling ${limit} records from table: ${tableName}`);
+      logger.info(`📊 Sampling ${limit} random records from table: ${tableName}`);
 
       // Get row count first
       const rowCount = await this.getTableRowCount(tableName);
 
-      // Get sample data
-      const query = `SELECT * FROM ${tableName} LIMIT ${limit}`;
+      if (rowCount === 0) {
+        return {
+          tableName,
+          rowCount,
+          sampleData: []
+        };
+      }
+
+      // Get random sample data using ClickHouse's SAMPLE function for better randomization
+      let query: string;
+      
+      if (rowCount <= limit) {
+        // If table has fewer rows than limit, get all rows
+        query = `SELECT * FROM ${tableName} ORDER BY rand() LIMIT ${limit}`;
+      } else {
+        // Use sampling for better performance on large tables
+        // SAMPLE 0.1 means sample ~10% of data, then randomize and limit
+        const sampleRatio = Math.min(0.5, (limit * 10) / rowCount); // Sample at least 10x the needed records for better randomization
+        query = `SELECT * FROM ${tableName} SAMPLE ${sampleRatio} ORDER BY rand() LIMIT ${limit}`;
+      }
+
       const sampleData = await this.client.executeRawQuery(query);
 
       return {
@@ -180,9 +199,11 @@ class DatabaseSampler {
     return output;
   }
 
-  async run(): Promise<void> {
+  async run(sampleSize: number = 5): Promise<void> {
     try {
-      logger.info('🚀 Starting database sampling...');
+      const startTime = new Date();
+      logger.info(`🚀 Starting database sampling at ${startTime.toISOString()}`);
+      logger.info(`🎲 Random sampling ${sampleSize} records per table`);
 
       // Test connection
       const isConnected = await this.client.ping();
@@ -202,6 +223,12 @@ class DatabaseSampler {
 
       logger.info(`📊 Found ${tables.length} tables: ${tables.join(', ')}`);
 
+      // Add sampling header
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`🎲 RANDOM DATABASE SAMPLING - ${startTime.toLocaleString()}`);
+      console.log(`📊 Sampling ${sampleSize} random records from each table`);
+      console.log(`${'='.repeat(80)}`);
+
       // Generate schema overview
       const schemaOverview = await this.generateSchemaOverview(tables);
       console.log(schemaOverview);
@@ -210,7 +237,7 @@ class DatabaseSampler {
       const samples: TableSample[] = [];
       
       for (const tableName of tables) {
-        const sample = await this.getTableSample(tableName, 5);
+        const sample = await this.getTableSample(tableName, sampleSize);
         samples.push(sample);
         
         // Display results immediately
@@ -219,6 +246,10 @@ class DatabaseSampler {
 
       // Generate summary
       this.generateSummary(samples);
+
+      const endTime = new Date();
+      const duration = endTime.getTime() - startTime.getTime();
+      console.log(`⏱️  Total execution time: ${duration}ms`);
 
     } catch (error) {
       logger.error('❌ Script execution failed:', error);
@@ -258,8 +289,61 @@ class DatabaseSampler {
 
 // Script execution
 async function main(): Promise<void> {
+  // Parse command line arguments
+  const args = process.argv.slice(2);
+  let sampleSize = 5; // Default sample size
+
+  // Check for --samples or -s parameter
+  const sampleArg = args.find(arg => arg.startsWith('--samples=') || arg.startsWith('-s='));
+  if (sampleArg) {
+    const value = parseInt(sampleArg.split('=')[1]);
+    if (!isNaN(value) && value > 0) {
+      sampleSize = value;
+    }
+  }
+
+  // Check for positional argument
+  if (args.length > 0 && !args[0].startsWith('-')) {
+    const value = parseInt(args[0]);
+    if (!isNaN(value) && value > 0) {
+      sampleSize = value;
+    }
+  }
+
+  // Display help if requested
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`
+🎲 Monad Database Sampling Tool
+=============================
+
+Usage:
+  tsx scripts/sample-database-data.ts [SAMPLE_SIZE]
+  tsx scripts/sample-database-data.ts --samples=10
+  tsx scripts/sample-database-data.ts -s=10
+
+Parameters:
+  SAMPLE_SIZE     Number of random records to sample from each table (default: 5)
+  --samples=N     Number of samples per table
+  -s=N           Short form of --samples
+  --help, -h     Show this help message
+
+Examples:
+  tsx scripts/sample-database-data.ts           # Sample 5 records per table
+  tsx scripts/sample-database-data.ts 10        # Sample 10 records per table
+  tsx scripts/sample-database-data.ts --samples=20  # Sample 20 records per table
+
+Environment Variables:
+  CLICKHOUSE_HOST     ClickHouse server host (default: localhost)
+  CLICKHOUSE_PORT     ClickHouse server port (default: 8123)
+  CLICKHOUSE_USER     ClickHouse username (default: default)
+  CLICKHOUSE_PASSWORD ClickHouse password (default: empty)
+  CLICKHOUSE_DATABASE Database name (default: monad_analytics)
+`);
+    return;
+  }
+
   const sampler = new DatabaseSampler();
-  await sampler.run();
+  await sampler.run(sampleSize);
 }
 
 if (require.main === module) {
