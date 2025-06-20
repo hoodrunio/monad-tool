@@ -232,29 +232,29 @@ export class DatabaseValidatorInitializer {
     const now = new Date();
     
     const data = validators.map(validator => ({
-      validator_id: validator.nodeId,
-      node_id: validator.nodeId,
+      validator_id: this.escapeString(validator.nodeId),
+      node_id: this.escapeString(validator.nodeId),
       epoch: validator.epoch || 1,
       stake: validator.stake,
       position: validator.position,
       is_active: 1,
-      dns_address: validator.location?.dnsAddress || '',
-      dns_host: validator.location?.dnsAddress ? validator.location.dnsAddress.split(':')[0] || '' : '',
+      dns_address: this.escapeString(validator.location?.dnsAddress || ''),
+      dns_host: this.escapeString(validator.location?.dnsAddress ? validator.location.dnsAddress.split(':')[0] || '' : ''),
       dns_port: validator.location?.dnsAddress ? parseInt(validator.location.dnsAddress.split(':')[1] || '8000') : 8000,
-      provider: validator.location?.isp || 'unknown',
-      location: validator.location ? `${validator.location.city || 'unknown'}, ${validator.location.country || 'unknown'}` : 'unknown',
-      country: validator.location?.country || 'unknown',
-      datacenter: validator.location?.isp || 'unknown',
-      first_seen: now,
-      last_updated: now
+      provider: this.escapeString(validator.location?.isp || 'unknown'),
+      location: this.escapeString(validator.location ? `${validator.location.city || 'unknown'}, ${validator.location.country || 'unknown'}` : 'unknown'),
+      country: this.escapeString(validator.location?.country || 'unknown'),
+      datacenter: this.escapeString(validator.location?.isp || 'unknown'),
+      first_seen: this.formatTimestamp(now),
+      last_updated: this.formatTimestamp(now)
     }));
 
     try {
-      // Use a raw query to insert data into validator_registry with proper DateTime formatting
+      // Use proper parameterized insertion with escaped values
       const values = data.map(d => 
         `('${d.validator_id}', '${d.node_id}', ${d.epoch}, ${d.stake}, ${d.position}, ${d.is_active}, ` +
         `'${d.dns_address}', '${d.dns_host}', ${d.dns_port}, '${d.provider}', '${d.location}', ` +
-        `'${d.country}', '${d.datacenter}', '${this.formatTimestamp(d.first_seen)}', '${this.formatTimestamp(d.last_updated)}')`
+        `'${d.country}', '${d.datacenter}', '${d.first_seen}', '${d.last_updated}')`
       ).join(',');
 
       const insertQuery = `
@@ -264,10 +264,12 @@ export class DatabaseValidatorInitializer {
         VALUES ${values}
       `;
 
+      logger.info(`💾 Inserting batch of ${data.length} validators...`);
       await this.clickhouseClient.executeCommand(insertQuery);
-      logger.info(`💾 Successfully inserted ${data.length} validators into database`);
+      logger.info(`✅ Successfully inserted ${data.length} validators into database`);
     } catch (error) {
-      logger.error('Failed to insert validator batch:', error);
+      logger.error('❌ Failed to insert validator batch:', error);
+      logger.error('Query sample:', data.slice(0, 2)); // Log first 2 records for debugging
       throw error;
     }
   }
@@ -349,5 +351,19 @@ export class DatabaseValidatorInitializer {
   private formatTimestamp(date: Date): string {
     // Format Date to ClickHouse DateTime64 format: 'YYYY-MM-DD HH:mm:ss.SSS'
     return date.toISOString().replace('T', ' ').replace('Z', '');
+  }
+
+  /**
+   * Escape string values for SQL to prevent injection and formatting issues
+   */
+  private escapeString(value: string): string {
+    if (!value) return '';
+    
+    // Escape single quotes and other problematic characters
+    return value
+      .replace(/'/g, "''")  // Escape single quotes
+      .replace(/\\/g, '\\\\') // Escape backslashes
+      .replace(/\n/g, '\\n')  // Escape newlines
+      .replace(/\r/g, '\\r'); // Escape carriage returns
   }
 } 
