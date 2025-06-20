@@ -10,10 +10,12 @@ export class DomainExtractor {
   
   // Custom domain mappings for validators who request specific names
   private static customDomainMappings: Map<string, string> = new Map([
-    ['monad-testnet.blockcat.tech:8000', 'Meria'],
-    ['monad.testnet.nodes.guru:8000', 'Nodes.Guru'],
-    ['testnet.monad.hoodrun.io:8000', 'HoodRun'],
-    ['monad-testnet.rpc101.org:8000', 'Node101'],
+    ['monad-testnet.blockcat.tech', 'Meria'],
+    ['monad.testnet.nodes.guru', 'Nodes.Guru'],
+    ['testnet.monad.hoodrun.io', 'HoodRun'],
+    ['monad-testnet.rpc101.org', 'Node101'],
+    ['monad.testnet.pacific-meta.co.jp', 'Pacific Meta'],
+    ['monad.testnet.0xmakase.co.jp', '0xmakase'],
     // Add more custom mappings here as validators request them
   ]);
 
