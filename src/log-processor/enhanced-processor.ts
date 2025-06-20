@@ -14,10 +14,11 @@ import {
 
 import { ValidatorService, CompleteValidator } from '../services/unified-validator';
 import { MonadClickHouseClient } from '../database/clickhouse-client';
+import { ServiceContainer } from '../services/service-container';
 import { logger } from '../utils/logger';
 
 export class FocusedLogProcessor {
-  private validatorService: ValidatorService;
+  private validatorService: ValidatorService | null = null;
   private clickhouseClient: MonadClickHouseClient | null = null;
   private validatorRegistry: Map<number, ValidatorRegistryEntry> = new Map();
   // Add reverse mapping for BitVec index to validator position
@@ -25,7 +26,6 @@ export class FocusedLogProcessor {
   private isInitialized: boolean = false;
 
   constructor(clickhouseClient?: MonadClickHouseClient) {
-    this.validatorService = new ValidatorService();
     this.clickhouseClient = clickhouseClient || null;
   }
 
@@ -33,8 +33,9 @@ export class FocusedLogProcessor {
     if (!this.isInitialized) {
       logger.info('🔧 Initializing Focused Log Processor...');
       
-      // Initialize validator service
-      await this.validatorService.initialize();
+      // Get validator service from service container
+      const serviceContainer = ServiceContainer.getInstance();
+      this.validatorService = serviceContainer.getValidatorService();
       
       // Get current epoch and populate validator registry maps
       const currentEpoch = this.validatorService.getCurrentEpoch();
@@ -101,7 +102,7 @@ export class FocusedLogProcessor {
 
     // Batch fetch validator infrastructure info
     let validatorInfoMap = new Map<string, CompleteValidator>();
-    if (validatorIds.size > 0) {
+    if (validatorIds.size > 0 && this.validatorService) {
       try {
         validatorInfoMap = await this.validatorService.getValidators(Array.from(validatorIds));
       } catch (error) {
@@ -400,7 +401,7 @@ export class FocusedLogProcessor {
     return {
       validatorRegistrySize: this.validatorRegistry.size,
       isInitialized: this.isInitialized,
-      validatorService: this.validatorService.getStats()
+      validatorService: this.validatorService ? this.validatorService.getStats() : null
     };
   }
 }

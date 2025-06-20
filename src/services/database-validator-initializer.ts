@@ -7,6 +7,7 @@
 
 import { MonadClickHouseClient } from '../database/clickhouse-client';
 import { ValidatorService } from './unified-validator';
+import { ServiceContainer } from './service-container';
 import { logger } from '../utils/logger';
 
 export interface ValidatorDatabaseRecord {
@@ -45,7 +46,9 @@ export class DatabaseValidatorInitializer {
 
   constructor(clickhouseClient: MonadClickHouseClient) {
     this.clickhouseClient = clickhouseClient;
-    this.validatorService = new ValidatorService();
+    // Get ValidatorService from service container instead of creating new instance
+    const serviceContainer = ServiceContainer.getInstance();
+    this.validatorService = serviceContainer.getValidatorService();
   }
 
   /**
@@ -167,8 +170,7 @@ export class DatabaseValidatorInitializer {
       return true;
     }
 
-    // Get expected validator count from ValidatorService
-    await this.validatorService.initialize();
+    // Get expected validator count from ValidatorService (already initialized by service container)
     const expectedValidators = this.validatorService.getStats().totalValidators;
 
     // Check if we have the expected number of validators
@@ -205,12 +207,6 @@ export class DatabaseValidatorInitializer {
    */
   private async initializeValidatorsInDatabase(): Promise<void> {
     logger.info('🔧 Starting validator mapping and database population...');
-
-    // Initialize the ValidatorService
-    await this.validatorService.initialize();
-
-    // CRITICAL: Use ValidatorService.processAllValidatorLocations() 
-    // This now uses batch geolocation API to avoid rate limits
     logger.info('🚀 Processing validator locations through ValidatorService...');
     await this.validatorService.processAllValidatorLocations();
     

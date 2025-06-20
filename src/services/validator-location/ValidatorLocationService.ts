@@ -39,7 +39,7 @@ export class ValidatorLocationService implements IValidatorLocationService {
     this.config = {
       tomlFilePath: 'validators/node.toml',
       enableCaching: true,
-      batchSize: 5,
+      batchSize: 50,
       processingDelay: 1500,
       retryFailedLookups: true,
       maxRetries: 2,

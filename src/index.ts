@@ -4,6 +4,7 @@ import { ApplicationInitializer } from './startup/application-initializer';
 import { DataIngestionService, IngestionConfig } from './services/data-ingestion';
 import { SystemdLogStream, SystemdLogStreamConfig } from './services/systemd-log-stream';
 import { AnalyticsAPIServer } from './api/server';
+import { ServiceContainer } from './services/service-container';
 import { logger } from './utils/logger';
 
 async function main() {
@@ -12,12 +13,28 @@ async function main() {
 
   try {
     // =============================================
-    // PHASE 1: CRITICAL STARTUP VALIDATION
+    // PHASE 1: CONFIGURATION & SERVICE CONTAINER
     // =============================================
     
-    logger.info('🔍 Phase 1: Starting critical application initialization...');
+    logger.info('🔍 Phase 1: Loading configuration and initializing service container...');
     
-    // Initialize application with validator database validation
+    // Load configuration first
+    const config = loadConfiguration();
+    
+    // Initialize service container with configuration
+    const serviceContainer = ServiceContainer.getInstance({
+      clickhouse: config.clickhouse,
+      redis: config.redis
+    });
+    await serviceContainer.initialize();
+    
+    // =============================================
+    // PHASE 2: CRITICAL STARTUP VALIDATION
+    // =============================================
+    
+    logger.info('🔍 Phase 2: Starting critical application initialization...');
+    
+    // Initialize application with validator database validation (uses service container)
     const applicationInitializer = new ApplicationInitializer(ApplicationInitializer.createDefaultConfig());
     const startupResult = await applicationInitializer.initialize();
     
@@ -30,15 +47,12 @@ async function main() {
     logger.info(`📊 Database initialized with ${startupResult.validatorStats.totalValidators} validators (${startupResult.validatorStats.completionRate.toFixed(1)}% with location data)`);
     
     // =============================================
-    // PHASE 2: REGULAR APPLICATION STARTUP
+    // PHASE 3: APPLICATION SERVICES STARTUP
     // =============================================
     
-    logger.info('🔧 Phase 2: Starting application services...');
+    logger.info('🔧 Phase 3: Starting application services...');
     
-    // Load configuration
-    const config = loadConfiguration();
-    
-    // Initialize data ingestion service
+    // Initialize data ingestion service (now uses service container internally)
     const ingestionService = new DataIngestionService(config);
     
     // Initialize systemd log stream for production
@@ -195,7 +209,7 @@ function setupGracefulShutdown(
       await ingestionService.stop();
       logger.info('✅ Data ingestion service stopped');
       
-      // Cleanup application initializer resources
+      // Cleanup application initializer resources (includes service container shutdown)
       if (applicationInitializer) {
         await applicationInitializer.shutdown();
         logger.info('✅ Application initializer cleaned up');

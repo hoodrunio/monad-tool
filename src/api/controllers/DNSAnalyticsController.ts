@@ -4,6 +4,7 @@ import { ValidatorService } from '../../services/unified-validator/ValidatorServ
 import { FocusedLogProcessor } from '../../log-processor/enhanced-processor';
 import { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { MonadRedisClient } from '../../cache/redis-client';
+import { ServiceContainer } from '../../services/service-container';
 
 export class DNSAnalyticsController {
   private locationService: UnifiedLocationService;
@@ -14,8 +15,10 @@ export class DNSAnalyticsController {
     private clickhouseClient: MonadClickHouseClient,
     private redisClient: MonadRedisClient
   ) {
-    this.locationService = new UnifiedLocationService();
-    this.validatorService = new ValidatorService();
+    // Use service container to get shared instances
+    const serviceContainer = ServiceContainer.getInstance();
+    this.locationService = serviceContainer.getLocationService();
+    this.validatorService = serviceContainer.getValidatorService();
     
     // Initialize the log processor for DNS analytics
     const config = {

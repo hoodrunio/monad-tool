@@ -5,6 +5,7 @@ import { EventEmitter } from 'events';
 import { FocusedLogProcessor } from '../log-processor/enhanced-processor';
 import { MonadClickHouseClient, ClickHouseConfig } from '../database/clickhouse-client';
 import { MonadRedisClient, RedisConfig } from '../cache/redis-client';
+import { ServiceContainer } from './service-container';
 import { 
   RawLog, 
   ProcessingConfig, 
@@ -49,9 +50,12 @@ export class DataIngestionService extends EventEmitter {
   constructor(config: IngestionConfig) {
     super();
     this.config = config;
-    this.clickhouseClient = new MonadClickHouseClient(config.clickhouse);
+    
+    // Get services from service container instead of creating new instances
+    const serviceContainer = ServiceContainer.getInstance();
+    this.clickhouseClient = serviceContainer.getClickHouseClient();
+    this.redisClient = serviceContainer.getRedisClient();
     this.logProcessor = new FocusedLogProcessor(this.clickhouseClient);
-    this.redisClient = new MonadRedisClient(config.redis);
     
     this.metrics = {
       totalLogsProcessed: 0,
@@ -78,19 +82,21 @@ export class DataIngestionService extends EventEmitter {
       // Record service start time
       this.serviceStartTime = Date.now();
       
-      // Initialize database schema
-      await this.clickhouseClient.initializeSchema();
-      
-      // Test database connectivity
-      const dbConnected = await this.clickhouseClient.ping();
-      if (!dbConnected) {
-        throw new Error('Failed to connect to ClickHouse');
+      // Verify service container is initialized (services should already be ready)
+      const serviceContainer = ServiceContainer.getInstance();
+      if (!serviceContainer.initialized) {
+        throw new Error('Service container not initialized - ensure ApplicationInitializer has run');
       }
       
-      // Test cache connectivity
+      // Test connectivity (services should already be connected)
+      const dbConnected = await this.clickhouseClient.ping();
+      if (!dbConnected) {
+        throw new Error('ClickHouse connection failed');
+      }
+      
       const cacheConnected = await this.redisClient.ping();
       if (!cacheConnected) {
-        throw new Error('Failed to connect to Redis');
+        throw new Error('Redis connection failed');
       }
       
       // Initialize the log processor ONCE during service startup

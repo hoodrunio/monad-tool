@@ -4,21 +4,14 @@
  * Main startup orchestrator that ensures all critical dependencies are met
  * before starting the Monad Validator Analytics system.
  * 
- * CRITICAL STARTUP SEQUENCE:
- * 1. Database Connection & Schema
- * 2. Validator Data Initialization  
- * 3. Service Dependencies
- * 4. Application Start
  */
 
-import { MonadClickHouseClient, ClickHouseConfig } from '../database/clickhouse-client';
-import { DatabaseValidatorInitializer } from '../services/database-validator-initializer';
-import { ValidatorService } from '../services/unified-validator';
-import { UnifiedLocationService } from '../services/unified-location';
+import { ServiceContainer, ServiceContainerConfig } from '../services/service-container';
 import { logger } from '../utils/logger';
 
 export interface StartupConfig {
-  clickhouse: ClickHouseConfig;
+  clickhouse: ServiceContainerConfig['clickhouse'];
+  redis: ServiceContainerConfig['redis'];
   skipValidatorCheck?: boolean; // For development only
   maxStartupTimeoutMs?: number;
 }
@@ -40,18 +33,14 @@ export interface StartupResult {
 }
 
 export class ApplicationInitializer {
-  private clickhouseClient: MonadClickHouseClient;
-  private databaseValidator: DatabaseValidatorInitializer;
-  private validatorService: ValidatorService;
-  private locationService: UnifiedLocationService;
+  private serviceContainer: ServiceContainer;
   private startupConfig: StartupConfig;
 
   constructor(config: StartupConfig) {
     this.startupConfig = config;
-    this.clickhouseClient = new MonadClickHouseClient(config.clickhouse);
-    this.databaseValidator = new DatabaseValidatorInitializer(this.clickhouseClient);
-    this.validatorService = new ValidatorService();
-    this.locationService = new UnifiedLocationService();
+    
+    // Get existing ServiceContainer instance (should already be initialized)
+    this.serviceContainer = ServiceContainer.getInstance();
   }
 
   /**
@@ -83,13 +72,17 @@ export class ApplicationInitializer {
 
     try {
       // =============================================
-      // PHASE 1: DATABASE CONNECTION & SCHEMA
+      // PHASE 1: VERIFY SERVICE CONTAINER
       // =============================================
       
-      logger.info('📊 Phase 1: Initializing database connection...');
-      await this.initializeDatabase();
+      logger.info('📊 Phase 1: Verifying service container...');
+      if (!this.serviceContainer.initialized) {
+        throw new Error('Service container not initialized - this should not happen');
+      }
       result.services.clickhouse = true;
-      logger.info('✅ Database connection established');
+      result.services.validatorService = true;
+      result.services.locationService = true;
+      logger.info('✅ Service container verified');
 
       // =============================================
       // PHASE 2: CRITICAL VALIDATOR VALIDATION
@@ -99,10 +92,11 @@ export class ApplicationInitializer {
         logger.info('🔍 Phase 2: CRITICAL - Validator database validation...');
         logger.info('⏳ This may take a few minutes if validators need to be mapped...');
         
-        await this.databaseValidator.ensureValidatorsInDatabase();
+        const databaseValidator = this.serviceContainer.getDatabaseValidator();
+        await databaseValidator.ensureValidatorsInDatabase();
         
         // Get final validator stats for result
-        const validatorStats = await this.databaseValidator.getDatabaseValidatorStats();
+        const validatorStats = await databaseValidator.getDatabaseValidatorStats();
         result.validatorStats = {
           totalValidators: validatorStats.totalValidators,
           validatorsWithLocation: validatorStats.validatorsWithLocation,
@@ -116,25 +110,14 @@ export class ApplicationInitializer {
       }
 
       // =============================================
-      // PHASE 3: SERVICE INITIALIZATION
+      // PHASE 3: FINAL VALIDATION
       // =============================================
-      
-      logger.info('🔧 Phase 3: Initializing application services...');
-      
-      await Promise.all([
-        this.validatorService.initialize(),
-        this.locationService.initialize()
-      ]);
-      
-      result.services.validatorService = true;
-      result.services.locationService = true;
-      logger.info('✅ Application services initialized');
 
       // =============================================
-      // PHASE 4: FINAL VALIDATION
+      // PHASE 3: FINAL VALIDATION
       // =============================================
       
-      logger.info('🔍 Phase 4: Final system validation...');
+      logger.info('🔍 Phase 3: Final system validation...');
       await this.performFinalValidation();
       logger.info('✅ Final validation completed');
 
@@ -178,21 +161,30 @@ export class ApplicationInitializer {
     let services = false;
 
     try {
+      // Check if service container is initialized
+      if (!this.serviceContainer.initialized) {
+        issues.push('Service container not initialized');
+        return { database, validators, services, issues };
+      }
+
       // Check database connection
-      database = await this.clickhouseClient.ping();
+      const clickhouseClient = this.serviceContainer.getClickHouseClient();
+      database = await clickhouseClient.ping();
       if (!database) {
         issues.push('Database connection failed');
       }
 
       // Check validator data
-      const validatorHealth = await this.databaseValidator.healthCheck();
+      const databaseValidator = this.serviceContainer.getDatabaseValidator();
+      const validatorHealth = await databaseValidator.healthCheck();
       validators = validatorHealth.healthy;
       if (!validators) {
         issues.push(...validatorHealth.issues);
       }
 
       // Check if services are initialized
-      services = this.validatorService.getStats().totalValidators > 0;
+      const validatorService = this.serviceContainer.getValidatorService();
+      services = validatorService.getStats().totalValidators > 0;
       if (!services) {
         issues.push('Services not properly initialized');
       }
@@ -218,8 +210,9 @@ export class ApplicationInitializer {
     systemHealth: any;
   }> {
     try {
+      const databaseValidator = this.serviceContainer.getDatabaseValidator();
       const [validatorStats, healthCheck] = await Promise.all([
-        this.databaseValidator.getDatabaseValidatorStats(),
+        databaseValidator.getDatabaseValidatorStats(),
         this.healthCheck()
       ]);
 
@@ -244,8 +237,8 @@ export class ApplicationInitializer {
     logger.info('🔄 Shutting down application...');
     
     try {
-      await this.clickhouseClient.close();
-      logger.info('✅ Database connection closed');
+      await this.serviceContainer.shutdown();
+      logger.info('✅ Service container shutdown completed');
     } catch (error) {
       logger.error('Error during shutdown:', error);
     }
@@ -255,32 +248,30 @@ export class ApplicationInitializer {
   // Private Initialization Methods
   // ===============================
 
-  private async initializeDatabase(): Promise<void> {
-    // Test connection
-    const connected = await this.clickhouseClient.ping();
-    if (!connected) {
-      throw new Error('Cannot connect to ClickHouse database');
-    }
-
-    // Initialize schema
-    await this.clickhouseClient.initializeSchema();
-    logger.info('📊 Database schema initialized');
-  }
-
   private async performFinalValidation(): Promise<void> {
     // Validate all services are working
-    const validatorCount = this.validatorService.getStats().totalValidators;
+    const validatorService = this.serviceContainer.getValidatorService();
+    const validatorCount = validatorService.getStats().totalValidators;
     if (validatorCount === 0) {
       throw new Error('ValidatorService has no validators loaded');
     }
 
-    const locationStats = this.locationService.getStats();
-    logger.info(`📍 Location service: ${locationStats.validatorLocationStats.validatorsWithLocation} validators with location data`);
-
-    // Test database queries
-    const dbStats = await this.databaseValidator.getDatabaseValidatorStats();
+    // Test database queries first
+    const databaseValidator = this.serviceContainer.getDatabaseValidator();
+    const dbStats = await databaseValidator.getDatabaseValidatorStats();
     if (dbStats.totalValidators === 0) {
       throw new Error('No validators found in database after initialization');
+    }
+
+    // Check location data availability
+    const locationService = this.serviceContainer.getLocationService();
+    const locationStats = locationService.getStats();
+    
+    // If location service cache is empty but database has complete data, use database stats
+    if (locationStats.validatorLocationStats.validatorsWithLocation === 0 && dbStats.completionRate === 100) {
+      logger.info(`📍 Location data available in database: ${dbStats.totalValidators} validators with ${dbStats.completionRate.toFixed(1)}% location completion`);
+    } else {
+      logger.info(`📍 Location service: ${locationStats.validatorLocationStats.validatorsWithLocation} validators with location data`);
     }
 
     logger.info('🔍 Final validation: All systems operational');
@@ -304,6 +295,17 @@ export class ApplicationInitializer {
         max_open_connections: 10,
         max_query_timeout: 30000,
         compression: true
+      },
+      redis: {
+        host: process.env.REDIS_HOST || 'localhost',
+        port: parseInt(process.env.REDIS_PORT || '6379'),
+        password: process.env.REDIS_PASSWORD,
+        db: parseInt(process.env.REDIS_DB || '0'),
+        keyPrefix: process.env.REDIS_KEY_PREFIX || 'monad:',
+        maxRetriesPerRequest: parseInt(process.env.REDIS_MAX_RETRIES || '3'),
+        retryDelayOnFailover: parseInt(process.env.REDIS_RETRY_DELAY || '1000'),
+        maxMemoryPolicy: process.env.REDIS_MEMORY_POLICY || 'allkeys-lru',
+        defaultTtl: parseInt(process.env.REDIS_DEFAULT_TTL || '300')
       },
       skipValidatorCheck: process.env.NODE_ENV === 'development' && process.env.SKIP_VALIDATOR_CHECK === 'true',
       maxStartupTimeoutMs: 10 * 60 * 1000 // 10 minutes max startup time
