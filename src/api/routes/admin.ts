@@ -22,5 +22,11 @@ export function createAdminRoutes(adminController: AdminController): Router {
   router.get('/api/maintenance/status', adminController.getMaintenanceStatus.bind(adminController));
   router.post('/api/maintenance/perform', adminController.performMaintenance.bind(adminController));
 
+  // Domain mapping management
+  router.get('/api/domain-mappings', adminController.getDomainMappings.bind(adminController));
+  router.post('/api/domain-mappings', adminController.addDomainMapping.bind(adminController));
+  router.delete('/api/domain-mappings/:hostname', adminController.removeDomainMapping.bind(adminController));
+  router.get('/api/domain-mappings/:hostname/check', adminController.checkDomainMapping.bind(adminController));
+
   return router;
 } 

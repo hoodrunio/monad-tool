@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import { DataIngestionService } from '../../services/data-ingestion';
 import { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { MonadRedisClient } from '../../cache/redis-client';
+import { DomainExtractor } from '../../services/dns/DomainExtractor';
 import { logger } from '../../utils/logger';
 
 export class AdminController {
@@ -386,6 +387,173 @@ export class AdminController {
       logger.error('Failed to perform maintenance:', error);
       res.status(500).json({
         error: 'Failed to perform maintenance',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  // =============================================
+  // DOMAIN MAPPING MANAGEMENT
+  // =============================================
+
+  async getDomainMappings(req: Request, res: Response): Promise<void> {
+    try {
+      const mappings = DomainExtractor.getCustomMappings();
+      const mappingArray = Array.from(mappings.entries()).map(([hostname, validatorName]) => ({
+        hostname,
+        validatorName
+      }));
+
+      res.json({
+        mappings: mappingArray,
+        count: mappingArray.length,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to get domain mappings:', error);
+      res.status(500).json({
+        error: 'Failed to get domain mappings',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async addDomainMapping(req: Request, res: Response): Promise<void> {
+    try {
+      const { hostname, validatorName } = req.body;
+
+      if (!hostname || !validatorName) {
+        res.status(400).json({
+          error: 'Missing required fields',
+          message: 'Both hostname and validatorName are required',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Validate hostname format
+      if (typeof hostname !== 'string' || hostname.trim().length === 0) {
+        res.status(400).json({
+          error: 'Invalid hostname',
+          message: 'Hostname must be a non-empty string',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Validate validator name
+      if (typeof validatorName !== 'string' || validatorName.trim().length === 0) {
+        res.status(400).json({
+          error: 'Invalid validator name',
+          message: 'Validator name must be a non-empty string',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Check if mapping already exists
+      const existingMapping = DomainExtractor.hasCustomMapping(hostname);
+      
+      DomainExtractor.addCustomMapping(hostname, validatorName);
+      
+      // Clear relevant cache entries to ensure new mapping takes effect
+      await this.redisClient.invalidatePattern('validator_*');
+      
+      logger.info(`Domain mapping added: ${hostname} -> ${validatorName}`);
+
+      res.json({
+        success: true,
+        message: `Domain mapping ${existingMapping ? 'updated' : 'added'} successfully`,
+        mapping: {
+          hostname: hostname.toLowerCase().trim(),
+          validatorName: validatorName.trim()
+        },
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to add domain mapping:', error);
+      res.status(500).json({
+        error: 'Failed to add domain mapping',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async removeDomainMapping(req: Request, res: Response): Promise<void> {
+    try {
+      const { hostname } = req.params;
+
+      if (!hostname) {
+        res.status(400).json({
+          error: 'Missing hostname',
+          message: 'Hostname parameter is required',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const removed = DomainExtractor.removeCustomMapping(hostname);
+
+      if (!removed) {
+        res.status(404).json({
+          error: 'Mapping not found',
+          message: `No custom mapping found for hostname: ${hostname}`,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Clear relevant cache entries
+      await this.redisClient.invalidatePattern('validator_*');
+
+      logger.info(`Domain mapping removed: ${hostname}`);
+
+      res.json({
+        success: true,
+        message: `Domain mapping for ${hostname} removed successfully`,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to remove domain mapping:', error);
+      res.status(500).json({
+        error: 'Failed to remove domain mapping',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async checkDomainMapping(req: Request, res: Response): Promise<void> {
+    try {
+      const { hostname } = req.params;
+
+      if (!hostname) {
+        res.status(400).json({
+          error: 'Missing hostname',
+          message: 'Hostname parameter is required',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const hasMapping = DomainExtractor.hasCustomMapping(hostname);
+      const extractor = new DomainExtractor();
+      const extractedName = extractor.extractValidatorName(hostname);
+
+      res.json({
+        hostname,
+        hasCustomMapping: hasMapping,
+        extractedValidatorName: extractedName,
+        mappingType: hasMapping ? 'custom' : 'default_extraction',
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to check domain mapping:', error);
+      res.status(500).json({
+        error: 'Failed to check domain mapping',
         message: error instanceof Error ? error.message : String(error),
         timestamp: new Date().toISOString()
       });
