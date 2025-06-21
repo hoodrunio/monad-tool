@@ -199,9 +199,6 @@ export class DNSAnalyticsController {
       const ispDistribution = this.validatorService.getIspDistribution();
       const performanceData = await this.getProviderPerformanceData();
       
-      const providerRisks = this.analyzeProviderRisks(ispDistribution, accurateStats.totalValidators);
-      const geoRisks = this.analyzeGeographicRisks(geoDistribution, accurateStats.totalValidators);
-      
       const risks = {
         centralizationRisk: this.calculateCentralizationRisk(ispDistribution, accurateStats.totalValidators),
         diversityScore: this.calculateDiversityScore(geoDistribution),
@@ -574,20 +571,21 @@ export class DNSAnalyticsController {
       // Get validators with location data
       const locationStatsQuery = `
         SELECT 
-          COUNT(DISTINCT validator_id) as validators_with_location,
-          COUNT(DISTINCT location) as unique_locations,
-          COUNT(DISTINCT provider) as unique_providers
+          COUNT(DISTINCT vr.validator_id) as validators_with_location,
+          COUNT(DISTINCT vr.location) as unique_locations,
+          COUNT(DISTINCT vr.provider) as unique_providers
         FROM (
-          SELECT validator_id, location, provider FROM block_proposals 
-          WHERE timestamp >= now() - INTERVAL 7 DAY 
-            AND location IS NOT NULL AND location != '' AND location != 'unknown'
-            AND provider IS NOT NULL AND provider != '' AND provider != 'unknown'
+          SELECT DISTINCT bp.validator_id 
+          FROM block_proposals bp 
+          WHERE bp.timestamp >= now() - INTERVAL 7 DAY
           UNION DISTINCT
-          SELECT validator_id, location, provider FROM qc_participation 
-          WHERE timestamp >= now() - INTERVAL 7 DAY 
-            AND location IS NOT NULL AND location != '' AND location != 'unknown'
-            AND provider IS NOT NULL AND provider != '' AND provider != 'unknown'
-        )
+          SELECT DISTINCT qc.validator_id 
+          FROM qc_participation qc 
+          WHERE qc.timestamp >= now() - INTERVAL 7 DAY
+        ) active_validators
+        JOIN validator_registry vr ON active_validators.validator_id = vr.validator_id
+        WHERE vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'
+          AND vr.provider IS NOT NULL AND vr.provider != '' AND vr.provider != 'unknown'
       `;
 
       const [totalResult, locationResult] = await Promise.all([
@@ -641,10 +639,12 @@ export class DNSAnalyticsController {
             AVG(qc.participation_rate) as qc_performance,
             arrayDistinct(groupArray(v.location)) as regions
           FROM (
-            SELECT DISTINCT validator_id, provider, location FROM block_proposals 
-            WHERE timestamp >= now() - INTERVAL 7 DAY
-              AND provider IS NOT NULL AND provider != '' AND provider != 'unknown'
-              AND location IS NOT NULL AND location != '' AND location != 'unknown'
+            SELECT DISTINCT bp.validator_id, vr.provider, vr.location 
+            FROM block_proposals bp
+            JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+            WHERE bp.timestamp >= now() - INTERVAL 7 DAY
+              AND vr.provider IS NOT NULL AND vr.provider != '' AND vr.provider != 'unknown'
+              AND vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'
           ) v
           LEFT JOIN block_proposals bp ON v.validator_id = bp.validator_id 
             AND bp.timestamp >= now() - INTERVAL 7 DAY

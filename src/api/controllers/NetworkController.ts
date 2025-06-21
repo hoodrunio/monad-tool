@@ -332,23 +332,60 @@ export class NetworkController {
           break;
       }
 
-      // Very simple query that works with existing data structure
+      // Comprehensive query that includes both block proposals and QC participation data
       const geoQuery = `
+        WITH location_block_data AS (
+          SELECT 
+            COALESCE(vr.location, 'unknown') as location,
+            COUNT(DISTINCT bp.validator_id) as block_validator_count,
+            COUNT(*) as block_events,
+            COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as successful_blocks,
+            COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END) as skipped_blocks
+          FROM block_proposals bp
+          LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+            AND COALESCE(vr.location, 'unknown') != 'unknown' 
+            AND COALESCE(vr.location, '') != ''
+          GROUP BY COALESCE(vr.location, 'unknown')
+        ),
+        location_qc_data AS (
+          SELECT 
+            COALESCE(vr.location, 'unknown') as location,
+            COUNT(DISTINCT qc.validator_id) as qc_validator_count,
+            COUNT(*) as qc_events,
+            COUNT(CASE WHEN qc.participated = 1 THEN 1 END) as successful_qc,
+            COUNT(CASE WHEN qc.participated = 0 THEN 1 END) as missed_qc
+          FROM qc_participation qc
+          LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
+          WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
+            AND COALESCE(vr.location, 'unknown') != 'unknown' 
+            AND COALESCE(vr.location, '') != ''
+          GROUP BY COALESCE(vr.location, 'unknown')
+        )
         SELECT 
-          COALESCE(vr.location, 'unknown') as location,
-          COUNT(DISTINCT bp.validator_id) as validator_count,
-          COUNT(*) as total_events,
-          COUNT(*) as block_events,
-          0 as qc_events,
-          (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate,
-          0 as qc_success_rate,
-          (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as overall_success_rate
-        FROM block_proposals bp
-        LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
-        WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
-          AND COALESCE(vr.location, 'unknown') != 'unknown' 
-          AND COALESCE(vr.location, '') != ''
-        GROUP BY COALESCE(vr.location, 'unknown')
+          COALESCE(bd.location, qd.location) as location,
+          GREATEST(COALESCE(bd.block_validator_count, 0), COALESCE(qd.qc_validator_count, 0)) as validator_count,
+          COALESCE(bd.block_events, 0) + COALESCE(qd.qc_events, 0) as total_events,
+          COALESCE(bd.block_events, 0) as block_events,
+          COALESCE(qd.qc_events, 0) as qc_events,
+          CASE 
+            WHEN COALESCE(bd.block_events, 0) > 0 
+            THEN (COALESCE(bd.successful_blocks, 0) * 100.0 / bd.block_events)
+            ELSE 0
+          END as block_success_rate,
+          CASE 
+            WHEN COALESCE(qd.qc_events, 0) > 0 
+            THEN (COALESCE(qd.successful_qc, 0) * 100.0 / qd.qc_events)
+            ELSE 0
+          END as qc_success_rate,
+          CASE 
+            WHEN (COALESCE(bd.block_events, 0) + COALESCE(qd.qc_events, 0)) > 0
+            THEN ((COALESCE(bd.successful_blocks, 0) + COALESCE(qd.successful_qc, 0)) * 100.0 / 
+                  (COALESCE(bd.block_events, 0) + COALESCE(qd.qc_events, 0)))
+            ELSE 0
+          END as overall_success_rate
+        FROM location_block_data bd
+        FULL OUTER JOIN location_qc_data qd ON bd.location = qd.location
         ORDER BY validator_count DESC, total_events DESC
       `;
 
@@ -381,7 +418,7 @@ export class NetworkController {
           regions: distribution.length,
           total_validators: totalValidators,
           total_events: totalEvents,
-          query_type: 'simplified_reliable'
+          query_type: 'comprehensive_with_qc_data'
         },
         timestamp: new Date().toISOString()
       });

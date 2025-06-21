@@ -20,22 +20,24 @@ async function debugGeoQuery() {
     const locationDataQuery = `
       WITH location_data AS (
         SELECT 
-          COALESCE(location, 'unknown') as location,
-          validator_id,
+          COALESCE(vr.location, 'unknown') as location,
+          bp.validator_id,
           'block' as source
-        FROM block_proposals 
-        WHERE timestamp >= now() - INTERVAL 24 HOUR
-          AND location IS NOT NULL AND location != '' AND location != 'unknown'
+        FROM block_proposals bp
+        LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+        WHERE bp.timestamp >= now() - INTERVAL 24 HOUR
+          AND vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'
         
         UNION DISTINCT
         
         SELECT 
-          COALESCE(location, 'unknown') as location,
-          validator_id,
+          COALESCE(vr.location, 'unknown') as location,
+          qc.validator_id,
           'qc' as source
-        FROM qc_participation 
-        WHERE timestamp >= now() - INTERVAL 24 HOUR
-          AND location IS NOT NULL AND location != '' AND location != 'unknown'
+        FROM qc_participation qc
+        LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
+        WHERE qc.timestamp >= now() - INTERVAL 24 HOUR
+          AND vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'
       )
       SELECT location, COUNT(DISTINCT validator_id) as validator_count
       FROM location_data 
@@ -55,13 +57,17 @@ async function debugGeoQuery() {
         COUNT(DISTINCT validator_id) as validator_count,
         COUNT(*) as total_events
       FROM (
-        SELECT validator_id, location FROM block_proposals 
-        WHERE timestamp >= now() - INTERVAL 24 HOUR
-          AND location IS NOT NULL AND location != '' AND location != 'unknown'
+        SELECT bp.validator_id, COALESCE(vr.location, 'unknown') as location 
+        FROM block_proposals bp
+        LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+        WHERE bp.timestamp >= now() - INTERVAL 24 HOUR
+          AND vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'
         UNION DISTINCT
-        SELECT validator_id, location FROM qc_participation 
-        WHERE timestamp >= now() - INTERVAL 24 HOUR
-          AND location IS NOT NULL AND location != '' AND location != 'unknown'
+        SELECT qc.validator_id, COALESCE(vr.location, 'unknown') as location 
+        FROM qc_participation qc
+        LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
+        WHERE qc.timestamp >= now() - INTERVAL 24 HOUR
+          AND vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'
       ) combined
       GROUP BY location
       ORDER BY validator_count DESC
@@ -70,6 +76,28 @@ async function debugGeoQuery() {
     
     const simpleResult = await client.executeRawQuery(simpleQuery);
     console.log('Simple query result:', simpleResult);
+
+    // Test location-based queries on existing data
+    console.log('\n=== Testing location-based queries ===');
+    try {
+      const locationQuery = `
+        SELECT bp.validator_id, COALESCE(vr.location, 'unknown') as location 
+        FROM block_proposals bp
+        LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+        WHERE bp.timestamp >= now() - INTERVAL 7 DAY 
+        LIMIT 10
+      `;
+      
+      const qcLocationQuery = `
+        SELECT qc.validator_id, COALESCE(vr.location, 'unknown') as location 
+        FROM qc_participation qc
+        LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
+        WHERE qc.timestamp >= now() - INTERVAL 7 DAY 
+        LIMIT 10
+      `;
+    } catch (error) {
+      console.error('❌ Error:', error);
+    }
 
   } catch (error) {
     console.error('❌ Error:', error);
