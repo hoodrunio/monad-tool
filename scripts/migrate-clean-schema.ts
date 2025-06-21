@@ -73,7 +73,7 @@ async function migrateCleanSchema() {
         await client.executeCommand(`DROP MATERIALIZED VIEW IF EXISTS ${view}`);
         console.log(`   ✅ Dropped ${view}`);
       } catch (error) {
-        console.log(`   ⚠️  Could not drop ${view} (might not exist): ${error.message}`);
+        console.log(`   ⚠️  Could not drop ${view} (might not exist): ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -121,8 +121,8 @@ async function migrateCleanSchema() {
     // Extract and execute individual CREATE MATERIALIZED VIEW statements
     const viewStatements = materializedViewsSQL
       .split(/;[\s\n]*/)
-      .filter(stmt => stmt.trim().startsWith('CREATE MATERIALIZED VIEW'))
-      .filter(stmt => materialized_views_to_drop.some(view => stmt.includes(view)));
+      .filter((stmt: string) => stmt.trim().startsWith('CREATE MATERIALIZED VIEW'))
+      .filter((stmt: string) => materialized_views_to_drop.some(view => stmt.includes(view)));
     
     for (const statement of viewStatements) {
       if (statement.trim()) {
@@ -131,7 +131,7 @@ async function migrateCleanSchema() {
           const viewName = statement.match(/CREATE MATERIALIZED VIEW (\w+_mv)/)?.[1];
           console.log(`   ✅ Recreated ${viewName}`);
         } catch (error) {
-          console.error(`   ❌ Failed to recreate view: ${error.message}`);
+          console.error(`   ❌ Failed to recreate view: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
     }
