@@ -165,10 +165,6 @@ export class MonadClickHouseClient {
         num_tx UInt32 DEFAULT 0,
         block_id Nullable(String),
         
-        -- Infrastructure data (from validator registry)
-        provider LowCardinality(String) DEFAULT 'unknown',
-        location LowCardinality(String) DEFAULT 'unknown',
-        
         -- Processing metadata
         ingestion_id UUID DEFAULT generateUUIDv4(),
         processed_at DateTime64(3, 'UTC') DEFAULT now()
@@ -194,10 +190,6 @@ export class MonadClickHouseClient {
         total_validators UInt16,
         participating_validators UInt16,
         participation_rate Float32,
-        
-        -- Infrastructure data (from validator registry)
-        provider LowCardinality(String) DEFAULT 'unknown',
-        location LowCardinality(String) DEFAULT 'unknown',
         
         -- Processing metadata
         ingestion_id UUID DEFAULT generateUUIDv4(),
@@ -354,8 +346,6 @@ export class MonadClickHouseClient {
       status: event.status,
       num_tx: event.numTx,
       block_id: event.blockId || null,
-      provider: event.infrastructureProvider,
-      location: event.geographicRegion,
       ingestion_id: event.ingestionId
     }));
 
@@ -387,8 +377,6 @@ export class MonadClickHouseClient {
       total_validators: event.totalValidators,
       participating_validators: event.participatingValidators,
       participation_rate: event.participationRate,
-      provider: event.infrastructureProvider,
-      location: event.geographicRegion,
       ingestion_id: event.ingestionId
     }));
 

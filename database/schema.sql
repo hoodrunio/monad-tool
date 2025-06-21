@@ -82,14 +82,12 @@ CREATE TABLE block_proposals (
     num_tx UInt32 DEFAULT 0,
     block_id Nullable(String),
     
-    -- Infrastructure data (from validator registry)
-    validator_name LowCardinality(String) DEFAULT 'unknown',
-    provider LowCardinality(String) DEFAULT 'unknown',
-    location LowCardinality(String) DEFAULT 'unknown',
-    
     -- Processing metadata
     ingestion_id UUID DEFAULT generateUUIDv4(),
     processed_at DateTime64(3, 'UTC') DEFAULT now()
+    
+    -- NOTE: Infrastructure data (validator_name, provider, location) 
+    -- comes from validator_registry via JOINs - no longer stored redundantly
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (seq_num, validator_id)
@@ -122,14 +120,12 @@ CREATE TABLE qc_participation (
     participating_validators UInt16,
     participation_rate Float32,
     
-    -- Infrastructure data (from validator registry)
-    validator_name LowCardinality(String) DEFAULT 'unknown',
-    provider LowCardinality(String) DEFAULT 'unknown',
-    location LowCardinality(String) DEFAULT 'unknown',
-    
     -- Processing metadata
     ingestion_id UUID DEFAULT generateUUIDv4(),
     processed_at DateTime64(3, 'UTC') DEFAULT now()
+    
+    -- NOTE: Infrastructure data (validator_name, provider, location) 
+    -- comes from validator_registry via JOINs - no longer stored redundantly
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (seq_num, validator_id)
@@ -162,7 +158,7 @@ CREATE TABLE validator_metrics_hourly (
     -- Metric 3: Combined Uptime Score
     uptime_score Float32 DEFAULT 0, -- 30% block proposals + 70% QC participation
     
-    -- Infrastructure metadata
+    -- Infrastructure metadata (populated by materialized views from validator_registry)
     provider LowCardinality(String) DEFAULT 'unknown',
     location LowCardinality(String) DEFAULT 'unknown',
     
@@ -304,8 +300,8 @@ ALTER TABLE validator_metrics_hourly ADD PROJECTION timeseries_proj (
 
 ALTER TABLE raw_logs MODIFY COMMENT 'Raw log storage with compression and deduplication';
 ALTER TABLE validator_registry MODIFY COMMENT 'Validator registry with DNS mapping and infrastructure info';
-ALTER TABLE block_proposals MODIFY COMMENT 'Block proposal events: proposed vs skipped (from ledger.json)';
-ALTER TABLE qc_participation MODIFY COMMENT 'QC participation per validator per block (from monad-bft.json BitVec)';
+ALTER TABLE block_proposals MODIFY COMMENT 'Block proposal events: proposed vs skipped (from ledger.json) - Clean schema: infrastructure data via JOINs with validator_registry';
+ALTER TABLE qc_participation MODIFY COMMENT 'QC participation per validator per block (from monad-bft.json BitVec) - Clean schema: infrastructure data via JOINs with validator_registry';
 ALTER TABLE validator_metrics_hourly MODIFY COMMENT 'Hourly aggregated separate validator metrics';
 ALTER TABLE network_health_hourly MODIFY COMMENT 'Network-wide health and consensus metrics';
 ALTER TABLE validator_rankings_cache MODIFY COMMENT 'Pre-computed validator rankings for fast API responses';

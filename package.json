@@ -23,6 +23,10 @@
     "clear-api-cache": "ts-node scripts/clear-api-cache.ts",
     "sample:database": "ts-node scripts/sample-database-data.ts",
     "sample:run": "./scripts/run-database-sample.sh",
+    "test:clean-solution": "ts-node scripts/test-clean-solution.ts",
+    "migrate:clean-schema": "ts-node scripts/migrate-clean-schema.ts",
+    "schema:update": "docker exec monad-clickhouse clickhouse-client --database monad_analytics --multiquery < database/schema.sql",
+    "schema:views": "docker exec monad-clickhouse clickhouse-client --database monad_analytics --multiquery < database/materialized-views.sql",
     "docker:build": "docker build -t monad-analytics .",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down"

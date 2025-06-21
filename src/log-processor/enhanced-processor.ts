@@ -70,9 +70,7 @@ export class FocusedLogProcessor {
 
     logger.info(`📋 Processing batch of ${logs.length} logs for separate metrics...`);
 
-    // Extract validator infrastructure data once
-    const validatorIds = new Set<string>();
-
+    // Process logs directly without enrichment (provider/location comes from validator_registry via JOINs)
     for (const log of logs) {
       try {
         const fields = log.fields;
@@ -83,7 +81,6 @@ export class FocusedLogProcessor {
           const blockEvent = this.extractBlockProposal(log, fields);
           if (blockEvent) {
             blockProposalEvents.push(blockEvent);
-            validatorIds.add(blockEvent.validatorId);
           }
         }
 
@@ -92,28 +89,12 @@ export class FocusedLogProcessor {
           const qcEvents = this.extractQCParticipation(log, fields, errors);
           if (qcEvents.length > 0) {
             qcParticipationEvents.push(...qcEvents);
-            qcEvents.forEach(event => validatorIds.add(event.validatorId));
           }
         }
       } catch (error) {
         errors.push(`Error processing log: ${error}`);
       }
     }
-
-    // Batch fetch validator infrastructure info
-    let validatorInfoMap = new Map<string, CompleteValidator>();
-    if (validatorIds.size > 0 && this.validatorService) {
-      try {
-        validatorInfoMap = await this.validatorService.getValidators(Array.from(validatorIds));
-      } catch (error) {
-        errors.push(`Error fetching validator info: ${error}`);
-        logger.error('Failed to fetch validator infrastructure info:', error);
-      }
-    }
-
-    // Enhance events with infrastructure data
-    this.enhanceEventsWithInfrastructure(blockProposalEvents, validatorInfoMap);
-    this.enhanceEventsWithInfrastructure(qcParticipationEvents, validatorInfoMap);
 
     const processingTime = Date.now() - startTime;
 
@@ -297,24 +278,10 @@ export class FocusedLogProcessor {
   }
 
   // =============================================
-  // INFRASTRUCTURE ENHANCEMENT (CONSOLIDATED)
+  // NOTE: Infrastructure enrichment removed
+  // Provider/location data now comes from validator_registry via JOINs in API queries
+  // This improves performance and ensures data consistency
   // =============================================
-
-  private enhanceEventsWithInfrastructure<T extends { validatorId: string; validatorDns: string; geographicRegion: string; infrastructureProvider: string }>(
-    events: T[], 
-    validatorInfoMap: Map<string, CompleteValidator>
-  ): void {
-    events.forEach(event => {
-      // ValidatorId is already normalized, no need to normalize again
-      const validator = validatorInfoMap.get(event.validatorId);
-      if (validator?.location) {
-        event.validatorDns = validator.location.dnsAddress || '';
-        event.geographicRegion = validator.location.city && validator.location.country ? 
-          `${validator.location.city}, ${validator.location.country}` : 'unknown';
-        event.infrastructureProvider = validator.location.isp || 'unknown';
-      }
-    });
-  }
 
   // =============================================
   // VALIDATOR REGISTRY MANAGEMENT
@@ -340,6 +307,8 @@ export class FocusedLogProcessor {
   private isLedgerTarget(target: string): boolean {
     return target === 'ledger_tail' || target.includes('ledger');
   }
+
+
 
   private isConsensusTarget(target: string): boolean {
     return target.includes('consensus') || 

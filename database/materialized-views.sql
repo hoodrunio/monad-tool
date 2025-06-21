@@ -1,7 +1,4 @@
--- Monad Validator Analytics - Refactored Materialized Views
--- Focus: Separate Validator Metrics (Block Proposals + QC Participation)
--- Removes dependency on generic validator_events table
--- Updated to use validator_registry for authoritative provider/location data
+-- Monad Validator Analytics - Materialized Views
 
 USE monad_analytics;
 

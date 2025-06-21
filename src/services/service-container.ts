@@ -67,6 +67,11 @@ export class ServiceContainer {
     // Initialize location service first (no dependencies)
     this._locationService = new UnifiedLocationService();
     await this._locationService.initialize();
+    
+    // Process all validator locations to populate the service with real data
+    logger.info('🌍 Processing validator locations...');
+    await this._locationService.processAllValidatorLocations();
+    logger.info('✅ Validator location processing complete');
 
     // Initialize validator service with location service dependency
     this._validatorService = new ValidatorService(undefined, this._locationService);
