@@ -41,6 +41,15 @@ async function migrateCleanSchema() {
     // Step 2: Create backup tables
     console.log('\n2. 💾 Creating backup tables...');
     
+    // Drop existing backup tables if they exist
+    try {
+      await client.executeCommand('DROP TABLE IF EXISTS block_proposals_backup');
+      await client.executeCommand('DROP TABLE IF EXISTS qc_participation_backup');
+      console.log('   🗑️  Removed existing backup tables');
+    } catch (error) {
+      console.log('   ℹ️  No existing backup tables to remove');
+    }
+    
     await client.executeCommand(`
       CREATE TABLE block_proposals_backup 
       ENGINE = MergeTree()
