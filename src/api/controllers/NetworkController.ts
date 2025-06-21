@@ -335,18 +335,20 @@ export class NetworkController {
       // Very simple query that works with existing data structure
       const geoQuery = `
         SELECT 
-          location,
-          COUNT(DISTINCT validator_id) as validator_count,
+          COALESCE(vr.location, 'unknown') as location,
+          COUNT(DISTINCT bp.validator_id) as validator_count,
           COUNT(*) as total_events,
           COUNT(*) as block_events,
           0 as qc_events,
-          (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate,
+          (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate,
           0 as qc_success_rate,
-          (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as overall_success_rate
-        FROM block_proposals
-        WHERE timestamp >= now() - INTERVAL ${intervalClause}
-          AND location IS NOT NULL AND location != '' AND location != 'unknown'
-        GROUP BY location
+          (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as overall_success_rate
+        FROM block_proposals bp
+        LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+        WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          AND COALESCE(vr.location, 'unknown') != 'unknown' 
+          AND COALESCE(vr.location, '') != ''
+        GROUP BY COALESCE(vr.location, 'unknown')
         ORDER BY validator_count DESC, total_events DESC
       `;
 
