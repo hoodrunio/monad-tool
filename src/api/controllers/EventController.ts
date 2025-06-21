@@ -46,24 +46,34 @@ export class EventController {
 
       // Get block proposal events
       if (!eventType || eventType === 'block_proposal' || eventType === 'block_skipped') {
+        // Build where clause with table prefix for block proposals
+        let blockWhereClause = 'WHERE 1=1';
+        if (validatorId) {
+          blockWhereClause += ` AND bp.validator_id = '${validatorId}'`;
+        }
+        if (minRound) {
+          blockWhereClause += ` AND bp.round >= ${minRound}`;
+        }
+
         const blockQuery = `
           SELECT 
-            timestamp,
+            bp.timestamp,
             'block_proposal' as event_type,
-            validator_id,
-            round,
-            epoch,
-            seq_num,
-            status,
-            num_tx,
-            block_id,
-            provider,
-            location
-          FROM block_proposals
-          ${whereClause}
-          ${eventType === 'block_skipped' ? 'AND status = \'skipped\'' : ''}
-          ${eventType === 'block_proposal' ? 'AND status = \'proposed\'' : ''}
-          ORDER BY timestamp DESC 
+            bp.validator_id,
+            bp.round,
+            bp.epoch,
+            bp.seq_num,
+            bp.status,
+            bp.num_tx,
+            bp.block_id,
+            COALESCE(vr.provider, 'unknown') as provider,
+            COALESCE(vr.location, 'unknown') as location
+          FROM block_proposals bp
+          LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+          ${blockWhereClause}
+          ${eventType === 'block_skipped' ? 'AND bp.status = \'skipped\'' : ''}
+          ${eventType === 'block_proposal' ? 'AND bp.status = \'proposed\'' : ''}
+          ORDER BY bp.timestamp DESC 
           LIMIT ${Math.min(limit, 500)}
         `;
 
@@ -74,22 +84,32 @@ export class EventController {
 
       // Get QC participation events
       if (!eventType || eventType === 'qc_participation') {
+        // Build where clause with table prefix for QC participation
+        let qcWhereClause = 'WHERE 1=1';
+        if (validatorId) {
+          qcWhereClause += ` AND qc.validator_id = '${validatorId}'`;
+        }
+        if (minRound) {
+          qcWhereClause += ` AND qc.round >= ${minRound}`;
+        }
+
         const qcQuery = `
           SELECT 
-            timestamp,
+            qc.timestamp,
             'qc_participation' as event_type,
-            validator_id,
-            round,
-            epoch,
-            seq_num,
-            participated,
-            validator_index,
-            participation_rate,
-            provider,
-            location
-          FROM qc_participation
-          ${whereClause}
-          ORDER BY timestamp DESC 
+            qc.validator_id,
+            qc.round,
+            qc.epoch,
+            qc.seq_num,
+            qc.participated,
+            qc.validator_index,
+            qc.participation_rate,
+            COALESCE(vr.provider, 'unknown') as provider,
+            COALESCE(vr.location, 'unknown') as location
+          FROM qc_participation qc
+          LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
+          ${qcWhereClause}
+          ORDER BY qc.timestamp DESC 
           LIMIT ${Math.min(limit, 500)}
         `;
 
@@ -133,8 +153,7 @@ export class EventController {
             provider: e.provider,
             location: e.location
           }
-        }))
-      ];
+        }))]
 
       // Sort by timestamp and limit
       const sortedEvents = allEvents
@@ -421,19 +440,31 @@ export class EventController {
 
       // Search block proposals
       if (!eventType || (typeof eventType === 'string' && eventType.includes('block'))) {
-        let blockWhereConditions = [...whereConditions];
+        let blockWhereConditions = [];
+        
+        if (validatorId) {
+          blockWhereConditions.push(`bp.validator_id = '${validatorId}'`);
+        }
+        
+        if (startTime) {
+          blockWhereConditions.push(`bp.timestamp >= '${startTime}'`);
+        }
+        
+        if (endTime) {
+          blockWhereConditions.push(`bp.timestamp <= '${endTime}'`);
+        }
         
         if (eventType === 'block_proposal') {
-          blockWhereConditions.push(`status = 'proposed'`);
+          blockWhereConditions.push(`bp.status = 'proposed'`);
         } else if (eventType === 'block_skipped') {
-          blockWhereConditions.push(`status = 'skipped'`);
+          blockWhereConditions.push(`bp.status = 'skipped'`);
         }
 
         if (searchQuery) {
           blockWhereConditions.push(`(
-            provider LIKE '%${searchQuery}%' OR 
-            location LIKE '%${searchQuery}%' OR
-            CAST(block_id AS String) LIKE '%${searchQuery}%'
+            COALESCE(vr.provider, 'unknown') LIKE '%${searchQuery}%' OR 
+            COALESCE(vr.location, 'unknown') LIKE '%${searchQuery}%' OR
+            COALESCE(toString(bp.block_id), '') LIKE '%${searchQuery}%'
           )`);
         }
 
@@ -442,20 +473,21 @@ export class EventController {
 
         const blockQuery = `
           SELECT 
-            timestamp,
+            bp.timestamp,
             'block_proposal' as event_type,
-            validator_id,
-            round,
-            epoch,
-            seq_num,
-            status,
-            num_tx,
-            block_id,
-            provider,
-            location
-          FROM block_proposals
+            bp.validator_id,
+            bp.round,
+            bp.epoch,
+            bp.seq_num,
+            bp.status,
+            bp.num_tx,
+            bp.block_id,
+            COALESCE(vr.provider, 'unknown') as provider,
+            COALESCE(vr.location, 'unknown') as location
+          FROM block_proposals bp
+          LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
           ${blockWhereClause}
-          ORDER BY timestamp DESC
+          ORDER BY bp.timestamp DESC
           LIMIT ${parseInt(limit as string)}
           OFFSET ${parseInt(offset as string)}
         `;
@@ -484,12 +516,24 @@ export class EventController {
 
       // Search QC participation
       if (!eventType || eventType === 'qc_participation') {
-        let qcWhereConditions = [...whereConditions];
+        let qcWhereConditions = [];
+
+        if (validatorId) {
+          qcWhereConditions.push(`qc.validator_id = '${validatorId}'`);
+        }
+        
+        if (startTime) {
+          qcWhereConditions.push(`qc.timestamp >= '${startTime}'`);
+        }
+        
+        if (endTime) {
+          qcWhereConditions.push(`qc.timestamp <= '${endTime}'`);
+        }
 
         if (searchQuery) {
           qcWhereConditions.push(`(
-            provider LIKE '%${searchQuery}%' OR 
-            location LIKE '%${searchQuery}%'
+            COALESCE(vr.provider, 'unknown') LIKE '%${searchQuery}%' OR 
+            COALESCE(vr.location, 'unknown') LIKE '%${searchQuery}%'
           )`);
         }
 
@@ -498,20 +542,21 @@ export class EventController {
 
         const qcQuery = `
           SELECT 
-            timestamp,
+            qc.timestamp,
             'qc_participation' as event_type,
-            validator_id,
-            round,
-            epoch,
-            seq_num,
-            participated,
-            validator_index,
-            participation_rate,
-            provider,
-            location
-          FROM qc_participation
+            qc.validator_id,
+            qc.round,
+            qc.epoch,
+            qc.seq_num,
+            qc.participated,
+            qc.validator_index,
+            qc.participation_rate,
+            COALESCE(vr.provider, 'unknown') as provider,
+            COALESCE(vr.location, 'unknown') as location
+          FROM qc_participation qc
+          LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
           ${qcWhereClause}
-          ORDER BY timestamp DESC
+          ORDER BY qc.timestamp DESC
           LIMIT ${parseInt(limit as string)}
           OFFSET ${parseInt(offset as string)}
         `;
