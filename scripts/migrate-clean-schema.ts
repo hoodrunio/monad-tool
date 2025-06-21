@@ -69,51 +69,92 @@ async function migrateCleanSchema() {
     // Step 3: Drop materialized views that reference the columns we want to remove
     console.log('\n3. 🗑️  Dropping materialized views with dependencies...');
     
-    const materialized_views_to_drop = [
-      'network_health_proposals_mv',
-      'geographic_block_metrics_mv', 
-      'block_proposal_metrics_hourly_mv',
-      'qc_participation_metrics_hourly_mv',
-      'geographic_qc_metrics_mv'
-    ];
+    // First, get all existing materialized views
+    const existingMaterializedViews = await client.executeRawQuery(`
+      SELECT name FROM system.tables 
+      WHERE database = 'monad_analytics' 
+      AND engine = 'MaterializedView'
+    `);
     
-    for (const view of materialized_views_to_drop) {
+    console.log('   📋 Found existing materialized views:', existingMaterializedViews.map(v => v.name).join(', '));
+    
+    // Drop all materialized views to avoid dependency issues
+    for (const view of existingMaterializedViews) {
       try {
-        await client.executeCommand(`DROP MATERIALIZED VIEW IF EXISTS ${view}`);
-        console.log(`   ✅ Dropped ${view}`);
+        await client.executeCommand(`DROP VIEW ${view.name}`);
+        console.log(`   ✅ Dropped ${view.name}`);
       } catch (error) {
-        console.log(`   ⚠️  Could not drop ${view} (might not exist): ${error instanceof Error ? error.message : String(error)}`);
+        console.log(`   ⚠️  Could not drop ${view.name}: ${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+
+    // Step 3.1: Verify all materialized views are dropped
+    console.log('\n3.1 🔍 Verifying materialized views are dropped...');
+    
+    try {
+      const remainingViews = await client.executeRawQuery(`
+        SELECT name FROM system.tables 
+        WHERE database = 'monad_analytics' 
+        AND engine = 'MaterializedView'
+      `);
+      
+      if (remainingViews.length > 0) {
+        console.log('   ⚠️  Some materialized views still exist:', remainingViews.map(v => v.name).join(', '));
+        
+        // Force drop any remaining views
+        for (const view of remainingViews) {
+          try {
+            await client.executeCommand(`DROP VIEW ${view.name}`);
+            console.log(`   ✅ Force dropped ${view.name}`);
+          } catch (error) {
+            console.log(`   ❌ Failed to force drop ${view.name}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      } else {
+        console.log('   ✅ All materialized views successfully dropped');
+      }
+    } catch (error) {
+      console.log('   ⚠️  Could not verify view status:', error instanceof Error ? error.message : String(error));
     }
 
     // Step 4: Drop redundant columns from block_proposals
     console.log('\n4. 🗑️  Removing redundant columns from block_proposals...');
     
     const blockColumns = blockProposalsSchema.map(c => c.name);
-    if (blockColumns.includes('provider')) {
-      await client.executeCommand('ALTER TABLE block_proposals DROP COLUMN provider');
-      console.log('   ✅ Removed provider column');
-    }
-    if (blockColumns.includes('location')) {
-      await client.executeCommand('ALTER TABLE block_proposals DROP COLUMN location');
-      console.log('   ✅ Removed location column');
-    }
-    if (blockColumns.includes('validator_name')) {
-      await client.executeCommand('ALTER TABLE block_proposals DROP COLUMN validator_name');
-      console.log('   ✅ Removed validator_name column');
+    const columnsToRemove = ['provider', 'location', 'validator_name'];
+    
+    for (const column of columnsToRemove) {
+      if (blockColumns.includes(column)) {
+        try {
+          await client.executeCommand(`ALTER TABLE block_proposals DROP COLUMN ${column}`);
+          console.log(`   ✅ Removed ${column} column`);
+        } catch (error) {
+          console.log(`   ❌ Failed to remove ${column} column: ${error instanceof Error ? error.message : String(error)}`);
+          throw error; // Re-throw to trigger rollback
+        }
+      } else {
+        console.log(`   ℹ️  Column ${column} does not exist, skipping`);
+      }
     }
 
     // Step 5: Drop redundant columns from qc_participation
     console.log('\n5. 🗑️  Removing redundant columns from qc_participation...');
     
     const qcColumns = qcParticipationSchema.map(c => c.name);
-    if (qcColumns.includes('provider')) {
-      await client.executeCommand('ALTER TABLE qc_participation DROP COLUMN provider');
-      console.log('   ✅ Removed provider column');
-    }
-    if (qcColumns.includes('location')) {
-      await client.executeCommand('ALTER TABLE qc_participation DROP COLUMN location');
-      console.log('   ✅ Removed location column');
+    const qcColumnsToRemove = ['provider', 'location'];
+    
+    for (const column of qcColumnsToRemove) {
+      if (qcColumns.includes(column)) {
+        try {
+          await client.executeCommand(`ALTER TABLE qc_participation DROP COLUMN ${column}`);
+          console.log(`   ✅ Removed ${column} column`);
+        } catch (error) {
+          console.log(`   ❌ Failed to remove ${column} column: ${error instanceof Error ? error.message : String(error)}`);
+          throw error; // Re-throw to trigger rollback
+        }
+      } else {
+        console.log(`   ℹ️  Column ${column} does not exist, skipping`);
+      }
     }
 
     // Step 6: Recreate materialized views
@@ -130,17 +171,17 @@ async function migrateCleanSchema() {
     // Extract and execute individual CREATE MATERIALIZED VIEW statements
     const viewStatements = materializedViewsSQL
       .split(/;[\s\n]*/)
-      .filter((stmt: string) => stmt.trim().startsWith('CREATE MATERIALIZED VIEW'))
-      .filter((stmt: string) => materialized_views_to_drop.some(view => stmt.includes(view)));
+      .filter((stmt: string) => stmt.trim().startsWith('CREATE MATERIALIZED VIEW'));
     
     for (const statement of viewStatements) {
       if (statement.trim()) {
         try {
           await client.executeCommand(statement.trim());
-          const viewName = statement.match(/CREATE MATERIALIZED VIEW (\w+_mv)/)?.[1];
-          console.log(`   ✅ Recreated ${viewName}`);
+          const viewName = statement.match(/CREATE MATERIALIZED VIEW (\w+)/)?.[1];
+          console.log(`   ✅ Recreated ${viewName || 'materialized view'}`);
         } catch (error) {
-          console.error(`   ❌ Failed to recreate view: ${error instanceof Error ? error.message : String(error)}`);
+          const viewName = statement.match(/CREATE MATERIALIZED VIEW (\w+)/)?.[1];
+          console.error(`   ❌ Failed to recreate ${viewName || 'materialized view'}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
     }
