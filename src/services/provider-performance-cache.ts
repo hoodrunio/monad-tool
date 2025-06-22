@@ -327,12 +327,12 @@ export class ProviderPerformanceCacheService extends EventEmitter {
       
       -- Final result - ALL providers included with LEFT JOINs
       SELECT 
-        pb.provider,
-        pb.validator_count,
+        pb.provider as provider,
+        pb.validator_count as validator_count,
         pb.validator_count as active_validator_count, -- Assume all registered validators are active
-        pb.regions,
+        pb.regions as regions,
         array(pb.provider) as datacenters, -- Provider acts as datacenter
-        pb.unique_locations,
+        pb.unique_locations as unique_locations,
         
         -- Block metrics (with defaults for providers without data)
         COALESCE(bm.total_proposals, 0) as total_proposals,
