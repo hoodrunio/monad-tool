@@ -295,6 +295,49 @@ ALTER TABLE validator_metrics_hourly ADD PROJECTION timeseries_proj (
 );
 
 -- =============================================
+-- 8. PROVIDER PERFORMANCE CACHE TABLE (New - No modification to existing tables)
+-- =============================================
+
+-- Pre-calculated provider performance data to avoid expensive real-time queries
+CREATE TABLE IF NOT EXISTS provider_performance_cache (
+    provider String,
+    
+    -- Performance metrics
+    avg_performance Float32,
+    validator_count UInt32,
+    active_validator_count UInt32,
+    
+    -- Geographic data
+    regions Array(String),
+    datacenters Array(String),
+    unique_locations UInt16,
+    
+    -- Block proposal metrics
+    total_proposals UInt64,
+    successful_proposals UInt64,
+    block_success_rate Float32,
+    
+    -- QC participation metrics
+    total_qc_opportunities UInt64,
+    successful_qc_participations UInt64,
+    qc_participation_rate Float32,
+    
+    -- Cache metadata
+    calculated_at DateTime64(3, 'UTC') DEFAULT now(),
+    data_window_start DateTime64(3, 'UTC'),
+    data_window_end DateTime64(3, 'UTC'),
+    last_updated DateTime64(3, 'UTC') DEFAULT now(),
+    
+    -- Background calculation metadata
+    calculation_duration_ms UInt32,
+    data_freshness_minutes UInt16,
+    is_valid UInt8 DEFAULT 1
+) ENGINE = ReplacingMergeTree(last_updated)
+ORDER BY provider
+TTL toDateTime(last_updated) + INTERVAL 24 HOUR
+SETTINGS index_granularity = 1024; 
+
+-- =============================================
 -- 11. TABLE COMMENTS
 -- =============================================
 
@@ -312,4 +355,4 @@ ALTER TABLE geographic_metrics_hourly MODIFY COMMENT 'Geographic distribution an
 -- =============================================
 
 -- Set optimal merge settings for high throughput
-SYSTEM RELOAD CONFIG; 
+SYSTEM RELOAD CONFIG;

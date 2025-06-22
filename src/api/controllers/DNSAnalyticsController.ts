@@ -197,7 +197,9 @@ export class DNSAnalyticsController {
       const accurateStats = await this.getAccurateValidatorStats();
       const geoDistribution = this.validatorService.getGeographicDistribution();
       const ispDistribution = this.validatorService.getIspDistribution();
-      const performanceData = await this.getProviderPerformanceData();
+      
+      // Use cached provider performance data instead of expensive real-time calculation
+      const performanceData = await this.getCachedProviderPerformanceData();
       
       const risks = {
         centralizationRisk: this.calculateCentralizationRisk(ispDistribution, accurateStats.totalValidators),
@@ -246,7 +248,9 @@ export class DNSAnalyticsController {
     try {
       const accurateStats = await this.getAccurateValidatorStats();
       const ispDistribution = this.validatorService.getIspDistribution();
-      const performanceData = await this.getProviderPerformanceData();
+      
+      // Use cached provider performance data instead of expensive real-time calculation
+      const performanceData = await this.getCachedProviderPerformanceData();
       const totalValidators = accurateStats.totalValidators;
       
       const distribution = Array.from(ispDistribution.entries()).map(([provider, count]) => {
@@ -673,6 +677,87 @@ export class DNSAnalyticsController {
       return performanceMap;
     } catch (error) {
       console.error('Failed to get provider performance data:', error);
+      return new Map();
+    }
+  }
+
+  /**
+   * Get cached provider performance data (replaces the expensive real-time query)
+   */
+  private async getCachedProviderPerformanceData(): Promise<Map<string, {
+    avgPerformance: number;
+    regions: string[];
+    datacenters: string[];
+  }>> {
+    try {
+      // Try to get from Redis cache first
+      const cacheKey = 'provider_performance_cache';
+      const cached = await this.redisClient['client'].get(cacheKey);
+      
+      if (cached) {
+        const data = JSON.parse(cached);
+        const performanceMap = new Map<string, { avgPerformance: number; regions: string[]; datacenters: string[]; }>();
+        
+        Object.entries(data).forEach(([provider, perfData]: [string, any]) => {
+          performanceMap.set(provider, {
+            avgPerformance: perfData.avgPerformance || 0,
+            regions: perfData.regions || ['unknown'],
+            datacenters: perfData.datacenters || [provider]
+          });
+        });
+        
+        console.log(`✅ Retrieved provider performance data from cache for ${performanceMap.size} providers`);
+        return performanceMap;
+      }
+
+      // Fallback to database cache table
+      const query = `
+        SELECT 
+          provider,
+          avg_performance,
+          regions,
+          datacenters
+        FROM provider_performance_cache
+        WHERE is_valid = 1
+          AND calculated_at >= now() - INTERVAL 1 HOUR
+        ORDER BY calculated_at DESC
+      `;
+
+      const result = await this.clickhouseClient.executeRawQuery(query);
+      const performanceMap = new Map<string, { avgPerformance: number; regions: string[]; datacenters: string[]; }>();
+
+      result.forEach(row => {
+        performanceMap.set(row.provider, {
+          avgPerformance: parseFloat(row.avg_performance || 0),
+          regions: Array.isArray(row.regions) ? row.regions : [row.regions || row.provider],
+          datacenters: Array.isArray(row.datacenters) ? row.datacenters : [row.provider]
+        });
+      });
+
+      // Update Redis cache asynchronously for next request
+      if (performanceMap.size > 0) {
+        const cacheData = Object.fromEntries(
+          Array.from(performanceMap.entries()).map(([provider, data]) => [
+            provider, 
+            { 
+              avgPerformance: data.avgPerformance, 
+              regions: data.regions, 
+              datacenters: data.datacenters 
+            }
+          ])
+        );
+        
+                 this.redisClient['client'].setex(cacheKey, 900, JSON.stringify(cacheData)) // 15 minutes TTL
+           .catch((error: Error) => console.warn('Failed to update Redis cache:', error));
+      }
+
+      console.log(`✅ Retrieved provider performance data from database cache for ${performanceMap.size} providers`);
+      return performanceMap;
+
+    } catch (error) {
+      console.error('Failed to get cached provider performance data:', error);
+      
+      // Return empty map - API will handle gracefully with default values
       return new Map();
     }
   }

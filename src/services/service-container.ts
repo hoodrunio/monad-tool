@@ -11,6 +11,7 @@ import { MonadClickHouseClient, ClickHouseConfig } from '../database/clickhouse-
 import { MonadRedisClient, RedisConfig } from '../cache/redis-client';
 import { DatabaseValidatorInitializer } from './database-validator-initializer';
 import { logger } from '../utils/logger';
+import { ProviderPerformanceCacheService } from './provider-performance-cache';
 
 export interface ServiceContainerConfig {
   clickhouse: ClickHouseConfig;
@@ -25,6 +26,7 @@ export class ServiceContainer {
   private _validatorService: ValidatorService | null = null;
   private _locationService: UnifiedLocationService | null = null;
   private _databaseValidator: DatabaseValidatorInitializer | null = null;
+  private _providerCacheService: ProviderPerformanceCacheService | null = null;
   
   private isInitialized: boolean = false;
   private config: ServiceContainerConfig;
@@ -79,6 +81,20 @@ export class ServiceContainer {
 
     // Initialize database validator with ClickHouse client only
     this._databaseValidator = new DatabaseValidatorInitializer(this._clickhouseClient);
+
+    // Initialize provider performance cache service
+    this._providerCacheService = new ProviderPerformanceCacheService(
+      this._clickhouseClient,
+      this._redisClient,
+      {
+        updateIntervalMinutes: 15, // Update every 15 minutes
+        dataWindowHours: 168, // 7 days
+        enableRedisCache: true,
+        redisCacheTtlSeconds: 900, // 15 minutes
+        maxCalculationTimeoutMs: 120000, // 2 minutes
+        enableFallbackData: true
+      }
+    );
 
     this.isInitialized = true;
     logger.info('✅ ServiceContainer initialized successfully');
@@ -135,6 +151,16 @@ export class ServiceContainer {
   }
 
   /**
+   * Get ProviderPerformanceCacheService instance
+   */
+  getProviderCacheService(): ProviderPerformanceCacheService {
+    if (!this._providerCacheService) {
+      throw new Error('ServiceContainer not initialized. Call initialize() first.');
+    }
+    return this._providerCacheService;
+  }
+
+  /**
    * Cleanup all services
    */
   async shutdown(): Promise<void> {
@@ -153,6 +179,7 @@ export class ServiceContainer {
       this._validatorService = null;
       this._locationService = null;
       this._databaseValidator = null;
+      this._providerCacheService = null;
       this.isInitialized = false;
 
       logger.info('✅ ServiceContainer shutdown complete');

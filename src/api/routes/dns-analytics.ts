@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { DNSAnalyticsController } from '../controllers/DNSAnalyticsController';
 import { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { MonadRedisClient } from '../../cache/redis-client';
+import { ServiceContainer } from '../../services/service-container';
 
 export function createDNSAnalyticsRoutes(
   clickhouseClient: MonadClickHouseClient, 
@@ -29,6 +30,57 @@ export function createDNSAnalyticsRoutes(
   // Cache Management Routes
   router.get('/api/dns/cache-stats', (req, res) => dnsController.getDNSCacheStats(req, res));
   router.post('/api/dns/clear-cache', (req, res) => dnsController.clearDNSCache(req, res));
+
+  // Provider Performance Cache Status Route
+  router.get('/api/dns/provider-cache-status', (req, res) => {
+    try {
+      const serviceContainer = ServiceContainer.getInstance();
+      const cacheService = serviceContainer.getProviderCacheService();
+      const status = cacheService.getStatus();
+      
+      res.json({
+        success: true,
+        data: {
+          isRunning: status.isRunning,
+          isCalculating: status.isCalculating,
+          lastCalculationTime: status.lastCalculationTime,
+          calculationErrors: status.calculationErrors,
+          nextUpdateInMs: status.nextUpdateIn,
+          cacheAgeMs: status.cacheAge,
+          cacheAgeHuman: status.cacheAge > 0 ? `${Math.floor(status.cacheAge / 60000)} minutes ago` : 'Never',
+          backgroundServiceStatus: 'active'
+        }
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get cache status'
+      });
+    }
+  });
+
+  // Force Provider Cache Recalculation Route
+  router.post('/api/dns/force-provider-cache-update', async (req, res) => {
+    try {
+      const serviceContainer = ServiceContainer.getInstance();
+      const cacheService = serviceContainer.getProviderCacheService();
+      
+      const success = await cacheService.forceRecalculation();
+      
+      res.json({
+        success: true,
+        data: {
+          recalculationTriggered: success,
+          message: success ? 'Provider cache recalculation started' : 'Recalculation already in progress'
+        }
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to trigger cache recalculation'
+      });
+    }
+  });
 
   // Health Check Route
   router.get('/api/dns/health', (req, res) => dnsController.healthCheck(req, res));
