@@ -357,13 +357,16 @@ export class ProviderPerformanceCacheService extends EventEmitter {
       const result = await this.clickhouseClient.executeRawQuery(performanceQuery);
       
       result.forEach(row => {
+        // Fix for undefined column names - use datacenters as fallback for provider name
+        const providerName = row.provider || (Array.isArray(row.datacenters) ? row.datacenters[0] : row.datacenters) || 'unknown';
+        
         const data: ProviderPerformanceData = {
-          provider: row.provider,
+          provider: providerName,
           avgPerformance: parseFloat(row.avg_performance || 0),
           validatorCount: parseInt(row.validator_count || 0),
           activeValidatorCount: parseInt(row.active_validator_count || 0),
           regions: Array.isArray(row.regions) ? row.regions : [row.regions || 'unknown'],
-          datacenters: Array.isArray(row.datacenters) ? row.datacenters : [row.provider],
+          datacenters: Array.isArray(row.datacenters) ? row.datacenters : [providerName],
           uniqueLocations: parseInt(row.unique_locations || 0),
           totalProposals: parseInt(row.total_proposals || 0),
           successfulProposals: parseInt(row.successful_proposals || 0),
@@ -378,7 +381,8 @@ export class ProviderPerformanceCacheService extends EventEmitter {
           dataFreshnessMinutes: 0 // Will be calculated when retrieved
         };
 
-        performanceMap.set(row.provider, data);
+        // Use the provider name as the key (not row.provider which might be undefined)
+        performanceMap.set(providerName, data);
       });
 
       return performanceMap;
