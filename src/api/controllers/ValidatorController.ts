@@ -19,6 +19,7 @@ export class ValidatorController {
     try {
       const timeWindow = (req.query.window as string) || '1h';
       const limit = parseInt(req.query.limit as string) || 50;
+      const page = parseInt(req.query.page as string) || 1;
       const sortBy = (req.query.sortBy as string) || 'uptime_score';
       
       // Validate parameters
@@ -40,25 +41,37 @@ export class ValidatorController {
         return;
       }
 
-      if (!['uptime_score', 'block_proposal_ratio', 'qc_participation_rate'].includes(sortBy)) {
+      if (page < 1) {
+        res.status(400).json({
+          error: 'Invalid page parameter',
+          message: 'Page must be >= 1',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      if (!['uptime_score', 'block_proposal_ratio', 'qc_participation_rate', 'stake'].includes(sortBy)) {
         res.status(400).json({
           error: 'Invalid sortBy parameter',
-          message: 'Must be uptime_score, block_proposal_ratio, or qc_participation_rate',
+          message: 'Must be uptime_score, block_proposal_ratio, qc_participation_rate, or stake',
           timestamp: new Date().toISOString()
         });
         return;
       }
 
       // Try cache first
-      const cacheKey = `validator_rankings:${timeWindow}:${limit}:${sortBy}`;
+      const cacheKey = `validator_rankings:${timeWindow}:${limit}:${page}:${sortBy}`;
       const cached = await this.redisClient['client'].get(cacheKey);
       
       if (cached) {
+        const cachedData = JSON.parse(cached);
         res.json({
-          data: JSON.parse(cached),
+          data: cachedData.data,
+          pagination: cachedData.pagination,
           metadata: {
             timeWindow,
             limit,
+            page,
             sortBy,
             source: 'cache',
             formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
@@ -68,20 +81,21 @@ export class ValidatorController {
         return;
       }
 
-      // Calculate rankings from raw data
-      const rankings = await this.calculateValidatorRankings(timeWindow, limit, sortBy);
+      // Calculate rankings with pagination from raw data
+      const result = await this.calculateValidatorRankingsWithPagination(timeWindow, limit, page, sortBy);
       
       // Cache result for 2 minutes (rankings update frequently)
-      await this.redisClient['client'].setex(cacheKey, 120, JSON.stringify(rankings));
+      await this.redisClient['client'].setex(cacheKey, 120, JSON.stringify(result));
       
       res.json({
-        data: rankings,
+        data: result.data,
+        pagination: result.pagination,
         metadata: {
           timeWindow,
           limit,
+          page,
           sortBy,
           source: 'database',
-          count: rankings.length,
           formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
         },
         timestamp: new Date().toISOString()
@@ -126,13 +140,14 @@ export class ValidatorController {
           COALESCE(vr.validator_name, 'unknown') as validator_name,
           COALESCE(vr.provider, 'unknown') as provider,
           COALESCE(vr.location, 'unknown') as location,
+          COALESCE(vr.stake, 0) as stake,
           MIN(b.timestamp) as first_seen,
           MAX(b.timestamp) as last_activity
         FROM block_proposals b
         LEFT JOIN validator_registry vr ON vr.validator_id = b.validator_id AND vr.is_active = 1
         WHERE b.validator_id = '${validatorId}'
           AND b.timestamp >= now() - INTERVAL ${timeWindow}
-        GROUP BY b.validator_id, vr.validator_name, vr.provider, vr.location
+        GROUP BY b.validator_id, vr.validator_name, vr.provider, vr.location, vr.stake
       `;
 
       // Get QC participation metrics
@@ -174,6 +189,7 @@ export class ValidatorController {
       // Format response with separate metrics
       res.json({
         validator_id: validatorId,
+        stake: parseInt(blockData?.stake || 0),
         metrics: {
           block_proposal_ratio: blockRatio,
           qc_participation_rate: qcRate,
@@ -338,6 +354,121 @@ export class ValidatorController {
   // HELPER METHODS
   // =============================================
 
+  private async calculateValidatorRankingsWithPagination(timeWindow: string, limit: number, page: number, sortBy: string): Promise<{ data: any[], pagination: any }> {
+    const intervalClause = this.getIntervalClause(timeWindow);
+    const offset = (page - 1) * limit;
+    
+    // First, get the total count
+    const countQuery = `
+      WITH 
+        block_metrics AS (
+          SELECT validator_id
+          FROM block_proposals
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY validator_id
+        ),
+        qc_metrics AS (
+          SELECT validator_id
+          FROM qc_participation
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY validator_id
+        )
+      SELECT COUNT(DISTINCT COALESCE(b.validator_id, q.validator_id)) as total_count
+      FROM block_metrics b
+      FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
+      WHERE COALESCE(b.validator_id, q.validator_id) IS NOT NULL
+    `;
+
+    // Main query with pagination and stake amounts
+    const query = `
+      WITH 
+        block_metrics AS (
+          SELECT 
+            validator_id,
+            COUNT(*) as total_block_opportunities,
+            COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
+            COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
+            (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
+          FROM block_proposals
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY validator_id
+        ),
+        qc_metrics AS (
+          SELECT 
+            validator_id,
+            COUNT(*) as total_qc_opportunities,
+            COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
+            (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
+          FROM qc_participation
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY validator_id
+        )
+      SELECT 
+        COALESCE(b.validator_id, q.validator_id) as validator_id,
+        COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
+        COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
+        (COALESCE(b.block_proposal_ratio, 0) * 0.7 + COALESCE(q.qc_participation_rate, 0) * 0.3) as uptime_score,
+        COALESCE(b.total_block_opportunities, 0) as total_block_opportunities,
+        COALESCE(b.blocks_proposed, 0) as blocks_proposed,
+        COALESCE(b.blocks_skipped, 0) as blocks_skipped,
+        COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
+        COALESCE(q.qc_participations, 0) as qc_participations,
+        COALESCE(vr.validator_name, 'unknown') as validator_name,
+        COALESCE(vr.provider, 'unknown') as provider,
+        COALESCE(vr.location, 'unknown') as location,
+        COALESCE(vr.stake, 0) as stake
+      FROM block_metrics b
+      FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
+      LEFT JOIN validator_registry vr ON vr.validator_id = COALESCE(b.validator_id, q.validator_id) AND vr.is_active = 1
+      WHERE COALESCE(b.validator_id, q.validator_id) IS NOT NULL
+      ORDER BY ${this.getSortByClause(sortBy)}
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    const [countResult, dataResult] = await Promise.all([
+      this.clickhouseClient.executeRawQuery(countQuery),
+      this.clickhouseClient.executeRawQuery(query)
+    ]);
+
+    const totalCount = countResult[0]?.total_count || 0;
+    const totalPages = Math.ceil(totalCount / limit);
+    
+    const rankings = dataResult.map((r, index) => ({
+      rank: offset + index + 1,
+      validator_id: r.validator_id,
+      stake: parseInt(r.stake || 0),
+      metrics: {
+        block_proposal_ratio: parseFloat(r.block_proposal_ratio || 0),
+        qc_participation_rate: parseFloat(r.qc_participation_rate || 0),
+        uptime_score: parseFloat(r.uptime_score || 0)
+      },
+      details: {
+        total_block_opportunities: parseInt(r.total_block_opportunities || 0),
+        total_qc_opportunities: parseInt(r.total_qc_opportunities || 0),
+        blocks_proposed: parseInt(r.blocks_proposed || 0),
+        blocks_skipped: parseInt(r.blocks_skipped || 0),
+        qc_participations: parseInt(r.qc_participations || 0)
+      },
+      infrastructure: {
+        validator_name: r.validator_name || 'unknown',
+        provider: r.provider || 'unknown',
+        location: r.location || 'unknown'
+      }
+    }));
+
+    return {
+      data: rankings,
+      pagination: {
+        current_page: page,
+        total_pages: totalPages,
+        total_count: totalCount,
+        per_page: limit,
+        has_next_page: page < totalPages,
+        has_prev_page: page > 1
+      }
+    };
+  }
+
   private async calculateValidatorRankings(timeWindow: string, limit: number, sortBy: string): Promise<any[]> {
     const intervalClause = this.getIntervalClause(timeWindow);
     
@@ -378,7 +509,8 @@ export class ValidatorController {
         COALESCE(q.qc_participations, 0) as qc_participations,
         COALESCE(vr.validator_name, 'unknown') as validator_name,
         COALESCE(vr.provider, 'unknown') as provider,
-        COALESCE(vr.location, 'unknown') as location
+        COALESCE(vr.location, 'unknown') as location,
+        COALESCE(vr.stake, 0) as stake
       FROM block_metrics b
       FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
       LEFT JOIN validator_registry vr ON vr.validator_id = COALESCE(b.validator_id, q.validator_id) AND vr.is_active = 1
@@ -394,6 +526,7 @@ export class ValidatorController {
     return rankings.map((r, index) => ({
       rank: index + 1,
       validator_id: r.validator_id,
+      stake: parseInt(r.stake || 0),
       metrics: {
         block_proposal_ratio: parseFloat(r.block_proposal_ratio || 0),
         qc_participation_rate: parseFloat(r.qc_participation_rate || 0),
@@ -543,7 +676,8 @@ export class ValidatorController {
         COALESCE(q.qc_participations, 0) as qc_participations,
         COALESCE(vr.validator_name, 'unknown') as validator_name,
         COALESCE(vr.provider, 'unknown') as provider,
-        COALESCE(vr.location, 'unknown') as location
+        COALESCE(vr.location, 'unknown') as location,
+        COALESCE(vr.stake, 0) as stake
       FROM block_metrics b
       FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
       LEFT JOIN validator_registry vr ON vr.validator_id = COALESCE(b.validator_id, q.validator_id) AND vr.is_active = 1
@@ -556,6 +690,7 @@ export class ValidatorController {
     
     return comparison.map(v => ({
       validator_id: v.validator_id,
+      stake: parseInt(v.stake || 0),
       metrics: {
         block_proposal_ratio: parseFloat(v.block_proposal_ratio || 0),
         qc_participation_rate: parseFloat(v.qc_participation_rate || 0),
@@ -595,6 +730,8 @@ export class ValidatorController {
         return 'block_proposal_ratio DESC, uptime_score DESC';
       case 'qc_participation_rate':
         return 'qc_participation_rate DESC, uptime_score DESC';
+      case 'stake':
+        return 'stake DESC, uptime_score DESC';
       case 'uptime_score':
       default:
         return 'uptime_score DESC, block_proposal_ratio DESC';
