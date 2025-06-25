@@ -1,5 +1,5 @@
 import {TypeormDatabase} from '@subsquid/typeorm-store'
-import {Block, Transaction, Account, Log, Token, TokenTransfer, MethodSignature} from './model'
+import {Block, Transaction, Log, TokenTransfer, MethodSignature} from './model'
 import {processor} from './processor'
 import { 
     BlockProcessor, 
