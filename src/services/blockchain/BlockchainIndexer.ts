@@ -314,10 +314,18 @@ export class BlockchainIndexer extends EventEmitter {
             if (receipt?.logs) {
               for (const log of receipt.logs) {
                 const eventData = {
-                  ...log,
+                  blockNumber: log.blockNumber,
+                  blockHash: log.blockHash,
+                  transactionHash: log.transactionHash,
+                  transactionIndex: log.transactionIndex,
+                  logIndex: log.index,
+                  address: log.address,
+                  topics: [...log.topics] as string[],
+                  data: log.data,
+                  removed: log.removed || false,
                   timestamp: blockTimestamp
                 };
-                events.push(eventData as ContractEventData);
+                events.push(eventData);
 
                 // Check for token transfers
                 const transfer = await this.extractTokenTransfer(log, blockTimestamp);

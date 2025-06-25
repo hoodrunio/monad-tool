@@ -137,6 +137,11 @@ export class MonadRpcClient {
       const block = await this.provider.getBlock(blockNumber, includeTxs);
       if (!block) return null;
 
+      // Ensure blockHash is not null
+      if (!block.hash) {
+        throw new Error(`Block ${blockNumber} has null hash`);
+      }
+
       return {
         blockNumber: block.number,
         blockHash: block.hash,
@@ -152,7 +157,7 @@ export class MonadRpcClient {
         stateRoot: block.stateRoot || '',
         transactionsRoot: block.hash, // Using block hash as fallback
         receiptsRoot: block.hash, // Using block hash as fallback  
-        logsBloom: block.logsBloom || '0x',
+        logsBloom: '0x' + '0'.repeat(512), // Default empty logs bloom
         extraData: block.extraData || '0x',
         nonce: block.nonce || undefined,
         difficulty: block.difficulty || undefined,
@@ -278,7 +283,7 @@ export class MonadRpcClient {
         transactionIndex: log.transactionIndex,
         logIndex: log.index,
         address: log.address,
-        topics: log.topics,
+        topics: [...log.topics] as string[],
         data: log.data,
         removed: log.removed
       }));
