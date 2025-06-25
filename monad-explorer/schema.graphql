@@ -1,0 +1,111 @@
+# Blockchain Explorer Schema for Monad
+
+type Block @entity {
+  id: ID! # block hash
+  number: Int! @index
+  hash: String! @unique
+  parentHash: String!
+  timestamp: DateTime! @index
+  size: BigInt
+  gasLimit: BigInt!
+  gasUsed: BigInt!
+  transactionCount: Int!
+}
+
+type Transaction @entity {
+  id: ID! # transaction hash
+  hash: String! @unique @index
+  block: Block!
+  transactionIndex: Int!
+  fromAddress: String! @index
+  toAddress: String @index
+  value: BigInt!
+  gas: BigInt!
+  gasPrice: BigInt!
+  gasUsed: BigInt
+  input: String
+  status: Int
+  timestamp: DateTime! @index
+}
+
+type Account @entity {
+  id: ID! # address
+  address: String! @unique @index
+  balance: BigInt!
+  transactionCount: Int!
+  isContract: Boolean! @index
+  contractCode: String
+  createdAt: DateTime
+}
+
+type Log @entity {
+  id: ID! # transaction hash + log index
+  transaction: Transaction!
+  logIndex: Int!
+  address: String! @index
+  topics: [String!]!
+  data: String!
+}
+
+type Token @entity {
+  id: ID! # contract address
+  address: String! @unique @index
+  name: String
+  symbol: String @index
+  decimals: Int
+  totalSupply: BigInt
+  tokenType: TokenType! @index
+  createdAt: DateTime!
+}
+
+type TokenTransfer @entity {
+  id: ID! # transaction hash + log index
+  token: Token!
+  transaction: Transaction!
+  log: Log!
+  fromAddress: String! @index
+  toAddress: String! @index
+  value: BigInt!
+  tokenId: BigInt # For NFTs
+  timestamp: DateTime! @index
+}
+
+type TokenBalance @entity {
+  id: ID! # account address + token address
+  account: Account!
+  token: Token!
+  balance: BigInt!
+  lastUpdated: DateTime!
+}
+
+type Contract @entity {
+  id: ID! # contract address
+  address: String! @unique @index
+  creator: String! @index
+  creationTransaction: Transaction!
+  createdAt: DateTime! @index
+  bytecode: String
+  sourceCode: String
+  isVerified: Boolean! @index
+  name: String
+  compilerVersion: String
+}
+
+# Analytics entities
+type DailyStats @entity {
+  id: ID! # date (YYYY-MM-DD)
+  date: DateTime! @unique @index
+  blockCount: Int!
+  transactionCount: Int!
+  uniqueAddresses: Int!
+  totalGasUsed: BigInt!
+  averageGasPrice: BigInt!
+  totalValue: BigInt!
+}
+
+enum TokenType {
+  ERC20
+  ERC721
+  ERC1155
+  UNKNOWN
+}
