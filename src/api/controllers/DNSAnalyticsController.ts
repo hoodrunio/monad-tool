@@ -204,21 +204,17 @@ export class DNSAnalyticsController {
       const risks = {
         centralizationRisk: this.calculateCentralizationRisk(ispDistribution, accurateStats.totalValidators),
         diversityScore: this.calculateDiversityScore(geoDistribution),
-        providerRisks: Object.fromEntries(
-          Array.from(ispDistribution.entries()).map(([provider, count]) => {
-            const providerPerformance = performanceData.get(provider);
-            return [
-              provider,
-              {
-                validatorCount: count,
-                riskScore: (count / accurateStats.totalValidators) * 100,
-                avgPerformance: providerPerformance?.avgPerformance || 0,
-                regions: providerPerformance?.regions || ['unknown'],
-                datacenters: providerPerformance?.datacenters || [provider]
-              }
-            ];
-          })
-        ),
+        providerRisks: Array.from(ispDistribution.entries()).map(([provider, count]) => {
+          const providerPerformance = performanceData.get(provider);
+          return {
+            provider,
+            validatorCount: count,
+            riskScore: (count / accurateStats.totalValidators) * 100,
+            avgPerformance: providerPerformance?.avgPerformance || 0,
+            regions: providerPerformance?.regions || ['unknown'],
+            datacenters: providerPerformance?.datacenters || [provider]
+          };
+        }).sort((a, b) => b.validatorCount - a.validatorCount),
         riskFactors: {
           providerConcentration: Math.max(...Array.from(ispDistribution.values())) / accurateStats.totalValidators * 100,
           geographicConcentration: Math.max(...Array.from(geoDistribution.values())) / accurateStats.totalValidators * 100,
