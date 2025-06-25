@@ -567,4 +567,310 @@ export class MonadClickHouseClient {
   async executeCommand(command: string): Promise<void> {
     await this.client.command({ query: command });
   }
+
+  // =============================================
+  // BLOCKCHAIN EXPLORER DATA INSERTION
+  // =============================================
+
+  async insertBlocks(blocks: any[]): Promise<void> {
+    if (blocks.length === 0) return;
+
+    const data = blocks.map(block => ({
+      block_number: block.blockNumber,
+      block_hash: block.blockHash,
+      parent_hash: block.parentHash,
+      timestamp: new Date(block.timestamp * 1000),
+      miner: block.miner,
+      gas_limit: block.gasLimit.toString(),
+      gas_used: block.gasUsed.toString(),
+      base_fee_per_gas: block.baseFeePerGas?.toString() || null,
+      size: block.size,
+      transaction_count: block.transactionCount,
+      uncle_count: 0,
+      difficulty: block.difficulty?.toString() || null,
+      total_difficulty: block.totalDifficulty?.toString() || null,
+      nonce: block.nonce || null,
+      state_root: block.stateRoot,
+      transactions_root: block.transactionsRoot,
+      receipts_root: block.receiptsRoot,
+      logs_bloom: block.logsBloom,
+      extra_data: block.extraData
+    }));
+
+    await this.client.insert({
+      table: 'blocks',
+      values: data,
+      format: 'JSONEachRow'
+    });
+  }
+
+  async insertTransactions(transactions: any[]): Promise<void> {
+    if (transactions.length === 0) return;
+
+    const data = transactions.map(tx => ({
+      transaction_hash: tx.hash,
+      block_number: tx.blockNumber,
+      block_hash: tx.blockHash,
+      transaction_index: tx.transactionIndex,
+      timestamp: new Date(tx.timestamp * 1000), // Assuming timestamp is added
+      from_address: tx.from,
+      to_address: tx.to || null,
+      value: tx.value.toString(),
+      gas: tx.gas.toString(),
+      gas_price: tx.gasPrice.toString(),
+      gas_used: tx.gasUsed?.toString() || null,
+      max_fee_per_gas: tx.maxFeePerGas?.toString() || null,
+      max_priority_fee_per_gas: tx.maxPriorityFeePerGas?.toString() || null,
+      nonce: tx.nonce,
+      input: tx.data,
+      status: tx.status || null,
+      transaction_type: tx.type,
+      creates_contract: tx.createsContract ? 1 : 0,
+      contract_address: tx.contractAddress || null
+    }));
+
+    await this.client.insert({
+      table: 'transactions',
+      values: data,
+      format: 'JSONEachRow'
+    });
+  }
+
+  async insertAccounts(accounts: any[]): Promise<void> {
+    if (accounts.length === 0) return;
+
+    const data = accounts.map(account => ({
+      address: account.address,
+      balance: account.balance.toString(),
+      nonce: account.nonce,
+      is_contract: account.isContract ? 1 : 0,
+      contract_type: account.contractType || 'eoa',
+      contract_code: account.contractCode || null,
+      contract_creation_tx: account.contractCreationTx || null,
+      contract_creator: account.contractCreator || null,
+      first_seen: account.firstSeen,
+      last_activity: account.lastActivity,
+      transaction_count: account.transactionCount,
+      token_name: account.tokenName || null,
+      token_symbol: account.tokenSymbol || null,
+      token_decimals: account.tokenDecimals || null,
+      token_total_supply: account.tokenTotalSupply?.toString() || null
+    }));
+
+    await this.client.insert({
+      table: 'accounts',
+      values: data,
+      format: 'JSONEachRow'
+    });
+  }
+
+  async insertContractEvents(events: any[]): Promise<void> {
+    if (events.length === 0) return;
+
+    const data = events.map(event => ({
+      block_number: event.blockNumber,
+      block_hash: event.blockHash,
+      transaction_hash: event.transactionHash,
+      transaction_index: event.transactionIndex,
+      log_index: event.logIndex,
+      timestamp: new Date(event.timestamp * 1000), // Assuming timestamp is added
+      contract_address: event.address,
+      event_signature: event.topics[0] || '',
+      event_name: event.eventName || null,
+      topics: event.topics,
+      data: event.data,
+      decoded_topics: event.decodedTopics || [],
+      decoded_data: event.decodedData || null
+    }));
+
+    await this.client.insert({
+      table: 'contract_events',
+      values: data,
+      format: 'JSONEachRow'
+    });
+  }
+
+  async insertTokenTransfers(transfers: any[]): Promise<void> {
+    if (transfers.length === 0) return;
+
+    const data = transfers.map(transfer => ({
+      block_number: transfer.blockNumber,
+      block_hash: transfer.blockHash,
+      transaction_hash: transfer.transactionHash,
+      log_index: transfer.logIndex,
+      timestamp: new Date(transfer.timestamp * 1000),
+      token_address: transfer.tokenAddress,
+      token_type: transfer.tokenType,
+      token_name: transfer.tokenName || null,
+      token_symbol: transfer.tokenSymbol || null,
+      from_address: transfer.fromAddress,
+      to_address: transfer.toAddress,
+      amount: transfer.amount.toString(),
+      token_id: transfer.tokenId?.toString() || null
+    }));
+
+    await this.client.insert({
+      table: 'token_transfers',
+      values: data,
+      format: 'JSONEachRow'
+    });
+  }
+
+  async insertNftMetadata(metadata: any[]): Promise<void> {
+    if (metadata.length === 0) return;
+
+    const data = metadata.map(nft => ({
+      token_address: nft.tokenAddress,
+      token_id: nft.tokenId.toString(),
+      name: nft.name || null,
+      description: nft.description || null,
+      image_url: nft.imageUrl || null,
+      animation_url: nft.animationUrl || null,
+      external_url: nft.externalUrl || null,
+      metadata_uri: nft.metadataUri || null,
+      attributes: nft.attributes ? JSON.stringify(nft.attributes) : null,
+      metadata_fetched: nft.metadataFetched ? 1 : 0,
+      fetch_attempts: nft.fetchAttempts || 0,
+      last_fetch_attempt: nft.lastFetchAttempt || null
+    }));
+
+    await this.client.insert({
+      table: 'nft_metadata',
+      values: data,
+      format: 'JSONEachRow'
+    });
+  }
+
+  async updateBlockProcessingStatus(blockNumber: number, status: string, stats?: any): Promise<void> {
+    const data = {
+      block_number: blockNumber,
+      status: status,
+      transactions_processed: stats?.transactionsProcessed || 0,
+      events_processed: stats?.eventsProcessed || 0,
+      contracts_discovered: stats?.contractsDiscovered || 0,
+      tokens_discovered: stats?.tokensDiscovered || 0,
+      error_message: stats?.errorMessage || null,
+      retry_count: stats?.retryCount || 0,
+      processing_started_at: stats?.processingStartedAt || null,
+      processing_completed_at: stats?.processingCompletedAt || null,
+      processing_duration_ms: stats?.processingDurationMs || null
+    };
+
+    await this.client.insert({
+      table: 'block_processing_status',
+      values: [data],
+      format: 'JSONEachRow'
+    });
+  }
+
+  // =============================================
+  // BLOCKCHAIN QUERY METHODS
+  // =============================================
+
+  async getLatestProcessedBlock(): Promise<number> {
+    const query = `
+      SELECT MAX(block_number) as latest_block
+      FROM block_processing_status
+      WHERE status = 'completed'
+    `;
+    
+    const result = await this.executeRawQuery(query);
+    return result[0]?.latest_block || 0;
+  }
+
+  async getFailedBlocks(): Promise<number[]> {
+    const query = `
+      SELECT block_number
+      FROM block_processing_status
+      WHERE status = 'failed' AND retry_count < 3
+      ORDER BY block_number
+    `;
+    
+    const result = await this.executeRawQuery(query);
+    return result.map((row: any) => row.block_number);
+  }
+
+  async getAccountInfo(address: string): Promise<any> {
+    const query = `
+      SELECT *
+      FROM accounts
+      WHERE address = '${address}'
+      LIMIT 1
+    `;
+    
+    const result = await this.executeRawQuery(query);
+    return result[0] || null;
+  }
+
+  async getTransactionsByAddress(address: string, limit: number = 100, offset: number = 0): Promise<any[]> {
+    const query = `
+      SELECT *
+      FROM transactions
+      WHERE from_address = '${address}' OR to_address = '${address}'
+      ORDER BY timestamp DESC
+      LIMIT ${limit}
+      OFFSET ${offset}
+    `;
+    
+    return await this.executeRawQuery(query);
+  }
+
+  async getTokenTransfersByAddress(address: string, limit: number = 100): Promise<any[]> {
+    const query = `
+      SELECT *
+      FROM token_transfers
+      WHERE from_address = '${address}' OR to_address = '${address}'
+      ORDER BY timestamp DESC
+      LIMIT ${limit}
+    `;
+    
+    return await this.executeRawQuery(query);
+  }
+
+  async getContractEventsByAddress(address: string, limit: number = 100): Promise<any[]> {
+    const query = `
+      SELECT *
+      FROM contract_events
+      WHERE contract_address = '${address}'
+      ORDER BY timestamp DESC
+      LIMIT ${limit}
+    `;
+    
+    return await this.executeRawQuery(query);
+  }
+
+  async getTopTokens(limit: number = 50): Promise<any[]> {
+    const query = `
+      SELECT 
+        token_address,
+        token_name,
+        token_symbol,
+        token_type,
+        COUNT(*) as transfer_count,
+        COUNT(DISTINCT from_address) as unique_senders,
+        COUNT(DISTINCT to_address) as unique_receivers
+      FROM token_transfers
+      WHERE timestamp >= now() - INTERVAL 7 DAY
+      GROUP BY token_address, token_name, token_symbol, token_type
+      ORDER BY transfer_count DESC
+      LIMIT ${limit}
+    `;
+    
+    return await this.executeRawQuery(query);
+  }
+
+  async getNetworkStats(): Promise<any> {
+    const query = `
+      SELECT 
+        COUNT(*) as total_blocks,
+        COUNT(DISTINCT miner) as unique_miners,
+        AVG(gas_used / gas_limit) as avg_gas_utilization,
+        SUM(transaction_count) as total_transactions
+      FROM blocks
+      WHERE timestamp >= now() - INTERVAL 24 HOUR
+    `;
+    
+    const result = await this.executeRawQuery(query);
+    return result[0] || {};
+  }
 } 

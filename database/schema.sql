@@ -338,7 +338,289 @@ TTL toDateTime(last_updated) + INTERVAL 24 HOUR
 SETTINGS index_granularity = 1024; 
 
 -- =============================================
--- 11. TABLE COMMENTS
+-- 11. BLOCKCHAIN EXPLORER TABLES
+-- =============================================
+
+-- Blockchain blocks table
+CREATE TABLE IF NOT EXISTS blocks (
+    block_number UInt64,
+    block_hash String,
+    parent_hash String,
+    timestamp DateTime64(3, 'UTC'),
+    miner String,
+    gas_limit UInt64,
+    gas_used UInt64,
+    base_fee_per_gas Nullable(UInt64),
+    size UInt32,
+    transaction_count UInt32,
+    uncle_count UInt16 DEFAULT 0,
+    difficulty Nullable(UInt256),
+    total_difficulty Nullable(UInt256),
+    nonce Nullable(UInt64),
+    state_root String,
+    transactions_root String,
+    receipts_root String,
+    logs_bloom String,
+    extra_data String DEFAULT '',
+    
+    -- Processing metadata
+    created_at DateTime64(3, 'UTC') DEFAULT now(),
+    updated_at DateTime64(3, 'UTC') DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (block_number)
+TTL toDateTime(timestamp) + INTERVAL 365 DAY
+SETTINGS index_granularity = 8192;
+
+-- Add indexes
+ALTER TABLE blocks ADD INDEX idx_block_hash (block_hash) TYPE bloom_filter(0.01) GRANULARITY 1;
+ALTER TABLE blocks ADD INDEX idx_miner (miner) TYPE set(0) GRANULARITY 1;
+ALTER TABLE blocks ADD INDEX idx_timestamp (timestamp) TYPE minmax GRANULARITY 1;
+
+-- Transactions table
+CREATE TABLE IF NOT EXISTS transactions (
+    transaction_hash String,
+    block_number UInt64,
+    block_hash String,
+    transaction_index UInt32,
+    timestamp DateTime64(3, 'UTC'),
+    
+    -- Transaction data
+    from_address String,
+    to_address Nullable(String),
+    value UInt256,
+    gas UInt64,
+    gas_price UInt64,
+    gas_used Nullable(UInt64),
+    max_fee_per_gas Nullable(UInt64),
+    max_priority_fee_per_gas Nullable(UInt64),
+    nonce UInt64,
+    input String,
+    
+    -- Transaction status
+    status UInt8, -- 0 = failed, 1 = success
+    transaction_type UInt8 DEFAULT 0, -- 0=legacy, 1=EIP-2930, 2=EIP-1559
+    
+    -- Contract interaction
+    creates_contract UInt8 DEFAULT 0,
+    contract_address Nullable(String),
+    
+    -- Processing metadata
+    created_at DateTime64(3, 'UTC') DEFAULT now(),
+    updated_at DateTime64(3, 'UTC') DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (block_number, transaction_index)
+TTL toDateTime(timestamp) + INTERVAL 365 DAY
+SETTINGS index_granularity = 8192;
+
+-- Add indexes for transactions
+ALTER TABLE transactions ADD INDEX idx_tx_hash (transaction_hash) TYPE bloom_filter(0.01) GRANULARITY 1;
+ALTER TABLE transactions ADD INDEX idx_from_address (from_address) TYPE bloom_filter(0.01) GRANULARITY 1;
+ALTER TABLE transactions ADD INDEX idx_to_address (to_address) TYPE bloom_filter(0.01) GRANULARITY 1;
+ALTER TABLE transactions ADD INDEX idx_contract_address (contract_address) TYPE bloom_filter(0.01) GRANULARITY 1;
+ALTER TABLE transactions ADD INDEX idx_timestamp (timestamp) TYPE minmax GRANULARITY 1;
+
+-- Accounts/Addresses table
+CREATE TABLE IF NOT EXISTS accounts (
+    address String,
+    
+    -- Balance and nonce
+    balance UInt256 DEFAULT 0,
+    nonce UInt64 DEFAULT 0,
+    
+    -- Account type
+    is_contract UInt8 DEFAULT 0,
+    contract_type Enum8('eoa' = 0, 'contract' = 1, 'erc20' = 2, 'erc721' = 3, 'erc1155' = 4) DEFAULT 'eoa',
+    
+    -- Contract data (if applicable)
+    contract_code Nullable(String),
+    contract_creation_tx Nullable(String),
+    contract_creator Nullable(String),
+    
+    -- Activity stats
+    first_seen DateTime64(3, 'UTC'),
+    last_activity DateTime64(3, 'UTC'),
+    transaction_count UInt64 DEFAULT 0,
+    
+    -- Token info (if it's a token contract)
+    token_name Nullable(String),
+    token_symbol Nullable(String),
+    token_decimals Nullable(UInt8),
+    token_total_supply Nullable(UInt256),
+    
+    -- Processing metadata
+    created_at DateTime64(3, 'UTC') DEFAULT now(),
+    updated_at DateTime64(3, 'UTC') DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (address)
+TTL toDateTime(updated_at) + INTERVAL 365 DAY
+SETTINGS index_granularity = 8192;
+
+-- Add indexes for accounts
+ALTER TABLE accounts ADD INDEX idx_is_contract (is_contract) TYPE set(2) GRANULARITY 1;
+ALTER TABLE accounts ADD INDEX idx_contract_type (contract_type) TYPE set(0) GRANULARITY 1;
+ALTER TABLE accounts ADD INDEX idx_last_activity (last_activity) TYPE minmax GRANULARITY 1;
+
+-- Contract events/logs table
+CREATE TABLE IF NOT EXISTS contract_events (
+    event_id UUID DEFAULT generateUUIDv4(),
+    block_number UInt64,
+    block_hash String,
+    transaction_hash String,
+    transaction_index UInt32,
+    log_index UInt32,
+    timestamp DateTime64(3, 'UTC'),
+    
+    -- Event data
+    contract_address String,
+    event_signature String, -- keccak256 hash of event signature
+    event_name Nullable(String), -- decoded event name if known
+    topics Array(String),
+    data String,
+    
+    -- Decoded data (if available)
+    decoded_topics Array(String),
+    decoded_data Nullable(String),
+    
+    -- Processing metadata
+    created_at DateTime64(3, 'UTC') DEFAULT now()
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (block_number, transaction_index, log_index)
+TTL toDateTime(timestamp) + INTERVAL 180 DAY
+SETTINGS index_granularity = 8192;
+
+-- Add indexes for contract events
+ALTER TABLE contract_events ADD INDEX idx_contract_address (contract_address) TYPE bloom_filter(0.01) GRANULARITY 1;
+ALTER TABLE contract_events ADD INDEX idx_event_signature (event_signature) TYPE set(0) GRANULARITY 1;
+ALTER TABLE contract_events ADD INDEX idx_tx_hash (transaction_hash) TYPE bloom_filter(0.01) GRANULARITY 1;
+
+-- Token transfers table (ERC-20, ERC-721, ERC-1155)
+CREATE TABLE IF NOT EXISTS token_transfers (
+    transfer_id UUID DEFAULT generateUUIDv4(),
+    block_number UInt64,
+    block_hash String,
+    transaction_hash String,
+    log_index UInt32,
+    timestamp DateTime64(3, 'UTC'),
+    
+    -- Token info
+    token_address String,
+    token_type Enum8('erc20' = 1, 'erc721' = 2, 'erc1155' = 3),
+    token_name Nullable(String),
+    token_symbol Nullable(String),
+    
+    -- Transfer data
+    from_address String,
+    to_address String,
+    amount UInt256, -- For ERC-20: amount, For ERC-721: 1, For ERC-1155: amount
+    token_id Nullable(UInt256), -- For ERC-721 and ERC-1155
+    
+    -- Processing metadata
+    created_at DateTime64(3, 'UTC') DEFAULT now()
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (block_number, log_index)
+TTL toDateTime(timestamp) + INTERVAL 365 DAY
+SETTINGS index_granularity = 8192;
+
+-- Add indexes for token transfers
+ALTER TABLE token_transfers ADD INDEX idx_token_address (token_address) TYPE bloom_filter(0.01) GRANULARITY 1;
+ALTER TABLE token_transfers ADD INDEX idx_from_address (from_address) TYPE bloom_filter(0.01) GRANULARITY 1;
+ALTER TABLE token_transfers ADD INDEX idx_to_address (to_address) TYPE bloom_filter(0.01) GRANULARITY 1;
+ALTER TABLE token_transfers ADD INDEX idx_token_type (token_type) TYPE set(0) GRANULARITY 1;
+ALTER TABLE token_transfers ADD INDEX idx_token_id (token_id) TYPE minmax GRANULARITY 1;
+
+-- NFT metadata table
+CREATE TABLE IF NOT EXISTS nft_metadata (
+    token_address String,
+    token_id UInt256,
+    
+    -- Metadata
+    name Nullable(String),
+    description Nullable(String),
+    image_url Nullable(String),
+    animation_url Nullable(String),
+    external_url Nullable(String),
+    metadata_uri Nullable(String),
+    
+    -- Attributes (stored as JSON string)
+    attributes Nullable(String),
+    
+    -- Processing metadata
+    metadata_fetched UInt8 DEFAULT 0,
+    fetch_attempts UInt8 DEFAULT 0,
+    last_fetch_attempt Nullable(DateTime64(3, 'UTC')),
+    created_at DateTime64(3, 'UTC') DEFAULT now(),
+    updated_at DateTime64(3, 'UTC') DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (token_address, token_id)
+SETTINGS index_granularity = 8192;
+
+-- Block processing status table
+CREATE TABLE IF NOT EXISTS block_processing_status (
+    block_number UInt64,
+    status Enum8('pending' = 1, 'processing' = 2, 'completed' = 3, 'failed' = 4) DEFAULT 'pending',
+    
+    -- Processing stats
+    transactions_processed UInt32 DEFAULT 0,
+    events_processed UInt32 DEFAULT 0,
+    contracts_discovered UInt32 DEFAULT 0,
+    tokens_discovered UInt32 DEFAULT 0,
+    
+    -- Error info
+    error_message Nullable(String),
+    retry_count UInt8 DEFAULT 0,
+    
+    -- Timing
+    processing_started_at Nullable(DateTime64(3, 'UTC')),
+    processing_completed_at Nullable(DateTime64(3, 'UTC')),
+    processing_duration_ms Nullable(UInt32),
+    
+    -- Metadata
+    created_at DateTime64(3, 'UTC') DEFAULT now(),
+    updated_at DateTime64(3, 'UTC') DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (block_number)
+SETTINGS index_granularity = 8192;
+
+-- =============================================
+-- 12. MATERIALIZED VIEWS FOR PERFORMANCE
+-- =============================================
+
+-- Daily transaction stats
+CREATE MATERIALIZED VIEW IF NOT EXISTS daily_transaction_stats
+ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (date)
+AS SELECT
+    toDate(timestamp) as date,
+    count() as transaction_count,
+    sum(gas_used) as total_gas_used,
+    avg(gas_price) as avg_gas_price,
+    countIf(status = 1) as successful_transactions,
+    countIf(status = 0) as failed_transactions
+FROM transactions
+GROUP BY date;
+
+-- Token transfer stats
+CREATE MATERIALIZED VIEW IF NOT EXISTS daily_token_stats
+ENGINE = AggregatingMergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (date, token_address)
+AS SELECT
+    toDate(timestamp) as date,
+    token_address,
+    token_type,
+    count() as transfer_count,
+    uniq(from_address) as unique_senders,
+    uniq(to_address) as unique_receivers
+FROM token_transfers
+GROUP BY date, token_address, token_type;
+
+-- =============================================
+-- 13. TABLE COMMENTS
 -- =============================================
 
 ALTER TABLE raw_logs MODIFY COMMENT 'Raw log storage with compression and deduplication';
@@ -349,9 +631,16 @@ ALTER TABLE validator_metrics_hourly MODIFY COMMENT 'Hourly aggregated separate 
 ALTER TABLE network_health_hourly MODIFY COMMENT 'Network-wide health and consensus metrics';
 ALTER TABLE validator_rankings_cache MODIFY COMMENT 'Pre-computed validator rankings for fast API responses';
 ALTER TABLE geographic_metrics_hourly MODIFY COMMENT 'Geographic distribution and performance analytics';
+ALTER TABLE blocks MODIFY COMMENT 'Blockchain blocks with full block data';
+ALTER TABLE transactions MODIFY COMMENT 'All blockchain transactions with gas and status info';
+ALTER TABLE accounts MODIFY COMMENT 'Blockchain addresses/accounts with balance and activity';
+ALTER TABLE contract_events MODIFY COMMENT 'Smart contract events and logs';
+ALTER TABLE token_transfers MODIFY COMMENT 'ERC-20/721/1155 token transfers';
+ALTER TABLE nft_metadata MODIFY COMMENT 'NFT metadata and attributes';
+ALTER TABLE block_processing_status MODIFY COMMENT 'Block indexing processing status and stats';
 
 -- =============================================
--- 12. SYSTEM OPTIMIZATION
+-- 14. SYSTEM OPTIMIZATION
 -- =============================================
 
 -- Set optimal merge settings for high throughput

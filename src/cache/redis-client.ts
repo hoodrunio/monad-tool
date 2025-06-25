@@ -373,6 +373,23 @@ export class MonadRedisClient {
   // UTILITY METHODS
   // =============================================
 
+  async get(key: string): Promise<string | null> {
+    try {
+      return await this.client.get(key);
+    } catch (error) {
+      console.error(`Failed to get key ${key}:`, error);
+      return null;
+    }
+  }
+
+  async setex(key: string, ttl: number, value: string): Promise<void> {
+    try {
+      await this.client.setex(key, ttl, value);
+    } catch (error) {
+      console.error(`Failed to setex key ${key}:`, error);
+    }
+  }
+
   async ping(): Promise<boolean> {
     try {
       const result = await this.client.ping();
