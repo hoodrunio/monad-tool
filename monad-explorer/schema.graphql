@@ -10,6 +10,9 @@ type Block @entity {
   gasLimit: BigInt!
   gasUsed: BigInt!
   transactionCount: Int!
+  miner: String
+  extraData: String
+  baseFeePerGas: BigInt
 }
 
 type Transaction @entity {
@@ -26,6 +29,19 @@ type Transaction @entity {
   input: String
   status: Int
   timestamp: DateTime! @index
+  nonce: BigInt
+  type: Int
+  effectiveGasPrice: BigInt
+  maxFeePerGas: BigInt
+  maxPriorityFeePerGas: BigInt
+  contractAddress: String
+  cumulativeGasUsed: BigInt
+  transactionFee: BigInt
+  methodName: String
+  methodID: String
+  inputDecoded: String
+  isContractInteraction: Boolean!
+  isContractCreation: Boolean!
 }
 
 type Account @entity {
@@ -36,6 +52,10 @@ type Account @entity {
   isContract: Boolean! @index
   contractCode: String
   createdAt: DateTime
+  contractType: String
+  isVerified: Boolean
+  contractName: String
+  ensName: String
 }
 
 type Log @entity {
@@ -45,6 +65,23 @@ type Log @entity {
   address: String! @index
   topics: [String!]!
   data: String!
+  removed: Boolean
+}
+
+type InternalTransaction @entity {
+  id: ID! # transaction hash + trace index
+  transaction: Transaction!
+  traceIndex: Int!
+  type: String!
+  fromAddress: String! @index
+  toAddress: String @index
+  value: BigInt!
+  gas: BigInt!
+  gasUsed: BigInt!
+  input: String
+  output: String
+  error: String
+  parentTrace: InternalTransaction
 }
 
 type Token @entity {
@@ -66,7 +103,7 @@ type TokenTransfer @entity {
   fromAddress: String! @index
   toAddress: String! @index
   value: BigInt!
-  tokenId: BigInt # For NFTs
+  tokenId: BigInt
   timestamp: DateTime! @index
 }
 
@@ -91,7 +128,6 @@ type Contract @entity {
   compilerVersion: String
 }
 
-# Analytics entities
 type DailyStats @entity {
   id: ID! # date (YYYY-MM-DD)
   date: DateTime! @unique @index
@@ -101,6 +137,15 @@ type DailyStats @entity {
   totalGasUsed: BigInt!
   averageGasPrice: BigInt!
   totalValue: BigInt!
+}
+
+type MethodSignature @entity {
+  id: ID! # method ID (first 4 bytes)
+  methodId: String! @unique @index
+  signature: String!
+  name: String! @index
+  verified: Boolean!
+  source: String
 }
 
 enum TokenType {

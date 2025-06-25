@@ -1,4 +1,4 @@
-import {Entity as Entity_, Column as Column_, PrimaryColumn as PrimaryColumn_, StringColumn as StringColumn_, Index as Index_, ManyToOne as ManyToOne_, IntColumn as IntColumn_, BigIntColumn as BigIntColumn_, DateTimeColumn as DateTimeColumn_} from "@subsquid/typeorm-store"
+import {Entity as Entity_, Column as Column_, PrimaryColumn as PrimaryColumn_, StringColumn as StringColumn_, Index as Index_, ManyToOne as ManyToOne_, IntColumn as IntColumn_, BigIntColumn as BigIntColumn_, DateTimeColumn as DateTimeColumn_, BooleanColumn as BooleanColumn_} from "@subsquid/typeorm-store"
 import {Block} from "./block.model"
 
 @Entity_()
@@ -50,4 +50,43 @@ export class Transaction {
     @Index_()
     @DateTimeColumn_({nullable: false})
     timestamp!: Date
+
+    @BigIntColumn_({nullable: true})
+    nonce!: bigint | undefined | null
+
+    @IntColumn_({nullable: true})
+    type!: number | undefined | null
+
+    @BigIntColumn_({nullable: true})
+    effectiveGasPrice!: bigint | undefined | null
+
+    @BigIntColumn_({nullable: true})
+    maxFeePerGas!: bigint | undefined | null
+
+    @BigIntColumn_({nullable: true})
+    maxPriorityFeePerGas!: bigint | undefined | null
+
+    @StringColumn_({nullable: true})
+    contractAddress!: string | undefined | null
+
+    @BigIntColumn_({nullable: true})
+    cumulativeGasUsed!: bigint | undefined | null
+
+    @BigIntColumn_({nullable: true})
+    transactionFee!: bigint | undefined | null
+
+    @StringColumn_({nullable: true})
+    methodName!: string | undefined | null
+
+    @StringColumn_({nullable: true})
+    methodID!: string | undefined | null
+
+    @StringColumn_({nullable: true})
+    inputDecoded!: string | undefined | null
+
+    @BooleanColumn_({nullable: false})
+    isContractInteraction!: boolean
+
+    @BooleanColumn_({nullable: false})
+    isContractCreation!: boolean
 }

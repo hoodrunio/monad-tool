@@ -35,4 +35,13 @@ export class Block {
 
     @IntColumn_({nullable: false})
     transactionCount!: number
+
+    @StringColumn_({nullable: true})
+    miner!: string | undefined | null
+
+    @StringColumn_({nullable: true})
+    extraData!: string | undefined | null
+
+    @BigIntColumn_({nullable: true})
+    baseFeePerGas!: bigint | undefined | null
 }

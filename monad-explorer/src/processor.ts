@@ -20,6 +20,7 @@ export const processor = new EvmBatchProcessor()
     .setFinalityConfirmation(75)
     .setFields({
         transaction: {
+            // Basic fields
             from: true,
             to: true,
             value: true,
@@ -29,8 +30,16 @@ export const processor = new EvmBatchProcessor()
             gasUsed: true,
             status: true,
             input: true,
+            // Enhanced fields for comprehensive transaction data
+            nonce: true,
+            type: true,
+            maxFeePerGas: true,
+            maxPriorityFeePerGas: true,
+            // effectiveGasPrice will be calculated
+            cumulativeGasUsed: true,
         },
         block: {
+            // Basic fields
             number: true,
             hash: true,
             parentHash: true,
@@ -38,12 +47,18 @@ export const processor = new EvmBatchProcessor()
             size: true,
             gasLimit: true,
             gasUsed: true,
+            // Enhanced fields
+            extraData: true,
+            baseFeePerGas: true,
+            miner: true,
         },
         log: {
             address: true,
             topics: true,
             data: true,
             transactionHash: true,
+            logIndex: true,
+            removed: true,
         }
     })
     .setBlockRange({

@@ -28,4 +28,16 @@ export class Account {
 
     @DateTimeColumn_({nullable: true})
     createdAt!: Date | undefined | null
+
+    @StringColumn_({nullable: true})
+    contractType!: string | undefined | null
+
+    @BooleanColumn_({nullable: true})
+    isVerified!: boolean | undefined | null
+
+    @StringColumn_({nullable: true})
+    contractName!: string | undefined | null
+
+    @StringColumn_({nullable: true})
+    ensName!: string | undefined | null
 }

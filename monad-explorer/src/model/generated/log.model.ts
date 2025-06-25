@@ -1,4 +1,4 @@
-import {Entity as Entity_, Column as Column_, PrimaryColumn as PrimaryColumn_, ManyToOne as ManyToOne_, Index as Index_, IntColumn as IntColumn_, StringColumn as StringColumn_} from "@subsquid/typeorm-store"
+import {Entity as Entity_, Column as Column_, PrimaryColumn as PrimaryColumn_, ManyToOne as ManyToOne_, Index as Index_, IntColumn as IntColumn_, StringColumn as StringColumn_, BooleanColumn as BooleanColumn_} from "@subsquid/typeorm-store"
 import {Transaction} from "./transaction.model"
 
 @Entity_()
@@ -26,4 +26,7 @@ export class Log {
 
     @StringColumn_({nullable: false})
     data!: string
+
+    @BooleanColumn_({nullable: true})
+    removed!: boolean | undefined | null
 }
