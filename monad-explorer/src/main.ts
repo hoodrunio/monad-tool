@@ -1,6 +1,23 @@
 import {TypeormDatabase} from '@subsquid/typeorm-store'
 import {Block, Transaction, Account, Log, Contract, TokenTransfer, Token, DailyStats, TokenType, MethodSignature, InternalTransaction} from './model'
 import {processor} from './processor'
+import {EnhancedProcessor} from './services/EnhancedProcessor'
+import {TokenEnrichmentWorker} from './services/TokenEnrichmentWorker'
+import {logger} from './utils/logger'
+import * as erc20 from './abi/ERC20'
+import * as erc721 from './abi/ERC721'
+import * as erc1155 from './abi/ERC1155'
+
+// Enhanced token processing configuration
+const ENHANCED_PROCESSING_CONFIG = {
+    enableTokenEnrichment: process.env.ENABLE_TOKEN_ENRICHMENT === 'true',
+    enableAsyncProcessing: process.env.ENABLE_ASYNC_PROCESSING === 'true',
+    rpcUrl: process.env.RPC_MONAD_HTTP || 'https://testnet-rpc.monad.xyz',
+    rabbitMqUrl: process.env.RABBITMQ_URL || 'amqp://localhost:5672',
+    maxConcurrentJobs: parseInt(process.env.MAX_CONCURRENT_JOBS || '3'),
+    retryAttempts: parseInt(process.env.RETRY_ATTEMPTS || '3'),
+    retryDelay: parseInt(process.env.RETRY_DELAY || '1000'),
+}
 
 // Common token signatures
 const ERC20_TRANSFER_SIGNATURE = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
@@ -21,7 +38,35 @@ const KNOWN_METHODS: Map<string, {name: string, signature: string}> = new Map([
     ['0x6a627842', {name: 'setApprovalForAll', signature: 'setApprovalForAll(address,bool)'}],
 ])
 
+// Initialize enhanced processor and token enrichment worker
+let enhancedProcessor: EnhancedProcessor | null = null
+let tokenEnrichmentWorker: TokenEnrichmentWorker | null = null
+
+// Enhanced processing will be initialized within the processor context
+// where we have access to the proper DataSource
+
 processor.run(new TypeormDatabase({supportHotBlocks: true}), async (ctx) => {
+    // Initialize enhanced processing on first run if enabled
+    if (ENHANCED_PROCESSING_CONFIG.enableTokenEnrichment && !enhancedProcessor) {
+        logger.info('Initializing enhanced token processing...', ENHANCED_PROCESSING_CONFIG)
+        
+        try {
+            // Initialize enhanced processor without worker for now
+            // Worker initialization would require access to TypeORM DataSource
+            enhancedProcessor = new EnhancedProcessor(processor, {
+                enableTokenEnrichment: ENHANCED_PROCESSING_CONFIG.enableTokenEnrichment,
+                enableAsyncProcessing: false, // Disable async for now, process synchronously
+                enrichmentWorker: undefined,
+            })
+
+            logger.info('Enhanced token processing initialized successfully')
+        } catch (error) {
+            logger.error('Failed to initialize enhanced processing', {
+                error: error instanceof Error ? error.message : 'Unknown error'
+            })
+            enhancedProcessor = null
+        }
+    }
     const blocks: Block[] = []
     const transactions: Transaction[] = []
     const accounts: Map<string, Account> = new Map()
@@ -145,11 +190,59 @@ processor.run(new TypeormDatabase({supportHotBlocks: true}), async (ctx) => {
                 })
                 logs.push(logEntity)
 
-                // Check if this is a token transfer event
-                if (log.topics[0] === ERC20_TRANSFER_SIGNATURE && log.topics.length >= 3) {
+                // Basic token transfer detection - only if enhanced processor not available
+                if (!enhancedProcessor && log.topics[0] === ERC20_TRANSFER_SIGNATURE && log.topics.length >= 3) {
                     await processTokenTransfer(log, transaction, logEntity, tokens, tokenTransfers)
                 }
             }
+        }
+    }
+
+    // Process token transfers with enhanced processor if available
+    if (enhancedProcessor && logs.length > 0) {
+        try {
+            logger.info('Processing logs with enhanced processor', { logCount: logs.length })
+            
+            // Create maps for faster lookup
+            const transactionMap = new Map<string, Transaction>()
+            const logMap = new Map<string, Log>()
+            
+            transactions.forEach(tx => transactionMap.set(tx.hash, tx))
+            logs.forEach(log => logMap.set(log.id, log))
+            
+            // Process token transfer events with enhanced processor
+            let enhancedTransferCount = 0
+            
+            for (const log of logs) {
+                if (log.topics.length > 0 && 
+                    (log.topics[0] === '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef' || // ERC20/ERC721 Transfer
+                     log.topics[0] === '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62' || // ERC1155 TransferSingle
+                     log.topics[0] === '0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb')) { // ERC1155 TransferBatch
+                    
+                    const transfer = await processEnhancedTokenTransfer(
+                        log, 
+                        transactionMap.get(log.transaction.hash)!,
+                        log,
+                        tokens,
+                        tokenTransfers
+                    )
+                    
+                    if (transfer) {
+                        enhancedTransferCount++
+                    }
+                }
+            }
+            
+            if (enhancedTransferCount > 0) {
+                logger.info('Enhanced token transfers detected', { count: enhancedTransferCount })
+            }
+            
+            logger.info('Enhanced log processing completed successfully')
+        } catch (error) {
+            logger.error('Enhanced log processing failed, falling back to basic processing', {
+                error: error instanceof Error ? error.message : 'Unknown error'
+            })
+            // Fallback handled above in the basic processing loop
         }
     }
 
@@ -159,8 +252,15 @@ processor.run(new TypeormDatabase({supportHotBlocks: true}), async (ctx) => {
     await ctx.store.insert(blocks)
     await ctx.store.insert(transactions)
     await ctx.store.insert(logs)
-    await ctx.store.upsert([...tokens.values()])
-    await ctx.store.insert(tokenTransfers)
+    // Save all tokens first
+    if (tokens.size > 0) {
+        await ctx.store.upsert([...tokens.values()])
+    }
+
+    // Insert token transfers - enhanced processor now adds to the same array
+    if (tokenTransfers.length > 0) {
+        await ctx.store.insert(tokenTransfers)
+    }
 
     // Log processing summary
     const startBlock = ctx.blocks.at(0)?.header.height
@@ -264,4 +364,160 @@ async function processTokenTransfer(
         timestamp: transaction.timestamp,
     })
     tokenTransfers.push(tokenTransfer)
+}
+
+async function processEnhancedTokenTransfer(
+    logEntity: Log,
+    transaction: Transaction,
+    log: Log,
+    tokens: Map<string, Token>,
+    tokenTransfers: TokenTransfer[]
+): Promise<TokenTransfer | null> {
+    const logRecord = { topics: logEntity.topics, data: logEntity.data }
+
+    try {
+        // Try ERC20 Transfer event
+        if (erc20.events.Transfer.is(logRecord)) {
+            const transfer = erc20.events.Transfer.decode(logRecord)
+            
+            // Create or get token
+            if (!tokens.has(logEntity.address)) {
+                tokens.set(logEntity.address, new Token({
+                    id: logEntity.address,
+                    address: logEntity.address,
+                    name: `Token ${logEntity.address.slice(0, 8)}...`,
+                    symbol: 'UNKNOWN',
+                    decimals: 18,
+                    totalSupply: 0n,
+                    tokenType: TokenType.ERC20,
+                    createdAt: transaction.timestamp,
+                }))
+            }
+
+            const tokenTransfer = new TokenTransfer({
+                id: `${transaction.hash}-${logEntity.logIndex}`,
+                fromAddress: transfer.from,
+                toAddress: transfer.to,
+                value: transfer.value,
+                tokenId: null,
+                timestamp: transaction.timestamp,
+                transaction,
+                log,
+                token: tokens.get(logEntity.address)!
+            })
+            tokenTransfers.push(tokenTransfer)
+            return tokenTransfer
+        }
+
+        // Try ERC721 Transfer event
+        if (erc721.events.Transfer.is(logRecord)) {
+            const transfer = erc721.events.Transfer.decode(logRecord)
+            
+            // Create or get token
+            if (!tokens.has(logEntity.address)) {
+                tokens.set(logEntity.address, new Token({
+                    id: logEntity.address,
+                    address: logEntity.address,
+                    name: `NFT ${logEntity.address.slice(0, 8)}...`,
+                    symbol: 'UNKNOWN',
+                    decimals: 0,
+                    totalSupply: 0n,
+                    tokenType: TokenType.ERC721,
+                    createdAt: transaction.timestamp,
+                }))
+            }
+
+            const tokenTransfer = new TokenTransfer({
+                id: `${transaction.hash}-${logEntity.logIndex}`,
+                fromAddress: transfer.from,
+                toAddress: transfer.to,
+                value: 1n, // NFTs are always 1
+                tokenId: transfer.tokenId,
+                timestamp: transaction.timestamp,
+                transaction,
+                log,
+                token: tokens.get(logEntity.address)!
+            })
+            tokenTransfers.push(tokenTransfer)
+            return tokenTransfer
+        }
+
+        // Try ERC1155 TransferSingle event
+        if (erc1155.events.TransferSingle.is(logRecord)) {
+            const transfer = erc1155.events.TransferSingle.decode(logRecord)
+            
+            // Create or get token
+            if (!tokens.has(logEntity.address)) {
+                tokens.set(logEntity.address, new Token({
+                    id: logEntity.address,
+                    address: logEntity.address,
+                    name: `Multi-Token ${logEntity.address.slice(0, 8)}...`,
+                    symbol: 'UNKNOWN',
+                    decimals: 0,
+                    totalSupply: 0n,
+                    tokenType: TokenType.ERC1155,
+                    createdAt: transaction.timestamp,
+                }))
+            }
+
+            const tokenTransfer = new TokenTransfer({
+                id: `${transaction.hash}-${logEntity.logIndex}`,
+                fromAddress: transfer.from,
+                toAddress: transfer.to,
+                value: transfer.value,
+                tokenId: transfer.id,
+                timestamp: transaction.timestamp,
+                transaction,
+                log,
+                token: tokens.get(logEntity.address)!
+            })
+            tokenTransfers.push(tokenTransfer)
+            return tokenTransfer
+        }
+
+        // Try ERC1155 TransferBatch event
+        if (erc1155.events.TransferBatch.is(logRecord)) {
+            const transfer = erc1155.events.TransferBatch.decode(logRecord)
+            
+            // Create or get token
+            if (!tokens.has(logEntity.address)) {
+                tokens.set(logEntity.address, new Token({
+                    id: logEntity.address,
+                    address: logEntity.address,
+                    name: `Multi-Token ${logEntity.address.slice(0, 8)}...`,
+                    symbol: 'UNKNOWN',
+                    decimals: 0,
+                    totalSupply: 0n,
+                    tokenType: TokenType.ERC1155,
+                    createdAt: transaction.timestamp,
+                }))
+            }
+
+            const ids = transfer.ids
+            const values = transfer[4] // values is the 5th parameter in the tuple  
+            if (ids.length > 0 && values.length > 0) {
+                const tokenTransfer = new TokenTransfer({
+                    id: `${transaction.hash}-${logEntity.logIndex}`,
+                    fromAddress: transfer.from,
+                    toAddress: transfer.to,
+                    value: values[0],
+                    tokenId: ids[0],
+                    timestamp: transaction.timestamp,
+                    transaction,
+                    log,
+                    token: tokens.get(logEntity.address)!
+                })
+                tokenTransfers.push(tokenTransfer)
+                return tokenTransfer
+            }
+        }
+    } catch (error) {
+        logger.debug('Failed to decode token transfer', {
+            address: logEntity.address,
+            topics: logEntity.topics,
+            error: error instanceof Error ? error.message : 'Unknown error'
+        })
+    }
+
+    return null
 }
