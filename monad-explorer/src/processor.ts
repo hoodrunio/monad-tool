@@ -13,9 +13,12 @@ export const processor = new EvmBatchProcessor()
     // .setGateway() // Comment out archive gateway
     // Configure for Monad testnet RPC-only
     .setRpcEndpoint({
-        // Monad testnet RPC
+        // Monad testnet RPC with optimized settings
         url: assertNotNull(process.env.RPC_MONAD_HTTP || 'https://testnet-rpc.monad.xyz', 'No RPC endpoint supplied'),
-        rateLimit: 10
+        rateLimit: 50, // Increased from 10 to 50 req/sec
+        capacity: 100, // Add capacity for burst requests
+        requestTimeout: 30000, // 30 second timeout
+        maxBatchCallSize: 100 // Optimize batch call size
     })
     .setFinalityConfirmation(2)
     .setFields({

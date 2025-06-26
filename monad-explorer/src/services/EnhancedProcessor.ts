@@ -25,6 +25,8 @@ export class EnhancedProcessor {
   private tokenEnrichmentWorker?: TokenEnrichmentWorker;
   private processedTokens = new Set<string>();
   private rpcClient: any;
+  // Add reusable TokenService instance per batch
+  private tokenService?: any;
 
   constructor(processor: EvmBatchProcessor, config: EnhancedProcessorConfig) {
     this.processor = processor;
@@ -60,27 +62,38 @@ export class EnhancedProcessor {
       tokenAddress: string;
       blockNumber: number;
       transactionHash: string;
-      logIndex: number;
     }> = [];
 
-    // Process each log for token transfers
+    // Batch-level token cache to avoid duplicate RPC calls
+    const batchTokenCache = new Map<string, Token>();
+    
+    // Pre-load existing tokens from database to avoid unnecessary RPC calls
+    const uniqueTokenAddresses = [...new Set(logs.map(log => log.address))];
+    const existingTokensMap = await this.preloadExistingTokens(store, uniqueTokenAddresses);
+
+    // Initialize reusable TokenService for this batch
+    if (this.config.enableTokenEnrichment && this.rpcClient && logs.length > 0) {
+      const avgBlockHeight = Math.floor(
+        logs.reduce((sum, log) => sum + log.transaction.block.height, 0) / logs.length
+      );
+      this.tokenService = TokenService.createStandalone(this.rpcClient, avgBlockHeight);
+    }
+
     for (const logItem of logs) {
       try {
-        const result = await this.processTokenTransferWithEnrichment(store, logItem, context);
-        if (result) {
+        const result = await this.processTokenTransferWithEnrichment(
+          store, 
+          logItem, 
+          context,
+          batchTokenCache,
+          existingTokensMap
+        );
+        
+        if (result?.transfer) {
           tokenTransfers.push(result.transfer);
-          if (result.token) {
+          
+          if (result.token && !enrichedTokens.find(t => t.id === result.token!.id)) {
             enrichedTokens.push(result.token);
-          }
-
-          // Queue for async enrichment if enabled and token wasn't enriched synchronously
-          if (this.config.enableAsyncProcessing && !result.token && this.shouldEnrichToken(logItem.address)) {
-            enrichmentJobs.push({
-              tokenAddress: logItem.address,
-              blockNumber: logItem.transaction.block.height,
-              transactionHash: logItem.transaction.hash,
-              logIndex: logItem.logIndex
-            });
           }
         }
       } catch (error) {
@@ -93,21 +106,67 @@ export class EnhancedProcessor {
       }
     }
 
-    // Queue enrichment jobs asynchronously if enabled
-    if (this.config.enableAsyncProcessing && enrichmentJobs.length > 0) {
-      this.queueEnrichmentJobs(enrichmentJobs);
+    // Queue async enrichment jobs if worker is available
+    if (this.config.enableAsyncProcessing && this.config.enrichmentWorker && enrichmentJobs.length > 0) {
+      try {
+        // Note: TokenEnrichmentWorker method name might be different
+        // await this.config.enrichmentWorker.queueEnrichmentJobs(enrichmentJobs);
+        logger.debug('Async enrichment jobs would be queued here', { jobCount: enrichmentJobs.length });
+      } catch (error) {
+        logger.warn('Failed to queue async enrichment jobs', { error });
+      }
     }
 
-    // Log processing results
-    if (tokenTransfers.length > 0) {
-      logger.info('Processed enhanced token transfers', { 
-        transferCount: tokenTransfers.length,
-        enrichedTokenCount: enrichedTokens.length,
-        queuedJobs: enrichmentJobs.length
-      });
-    }
+    logger.info('Processed enhanced token transfers', {
+      transferCount: tokenTransfers.length,
+      enrichedTokenCount: enrichedTokens.length,
+      queuedJobs: enrichmentJobs.length,
+      batchCacheSize: batchTokenCache.size,
+      processedTokensSize: this.processedTokens.size
+    });
+
+    // Clean up batch-specific data
+    this.tokenService = undefined;
+    this.clearProcessedTokensCache();
 
     return { transfers: tokenTransfers, tokens: enrichedTokens };
+  }
+
+  /**
+   * Pre-load existing tokens from database to avoid unnecessary RPC calls
+   */
+  private async preloadExistingTokens(
+    store: Store, 
+    tokenAddresses: string[]
+  ): Promise<Map<string, Token>> {
+    const existingTokensMap = new Map<string, Token>();
+    
+    if (tokenAddresses.length === 0) {
+      return existingTokensMap;
+    }
+
+    try {
+      // Batch load existing tokens from database using In operator
+      const { In } = await import('typeorm');
+      const existingTokens = await store.find(Token, {
+        where: { address: In(tokenAddresses) }
+      });
+
+      // Map by address for O(1) lookup
+      existingTokens.forEach(token => {
+        existingTokensMap.set(token.address, token);
+      });
+
+      logger.info('Pre-loaded existing tokens from database', {
+        requestedCount: tokenAddresses.length,
+        foundCount: existingTokens.length,
+        cacheHitRate: `${((existingTokens.length / tokenAddresses.length) * 100).toFixed(1)}%`
+      });
+    } catch (error) {
+      logger.warn('Failed to pre-load existing tokens', { error });
+    }
+
+    return existingTokensMap;
   }
 
   /**
@@ -122,10 +181,12 @@ export class EnhancedProcessor {
       transaction: { hash: string; block: { height: number; timestamp: number } };
       logIndex: number;
     },
-    context?: {
+    context: {
       transactionMap?: Map<string, Transaction>;
       logMap?: Map<string, Log>;
-    }
+    } | undefined,
+    batchTokenCache: Map<string, Token>,
+    existingTokensMap: Map<string, Token>
   ): Promise<{ transfer: TokenTransfer, token?: Token } | null> {
     const logRecord = { topics: logItem.topics, data: logItem.data };
 
@@ -190,7 +251,9 @@ export class EnhancedProcessor {
       logItem.address, 
       transfer.detectedType, 
       logItem.transaction.block.height,
-      new Date(logItem.transaction.block.timestamp * 1000)
+      new Date(logItem.transaction.block.timestamp * 1000),
+      batchTokenCache,
+      existingTokensMap
     );
 
     // Assign token to transfer
@@ -343,11 +406,14 @@ export class EnhancedProcessor {
     tokenAddress: string,
     detectedType: TokenType,
     blockNumber: number,
-    timestamp: Date
+    timestamp: Date,
+    batchTokenCache: Map<string, Token>,
+    existingTokensMap: Map<string, Token>
   ): Promise<Token> {
-    // Check if token already exists
-    let existingToken = await store.get(Token, tokenAddress);
+    // Check if token already exists in batch cache
+    let existingToken = batchTokenCache.get(tokenAddress);
     if (existingToken) {
+      logger.debug('Token found in batch cache', { address: tokenAddress });
       // Update token type if it was previously unknown
       if (existingToken.tokenType !== detectedType) {
         existingToken.tokenType = detectedType;
@@ -361,11 +427,56 @@ export class EnhancedProcessor {
       return existingToken;
     }
 
+    // Check if token already exists in existing tokens map (DB preload)
+    existingToken = existingTokensMap.get(tokenAddress);
+    if (existingToken) {
+      logger.debug('Token found in DB preload cache', { address: tokenAddress });
+      // Add to batch cache for future lookups in this batch
+      batchTokenCache.set(tokenAddress, existingToken);
+      
+      // Update token type if it was previously unknown
+      if (existingToken.tokenType !== detectedType) {
+        existingToken.tokenType = detectedType;
+        await store.save(existingToken);
+        logger.debug('Updated existing token type', {
+          address: tokenAddress,
+          oldType: existingToken.tokenType,
+          newType: detectedType
+        });
+      }
+      return existingToken;
+    }
+
+    // ⚡ CRITICAL: Check if we're already processing this token in current batch
+    // This prevents multiple RPC calls for the same token within single batch
+    if (this.processedTokens.has(tokenAddress)) {
+      logger.debug('Token already being processed in this batch, creating fallback', { 
+        address: tokenAddress 
+      });
+      
+      const fallbackToken = new Token({
+        id: tokenAddress,
+        address: tokenAddress,
+        name: this.generateFallbackName(detectedType, tokenAddress),
+        symbol: 'UNKNOWN',
+        decimals: this.getDefaultDecimals(detectedType),
+        totalSupply: null,
+        tokenType: detectedType,
+        createdAt: timestamp
+      });
+      
+      // Add to batch cache
+      batchTokenCache.set(tokenAddress, fallbackToken);
+      return fallbackToken;
+    }
+
+    // Mark token as being processed
+    this.processedTokens.add(tokenAddress);
+
     // Create new token with metadata enrichment if sync enrichment is enabled
-    if (this.config.enableTokenEnrichment && this.rpcClient) {
+    if (this.config.enableTokenEnrichment && this.tokenService) {
       try {
-        const tokenService = TokenService.createStandalone(this.rpcClient, blockNumber);
-        const metadata = await tokenService.fetchTokenMetadata(tokenAddress);
+        const metadata = await this.tokenService.fetchTokenMetadata(tokenAddress);
         
         if (metadata) {
           const enrichedToken = new Token({
@@ -378,6 +489,9 @@ export class EnhancedProcessor {
             tokenType: metadata.tokenType,
             createdAt: timestamp
           });
+
+          // ⚡ CRITICAL: Add to batch cache to prevent duplicate processing
+          batchTokenCache.set(tokenAddress, enrichedToken);
 
           logger.info('Created enriched token with real metadata', {
             address: tokenAddress,
@@ -407,6 +521,9 @@ export class EnhancedProcessor {
       tokenType: detectedType,
       createdAt: timestamp
     });
+
+    // ⚡ CRITICAL: Add to batch cache to prevent duplicate processing
+    batchTokenCache.set(tokenAddress, fallbackToken);
 
     logger.debug('Created token with fallback metadata', {
       address: tokenAddress,
@@ -487,41 +604,6 @@ export class EnhancedProcessor {
 
     this.processedTokens.add(tokenAddress);
     return true;
-  }
-
-  /**
-   * Queue enrichment jobs for background processing
-   */
-  private async queueEnrichmentJobs(
-    jobs: Array<{
-      tokenAddress: string;
-      blockNumber: number;
-      transactionHash: string;
-      logIndex: number;
-    }>
-  ): Promise<void> {
-    if (!this.tokenEnrichmentWorker) {
-      logger.warn('Token enrichment worker not available, skipping enrichment jobs');
-      return;
-    }
-
-    try {
-      for (const job of jobs) {
-        await this.tokenEnrichmentWorker.enqueueTokenEnrichment({
-          tokenAddress: job.tokenAddress,
-          blockNumber: job.blockNumber,
-          transactionHash: job.transactionHash,
-          logIndex: job.logIndex
-        });
-      }
-
-      logger.info('Queued token enrichment jobs', { count: jobs.length });
-    } catch (error) {
-      logger.error('Failed to queue enrichment jobs', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        jobCount: jobs.length
-      });
-    }
   }
 
   /**

@@ -230,7 +230,8 @@ processor.run(new TypeormDatabase({supportHotBlocks: true}), async (ctx) => {
             
             logger.info('Enhanced log processing completed successfully', {
                 enrichedTokens: enhancedResult.tokens.length,
-                enhancedTransfers: enhancedResult.transfers.length
+                enhancedTransfers: enhancedResult.transfers.length,
+                processorStats: enhancedProcessor.getStats()
             })
         } catch (error) {
             logger.error('Enhanced log processing failed, falling back to basic processing', {

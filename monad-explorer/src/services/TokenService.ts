@@ -33,6 +33,8 @@ interface RpcClient {
 export class TokenService {
   private readonly context: ChainContext;
   private readonly block: Block;
+  // Cache for metadata to avoid duplicate RPC calls within same service instance
+  private metadataCache = new Map<string, TokenMetadata>();
 
   constructor(context: ChainContext, block: Block) {
     this.context = context;
@@ -115,19 +117,40 @@ export class TokenService {
    * Fetches complete token metadata using generated contracts
    */
   async fetchTokenMetadata(tokenAddress: string): Promise<TokenMetadata | null> {
+    // Check cache first
+    const cached = this.metadataCache.get(tokenAddress);
+    if (cached) {
+      logger.debug('Token metadata served from cache', { address: tokenAddress });
+      return cached;
+    }
+
     try {
       const detection = await this.detectTokenType(tokenAddress);
       
+      let metadata: TokenMetadata | null = null;
+      
       if (detection.isERC1155) {
-        return await this.fetchERC1155Metadata(tokenAddress);
+        metadata = await this.fetchERC1155Metadata(tokenAddress);
       } else if (detection.isERC721) {
-        return await this.fetchERC721Metadata(tokenAddress);
+        metadata = await this.fetchERC721Metadata(tokenAddress);
       } else if (detection.isERC20) {
-        return await this.fetchERC20Metadata(tokenAddress);
+        metadata = await this.fetchERC20Metadata(tokenAddress);
       }
 
-      logger.warn('Unknown token type', { address: tokenAddress });
-      return null;
+      if (!metadata) {
+        logger.warn('Unknown token type', { address: tokenAddress });
+        return null;
+      }
+
+      // Cache the result
+      this.metadataCache.set(tokenAddress, metadata);
+      logger.debug('Token metadata cached', { 
+        address: tokenAddress,
+        name: metadata.name,
+        symbol: metadata.symbol 
+      });
+
+      return metadata;
     } catch (error) {
       logger.error('Failed to fetch token metadata', {
         address: tokenAddress,
@@ -324,5 +347,22 @@ export class TokenService {
    */
   private getSettledValue<T>(result: PromiseSettledResult<T | null>): T | null {
     return result.status === 'fulfilled' ? result.value : null;
+  }
+
+  /**
+   * Get cache statistics
+   */
+  getCacheStats() {
+    return {
+      cacheSize: this.metadataCache.size,
+      cachedTokens: Array.from(this.metadataCache.keys())
+    };
+  }
+
+  /**
+   * Clear metadata cache
+   */
+  clearCache(): void {
+    this.metadataCache.clear();
   }
 } 
