@@ -1,7 +1,18 @@
 import * as amqp from 'amqplib';
 import { Connection, Channel, Message } from 'amqplib';
 import { logger } from '../../utils/logger';
+import { 
+  IQueueService, 
+  QueueMessage as IQueueMessage, 
+  TokenEnrichmentMessage as ITokenEnrichmentMessage, 
+  InternalTransactionMessage as IInternalTransactionMessage,
+  PublishOptions,
+  ConsumeOptions,
+  MessageHandler,
+  QueueStats
+} from '../../interfaces/services/IQueueService';
 
+// Legacy interfaces for backward compatibility
 export interface QueueMessage {
   type: 'TOKEN_ENRICHMENT' | 'INTERNAL_TRANSACTION';
   data: any;
@@ -34,13 +45,15 @@ interface QueueConfig {
   retryDelay: number;
 }
 
-export class RabbitMQService {
+export class RabbitMQService implements IQueueService {
   private connection: Connection | null = null;
   private channel: Channel | null = null;
-  private isConnected = false;
+  private isConnectedFlag = false;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 10;
   private reconnectDelay = 5000;
+  private errorCount = 0;
+  private lastError?: string;
 
   private config: QueueConfig = {
     exchange: 'monad-explorer',
@@ -72,15 +85,24 @@ export class RabbitMQService {
       // Initialize exchanges and queues
       await this.setupInfrastructure();
       
-      this.isConnected = true;
+      this.isConnectedFlag = true;
       this.reconnectAttempts = 0;
       
       logger.info('Successfully connected to RabbitMQ');
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logger.error('Failed to connect to RabbitMQ', { error: errorMessage });
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.errorCount++;
+      logger.error('Failed to connect to RabbitMQ', { error: this.lastError });
       await this.handleReconnection();
     }
+  }
+
+  async disconnect(): Promise<void> {
+    await this.close();
+  }
+
+  isConnected(): boolean {
+    return this.isConnectedFlag;
   }
 
   private async setupInfrastructure(): Promise<void> {
@@ -118,45 +140,54 @@ export class RabbitMQService {
     logger.info('RabbitMQ infrastructure setup completed');
   }
 
-  async publishTokenEnrichment(message: TokenEnrichmentMessage, priority = 5): Promise<void> {
-    const queueMessage: QueueMessage = {
+  async publishTokenEnrichment(message: ITokenEnrichmentMessage, options?: PublishOptions): Promise<void> {
+    const queueMessage: IQueueMessage = {
       type: 'TOKEN_ENRICHMENT',
       data: message,
-      priority,
+      priority: options?.priority || 5,
       retryCount: 0,
+      timestamp: Date.now(),
+      messageId: `TOKEN_ENRICHMENT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
     };
 
-    await this.publish('token.enrichment', queueMessage, priority);
+    await this.publish('token-enrichment', queueMessage, options);
   }
 
-  async publishInternalTransaction(message: InternalTransactionMessage, priority = 3): Promise<void> {
-    const queueMessage: QueueMessage = {
+  async publishInternalTransaction(message: IInternalTransactionMessage, options?: PublishOptions): Promise<void> {
+    const queueMessage: IQueueMessage = {
       type: 'INTERNAL_TRANSACTION',
       data: message,
-      priority,
+      priority: options?.priority || 3,
       retryCount: 0,
+      timestamp: Date.now(),
+      messageId: `INTERNAL_TRANSACTION-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
     };
 
-    await this.publish('transaction.internal', queueMessage, priority);
+    await this.publish('internal-transactions', queueMessage, options);
   }
 
-  private async publish(routingKey: string, message: QueueMessage, priority = 5): Promise<void> {
-    if (!this.isConnected || !this.channel) {
+  async publish<T>(queueName: string, message: IQueueMessage<T>, options?: PublishOptions): Promise<void> {
+    if (!this.isConnectedFlag || !this.channel) {
+      this.lastError = 'RabbitMQ not connected';
+      this.errorCount++;
       logger.error('Cannot publish message: RabbitMQ not connected');
       throw new Error('RabbitMQ not connected');
     }
 
     try {
       const buffer = Buffer.from(JSON.stringify(message));
+      const routingKey = queueName.includes('-') ? queueName.replace('-', '.') : queueName;
+      
       const published = this.channel.publish(
         this.config.exchange,
         routingKey,
         buffer,
         {
-          persistent: true,
-          priority,
+          persistent: options?.persistent ?? true,
+          priority: options?.priority || 5,
           timestamp: Date.now(),
-          messageId: `${message.type}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          messageId: message.messageId,
+          expiration: options?.expiration,
         }
       );
 
@@ -164,88 +195,176 @@ export class RabbitMQService {
         throw new Error('Failed to publish message to exchange');
       }
 
-      logger.debug('Message published successfully', { routingKey, type: message.type });
+      logger.debug('Message published successfully', { queueName, type: message.type });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.errorCount++;
       logger.error('Failed to publish message', { 
-        error: errorMessage, 
-        routingKey, 
+        error: this.lastError, 
+        queueName, 
         messageType: message.type 
       });
       throw error;
     }
   }
 
-  async consumeTokenEnrichment(handler: (message: TokenEnrichmentMessage) => Promise<void>): Promise<void> {
-    await this.consume(this.config.queues.tokenEnrichment, async (message: QueueMessage) => {
+  async consumeTokenEnrichment(handler: MessageHandler<ITokenEnrichmentMessage>, options?: ConsumeOptions): Promise<void> {
+    await this.consume(this.config.queues.tokenEnrichment, async (message: IQueueMessage) => {
       if (message.type !== 'TOKEN_ENRICHMENT') {
         throw new Error(`Invalid message type: ${message.type}`);
       }
-      await handler(message.data as TokenEnrichmentMessage);
-    });
+      await handler(message.data as ITokenEnrichmentMessage);
+    }, options);
   }
 
-  async consumeInternalTransactions(handler: (message: InternalTransactionMessage) => Promise<void>): Promise<void> {
-    await this.consume(this.config.queues.internalTransactions, async (message: QueueMessage) => {
+  async consumeInternalTransactions(handler: MessageHandler<IInternalTransactionMessage>, options?: ConsumeOptions): Promise<void> {
+    await this.consume(this.config.queues.internalTransactions, async (message: IQueueMessage) => {
       if (message.type !== 'INTERNAL_TRANSACTION') {
         throw new Error(`Invalid message type: ${message.type}`);
       }
-      await handler(message.data as InternalTransactionMessage);
-    });
+      await handler(message.data as IInternalTransactionMessage);
+    }, options);
   }
 
-  private async consume(queueName: string, handler: (message: QueueMessage) => Promise<void>): Promise<void> {
-    if (!this.isConnected || !this.channel) {
+  async consume<T>(queueName: string, handler: MessageHandler<T>, options?: ConsumeOptions): Promise<void> {
+    if (!this.isConnectedFlag || !this.channel) {
       throw new Error('RabbitMQ not connected');
+    }
+
+    if (options?.prefetch) {
+      await this.channel.prefetch(options.prefetch);
     }
 
     await this.channel.consume(queueName, async (msg: Message | null) => {
       if (!msg) return;
 
       try {
-        const content = JSON.parse(msg.content.toString()) as QueueMessage;
+        const content = JSON.parse(msg.content.toString()) as T;
         
         logger.debug('Processing message', { 
           queue: queueName, 
-          type: content.type, 
-          retryCount: content.retryCount 
+          messageId: msg.properties.messageId
         });
 
         await handler(content);
         
         // Acknowledge successful processing
-        this.channel?.ack(msg);
+        if (!options?.autoAck) {
+          this.channel?.ack(msg);
+        }
         
         logger.debug('Message processed successfully', { 
           queue: queueName, 
-          type: content.type 
+          messageId: msg.properties.messageId
         });
         
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.lastError = error instanceof Error ? error.message : String(error);
+        this.errorCount++;
         logger.error('Failed to process message', { 
           queue: queueName, 
-          error: errorMessage 
+          error: this.lastError 
         });
 
         // Handle retry logic
         await this.handleMessageError(msg, error instanceof Error ? error : new Error(String(error)));
       }
-    });
+    }, { noAck: options?.autoAck ?? false });
 
     logger.info(`Started consuming from queue: ${queueName}`);
+  }
+
+  async getQueueStats(queueName: string): Promise<QueueStats> {
+    if (!this.isConnectedFlag || !this.channel) {
+      throw new Error('RabbitMQ not connected');
+    }
+
+    try {
+      const queueInfo = await this.channel.checkQueue(queueName);
+      return {
+        messageCount: queueInfo.messageCount,
+        consumerCount: queueInfo.consumerCount,
+        publishedTotal: 0, // RabbitMQ doesn't provide this directly
+        processedTotal: 0, // RabbitMQ doesn't provide this directly
+        failedTotal: this.errorCount,
+        retryTotal: 0, // RabbitMQ doesn't provide this directly
+      };
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.errorCount++;
+      throw error;
+    }
+  }
+
+  async getAllQueueStats(): Promise<Record<string, QueueStats>> {
+    const stats: Record<string, QueueStats> = {};
+    
+    for (const [name, queueName] of Object.entries(this.config.queues)) {
+      try {
+        stats[name] = await this.getQueueStats(queueName);
+      } catch (error) {
+        logger.warn(`Failed to get stats for queue ${queueName}`, {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    return stats;
+  }
+
+  async purgeQueue(queueName: string): Promise<number> {
+    if (!this.isConnectedFlag || !this.channel) {
+      throw new Error('RabbitMQ not connected');
+    }
+
+    try {
+      const result = await this.channel.purgeQueue(queueName);
+      logger.info(`Purged ${result.messageCount} messages from queue ${queueName}`);
+      return result.messageCount;
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.errorCount++;
+      logger.error(`Failed to purge queue ${queueName}`, { error: this.lastError });
+      throw error;
+    }
+  }
+
+  async getHealthStatus(): Promise<{
+    connected: boolean;
+    queuesHealthy: boolean;
+    errorCount: number;
+    lastError?: string;
+  }> {
+    let queuesHealthy = false;
+    
+    if (this.isConnectedFlag) {
+      try {
+        // Check if we can access queue info
+        await this.getAllQueueStats();
+        queuesHealthy = true;
+      } catch (error) {
+        queuesHealthy = false;
+      }
+    }
+
+    return {
+      connected: this.isConnectedFlag,
+      queuesHealthy,
+      errorCount: this.errorCount,
+      lastError: this.lastError,
+    };
   }
 
   private async handleMessageError(msg: Message, error: Error): Promise<void> {
     if (!this.channel) return;
 
     try {
-      const content = JSON.parse(msg.content.toString()) as QueueMessage;
+      const content = JSON.parse(msg.content.toString()) as IQueueMessage;
       const retryCount = (content.retryCount || 0) + 1;
 
       if (retryCount <= this.config.maxRetries) {
         // Retry with delay
-        const updatedMessage: QueueMessage = {
+        const updatedMessage: IQueueMessage = {
           ...content,
           retryCount,
         };
@@ -256,7 +375,21 @@ export class RabbitMQService {
         setTimeout(async () => {
           if (this.channel) {
             const routingKey = content.type === 'TOKEN_ENRICHMENT' ? 'token.enrichment' : 'transaction.internal';
-            await this.publish(routingKey, updatedMessage, 1); // Lower priority for retries
+            const published = this.channel.publish(
+              this.config.exchange,
+              routingKey,
+              buffer,
+              {
+                persistent: true,
+                priority: 1, // Lower priority for retries
+                timestamp: Date.now(),
+                messageId: content.messageId,
+              }
+            );
+            
+            if (!published) {
+              logger.error('Failed to publish retry message');
+            }
           }
         }, this.config.retryDelay);
 
@@ -287,12 +420,14 @@ export class RabbitMQService {
 
   private handleConnectionError(error: Error): void {
     logger.error('RabbitMQ connection error', { error: error.message });
-    this.isConnected = false;
+    this.isConnectedFlag = false;
+    this.lastError = error.message;
+    this.errorCount++;
   }
 
   private handleConnectionClose(): void {
     logger.warn('RabbitMQ connection closed');
-    this.isConnected = false;
+    this.isConnectedFlag = false;
     this.handleReconnection();
   }
 
@@ -318,38 +453,19 @@ export class RabbitMQService {
   }
 
   async getQueueInfo(): Promise<Record<string, any>> {
-    if (!this.isConnected || !this.channel) {
-      throw new Error('RabbitMQ not connected');
-    }
-
-    const info: Record<string, any> = {};
-    
-    for (const [name, queueName] of Object.entries(this.config.queues)) {
-      try {
-        const queueInfo = await this.channel.checkQueue(queueName);
-        info[name] = {
-          messageCount: queueInfo.messageCount,
-          consumerCount: queueInfo.consumerCount,
-        };
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        info[name] = { error: errorMessage };
-      }
-    }
-
-    return info;
+    return this.getAllQueueStats();
   }
 
   async close(): Promise<void> {
     if (this.connection) {
       await this.connection.close();
-      this.isConnected = false;
+      this.isConnectedFlag = false;
       logger.info('RabbitMQ connection closed');
     }
   }
 
   get connected(): boolean {
-    return this.isConnected;
+    return this.isConnectedFlag;
   }
 }
 

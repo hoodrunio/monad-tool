@@ -1,3 +1,5 @@
+import winston from 'winston';
+
 // Simple logger utility for monad-explorer
 interface Logger {
   info(message: string, data?: any): void;
@@ -14,52 +16,100 @@ enum LogLevel {
   DEBUG = 3
 }
 
-class SimpleLogger implements Logger {
+class WinstonLogger implements Logger {
+  private winstonLogger: winston.Logger;
   private logLevel: LogLevel;
 
   constructor() {
     // Get log level from environment variable, default to INFO
     const envLogLevel = (process.env.LOG_LEVEL || 'INFO').toUpperCase();
     this.logLevel = LogLevel[envLogLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
+
+    // Map our log levels to Winston levels
+    const winstonLevel = this.getWinstonLevel(this.logLevel);
+
+    this.winstonLogger = winston.createLogger({
+      level: winstonLevel,
+      format: winston.format.combine(
+        winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSS' }),
+        winston.format.errors({ stack: true }),
+        winston.format.colorize({ all: true }),
+        winston.format.printf(({ timestamp, level, message, stack, ...meta }) => {
+          let logMessage = `[${timestamp}] ${level}: ${message}`;
+          
+          // Handle additional data
+          if (Object.keys(meta).length > 0) {
+            logMessage += ` ${JSON.stringify(meta)}`;
+          }
+          
+          // Handle stack traces for errors
+          if (stack) {
+            logMessage += `\n${stack}`;
+          }
+          
+          return logMessage;
+        })
+      ),
+      transports: [
+        new winston.transports.Console({
+          handleExceptions: true,
+          handleRejections: true
+        })
+      ],
+      exitOnError: false
+    });
   }
 
-  private formatMessage(level: string, message: string, data?: any): string {
-    const timestamp = new Date().toISOString();
-    const baseMessage = `[${timestamp}] ${level}: ${message}`;
-    
-    if (data) {
-      if (typeof data === 'object') {
-        return `${baseMessage} ${JSON.stringify(data)}`;
-      }
-      return `${baseMessage} ${data}`;
+  private getWinstonLevel(level: LogLevel): string {
+    switch (level) {
+      case LogLevel.ERROR:
+        return 'error';
+      case LogLevel.WARN:
+        return 'warn';
+      case LogLevel.INFO:
+        return 'info';
+      case LogLevel.DEBUG:
+        return 'debug';
+      default:
+        return 'info';
+    }
+  }
+
+  private formatData(data: any): object {
+    if (data === undefined || data === null) {
+      return {};
     }
     
-    return baseMessage;
+    if (typeof data === 'object') {
+      return data;
+    }
+    
+    return { data };
   }
 
   info(message: string, data?: any): void {
     if (this.logLevel >= LogLevel.INFO) {
-      console.log(this.formatMessage('INFO', message, data));
+      this.winstonLogger.info(message, this.formatData(data));
     }
   }
 
   warn(message: string, data?: any): void {
     if (this.logLevel >= LogLevel.WARN) {
-      console.warn(this.formatMessage('WARN', message, data));
+      this.winstonLogger.warn(message, this.formatData(data));
     }
   }
 
   error(message: string, data?: any): void {
     if (this.logLevel >= LogLevel.ERROR) {
-      console.error(this.formatMessage('ERROR', message, data));
+      this.winstonLogger.error(message, this.formatData(data));
     }
   }
 
   debug(message: string, data?: any): void {
     if (this.logLevel >= LogLevel.DEBUG) {
-      console.debug(this.formatMessage('DEBUG', message, data));
+      this.winstonLogger.debug(message, this.formatData(data));
     }
   }
 }
 
-export const logger = new SimpleLogger();
+export const logger = new WinstonLogger();

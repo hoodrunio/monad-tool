@@ -334,13 +334,6 @@ export class BlockProcessor {
     });
 
     if (detection.detectedType) {
-     /*  logger.info('Token detected via event analysis', {
-        address: log.address,
-        type: detection.detectedType,
-        confidence: detection.confidence,
-        blockNumber: log.transaction.block.number,
-      }); */
-
       // Create proper TokenTransfer entity
       const tokenTransfer = new TokenTransfer({
         id: `${log.id}-transfer`,
@@ -372,6 +365,20 @@ export class BlockProcessor {
 
         result.tokens.push(token);
         tokenTransfer.token = token;
+
+        // Check if async processing is enabled and queue the token for enrichment
+        const config = await this.container.resolve<any>('appConfig');
+        if (config.processor.enableAsyncProcessing) {
+          try {
+            await this.queueTokenForEnrichment(log, detection.detectedType);
+          } catch (error) {
+            logger.warn('Failed to queue token for enrichment', {
+              tokenAddress: log.address,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            });
+            // Don't throw - continue processing even if queueing fails
+          }
+        }
       } else {
         tokenTransfer.token = existingToken;
       }
@@ -380,6 +387,45 @@ export class BlockProcessor {
         address: log.address,
         topics: log.topics.length,
       });
+    }
+  }
+
+  /**
+   * Queue token for background enrichment
+   */
+  private async queueTokenForEnrichment(log: any, detectedType: string): Promise<void> {
+    try {
+      const queueService = await this.container.resolve<any>('queueService');
+      
+      if (!queueService.isConnected()) {
+        logger.debug('Queue service not connected - skipping token enrichment queue');
+        return;
+      }
+
+      const enrichmentMessage = {
+        tokenAddress: log.address,
+        blockNumber: log.transaction.block.number,
+        transactionHash: log.transaction.hash,
+        logIndex: log.logIndex,
+        detectedType: detectedType,
+      };
+
+      await queueService.publishTokenEnrichment(enrichmentMessage, {
+        priority: 5,
+        persistent: true,
+      });
+
+      logger.debug('Token queued for enrichment', {
+        tokenAddress: log.address,
+        blockNumber: log.transaction.block.number,
+      });
+
+    } catch (error) {
+      logger.error('Failed to queue token for enrichment', {
+        tokenAddress: log.address,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      throw error;
     }
   }
 

@@ -6,6 +6,7 @@ import { EventTokenDetector } from '../services/token/EventTokenDetector';
 import { RedisTokenRepository } from '../services/token/RedisTokenRepository';
 import { TokenMetadataFetcher } from '../services/token/TokenMetadataFetcher';
 import { RedisCache } from '../services/cache/RedisCache';
+import { RabbitMQService } from '../services/queue/RabbitMQService';
 import { logger } from '../utils/logger';
 
 // Import interfaces
@@ -15,6 +16,7 @@ import { IEventTokenDetector } from '../interfaces/services/IEventTokenDetector'
 import { ITokenRepository } from '../interfaces/services/ITokenRepository';
 import { ITokenMetadataFetcher } from '../interfaces/services/ITokenMetadataFetcher';
 import { ICacheService } from '../interfaces/cache/ICacheService';
+import { IQueueService } from '../interfaces/services/IQueueService';
 
 /**
  * Service Registration Module
@@ -86,6 +88,27 @@ export class ServiceRegistration {
       const cache = new RedisCache(redisConfig);
       await cache.connect();
       return cache;
+    });
+
+    // Register RabbitMQ Queue Service
+    serviceContainer.registerFactory<IQueueService>('queueService', async () => {
+      const queueService = new RabbitMQService(this.config.queue.rabbitMqUrl);
+      
+      // Only connect if async processing is enabled
+      if (this.config.processor.enableAsyncProcessing) {
+        try {
+          await queueService.connect();
+          logger.info('RabbitMQ service connected successfully');
+        } catch (error) {
+          logger.warn('Failed to connect to RabbitMQ - async processing will be disabled', {
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+      } else {
+        logger.debug('Async processing disabled - RabbitMQ connection skipped');
+      }
+      
+      return queueService;
     });
 
     logger.debug('Infrastructure services registered');
