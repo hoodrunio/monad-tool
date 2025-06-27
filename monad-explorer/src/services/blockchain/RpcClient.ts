@@ -71,12 +71,12 @@ export class RpcClient implements IRpcClient {
           id: this.generateRequestId(),
         };
 
-        logger.debug('Making RPC call', {
+        /* logger.debug('Making RPC call', {
           method,
           params: this.sanitizeParams(params),
           attempt: attempt + 1,
           timeout,
-        });
+        }); */
 
         const response = await this.client.post('', payload, {
           timeout,
@@ -84,25 +84,36 @@ export class RpcClient implements IRpcClient {
         });
 
         if (response.data.error) {
-          throw new Error(`RPC Error: ${response.data.error.message} (Code: ${response.data.error.code})`);
+          const errorCode = response.data.error.code;
+          const errorMessage = response.data.error.message;
+          
+          // Don't retry "execution reverted" - it's a normal contract response
+          const isExecutionReverted = errorCode === -32603 && errorMessage.includes('execution reverted');
+          
+          const error = new Error(`RPC Error: ${errorMessage} (Code: ${errorCode})`);
+          (error as any).code = errorCode;
+          (error as any).isRetryable = !isExecutionReverted; // execution reverted = not retryable
+          
+          throw error;
         }
 
         const responseTime = Date.now() - startTime;
         this.recordSuccess(responseTime);
 
-        logger.debug('RPC call successful', {
+/*         logger.debug('RPC call successful', {
           method,
           responseTime,
           attempt: attempt + 1,
-        });
+        }); */
 
         return response.data.result as T;
 
       } catch (error) {
         const isLastAttempt = attempt === retries;
         const responseTime = Date.now() - startTime;
+        const isRetryable = (error as any).isRetryable !== false;
 
-        if (isLastAttempt) {
+        if (isLastAttempt || !isRetryable) {
           this.recordFailure();
           logger.error('RPC call failed after all retries', {
             method,
@@ -114,11 +125,12 @@ export class RpcClient implements IRpcClient {
           throw this.enhanceError(error, method, params);
         } else {
           const delay = this.calculateRetryDelay(attempt);
-          logger.warn('RPC call failed, retrying', {
+          logger.debug('RPC call failed, retrying', {
             method,
             attempt: attempt + 1,
             totalAttempts: retries + 1,
             retryDelay: delay,
+            retryable: isRetryable,
             error: error instanceof Error ? error.message : 'Unknown error',
           });
           await this.sleep(delay);
@@ -217,10 +229,10 @@ export class RpcClient implements IRpcClient {
     // Response interceptor for logging
     this.client.interceptors.response.use(
       (response) => {
-        logger.debug('HTTP response received', {
+        /* logger.debug('HTTP response received', {
           status: response.status,
           statusText: response.statusText,
-        });
+        }); */
         return response;
       },
       (error: AxiosError) => {

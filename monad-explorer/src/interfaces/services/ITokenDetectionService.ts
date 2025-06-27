@@ -1,4 +1,5 @@
 import { TokenType } from '../../model';
+import { LogEvent } from './IEventTokenDetector';
 
 export interface TokenDetectionResult {
   isERC20: boolean;
@@ -11,6 +12,7 @@ export interface TokenDetectionResult {
 
 export interface TokenDetectionOptions {
   blockNumber?: number;
+  transferLog?: LogEvent; // Event-based detection
   useERC165?: boolean;
   fallbackMethods?: boolean;
   timeout?: number;
@@ -34,19 +36,6 @@ export interface ITokenDetectionService {
   ): Promise<boolean>;
 
   /**
-   * Check if contract supports ERC165
-   */
-  supportsERC165(tokenAddress: string): Promise<boolean>;
-
-  /**
-   * Verify specific interface support
-   */
-  supportsInterface(
-    tokenAddress: string, 
-    interfaceId: string
-  ): Promise<boolean>;
-
-  /**
    * Get detection statistics
    */
   getStats(): {
@@ -57,5 +46,7 @@ export interface ITokenDetectionService {
     erc1155Count: number;
     unknownCount: number;
     averageConfidence: number;
+    cacheHitRate: number;
+    errorCount: number;
   };
 } 

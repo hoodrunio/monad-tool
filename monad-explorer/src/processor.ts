@@ -66,15 +66,15 @@ export const processor = new EvmBatchProcessor()
     })
     .setBlockRange({
         // Start from recent blocks (latest - 1000) for faster testing
-        from: 23624290, // Recent Monad testnet blocks
+        from: 23628431, // Recent Monad testnet blocks
     })
     // Index all transactions for RPC-only mode
     .addTransaction({
-        range: {from: 23624290}
+        range: {from: 23628431}
     })
     // Index all logs for event processing
     .addLog({
-        range: {from: 23624290}
+        range: {from: 23628431}
     })
 
 export type Fields = EvmBatchProcessorFields<typeof processor>

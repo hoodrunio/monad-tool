@@ -130,11 +130,11 @@ export class RedisCache implements ICacheService {
         await this.client.set(key, serializedValue);
       }
 
-      logger.debug('Redis SET operation completed', {
+      /* logger.debug('Redis SET operation completed', {
         key,
         ttl: cacheTtl,
         valueType: typeof value,
-      });
+      }); */
     } catch (error) {
       logger.error('Redis SET operation failed', {
         key,

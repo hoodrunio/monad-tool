@@ -313,7 +313,7 @@ export class BlockProcessor {
   }
 
   /**
-   * Process a single token transfer log
+   * Process a single token transfer log with event-based detection
    */
   private async processTokenTransferLog(
     log: any,
@@ -321,21 +321,47 @@ export class BlockProcessor {
     result: ProcessingResult,
     store: any
   ): Promise<void> {
-    // Detect token type
+    // ✅ EVENT-BASED DETECTION: Pass the log event for analysis
+    const transferLog = {
+      address: log.address,
+      topics: log.topics,
+      data: log.data,
+    };
+
     const detection = await tokenDetectionService.detectTokenType(log.address, {
       blockNumber: log.transaction.block.number,
+      transferLog: transferLog, // Pass the event for analysis
     });
 
     if (detection.detectedType) {
-      logger.debug('Token detected', {
+      logger.info('Token detected via event analysis', {
         address: log.address,
         type: detection.detectedType,
         confidence: detection.confidence,
+        blockNumber: log.transaction.block.number,
       });
 
-      // Here you would create the token transfer entity and token entity
-      // This is where the enhanced processing would happen
-      // For now, just log the detection
+      // Add to results
+      result.tokenTransfers.push({
+        logId: log.id,
+        tokenAddress: log.address,
+        tokenType: detection.detectedType,
+        confidence: detection.confidence,
+        blockNumber: log.transaction.block.number,
+      });
+
+      // Track enriched tokens (no longer need RPC calls for interface detection)
+      result.enrichedTokens.push({
+        address: log.address,
+        type: detection.detectedType,
+        detectionMethod: 'event_based',
+        processed: true,
+      });
+    } else {
+      logger.debug('Log is not a token transfer event', {
+        address: log.address,
+        topics: log.topics.length,
+      });
     }
   }
 
