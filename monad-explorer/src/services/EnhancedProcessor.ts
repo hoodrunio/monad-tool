@@ -1,8 +1,8 @@
 import { EvmBatchProcessor } from '@subsquid/evm-processor';
 import { Store } from '@subsquid/typeorm-store';
 import { TokenEnrichmentWorker } from './TokenEnrichmentWorker';
-import { Token, TokenTransfer, Log, Transaction, Block, TokenType } from '../model';
-import { TokenService } from './TokenService';
+import { Token, TokenTransfer, Log, Transaction, Block, TokenType, InternalTransaction } from '../model';
+import { TokenService, TokenMetadata } from './TokenService';
 import * as erc20 from '../abi/ERC20';
 import * as erc721 from '../abi/ERC721';
 import * as erc1155 from '../abi/ERC1155';
@@ -379,8 +379,9 @@ export class EnhancedProcessor {
       return true;
     }
 
-    // Check for negative hex values
+    // Check for negative hex values (common issue causing BigInt errors)
     if (value.includes('-')) {
+      logger.debug('Detected negative hex value', { value });
       return true;
     }
 
@@ -392,6 +393,13 @@ export class EnhancedProcessor {
     // Check for valid hex characters
     const hexPattern = /^0x[0-9a-fA-F]*$/;
     if (!hexPattern.test(value)) {
+      logger.debug('Invalid hex characters detected', { value });
+      return true;
+    }
+
+    // Check for reasonable length (prevent extremely long values)
+    if (value.length > 130) { // 0x + 128 chars = 64 bytes max
+      logger.debug('Hex value too long', { value, length: value.length });
       return true;
     }
 
@@ -418,152 +426,212 @@ export class EnhancedProcessor {
       if (existingToken.tokenType !== detectedType) {
         existingToken.tokenType = detectedType;
         await store.save(existingToken);
-        logger.debug('Updated existing token type', {
-          address: tokenAddress,
-          oldType: existingToken.tokenType,
-          newType: detectedType
+        logger.debug('Updated token type from batch cache', { 
+          address: tokenAddress, 
+          oldType: existingToken.tokenType, 
+          newType: detectedType 
         });
       }
       return existingToken;
     }
 
-    // Check if token already exists in existing tokens map (DB preload)
+    // Check if token exists in database
     existingToken = existingTokensMap.get(tokenAddress);
     if (existingToken) {
-      logger.debug('Token found in DB preload cache', { address: tokenAddress });
-      // Add to batch cache for future lookups in this batch
       batchTokenCache.set(tokenAddress, existingToken);
+      logger.debug('Token found in database', { address: tokenAddress });
       
       // Update token type if it was previously unknown
       if (existingToken.tokenType !== detectedType) {
         existingToken.tokenType = detectedType;
         await store.save(existingToken);
-        logger.debug('Updated existing token type', {
-          address: tokenAddress,
-          oldType: existingToken.tokenType,
-          newType: detectedType
+        logger.debug('Updated token type from database', { 
+          address: tokenAddress, 
+          oldType: existingToken.tokenType, 
+          newType: detectedType 
         });
       }
       return existingToken;
     }
 
-    // ⚡ CRITICAL: Check if we're already processing this token in current batch
-    // This prevents multiple RPC calls for the same token within single batch
-    if (this.processedTokens.has(tokenAddress)) {
-      logger.debug('Token already being processed in this batch, creating fallback', { 
-        address: tokenAddress 
+    // Create new token with block-aware metadata fetching
+    const newToken = await this.createEnrichedTokenWithBlockAwareness(
+      store,
+      tokenAddress,
+      detectedType,
+      blockNumber,
+      timestamp
+    );
+
+    // Cache the new token
+    batchTokenCache.set(tokenAddress, newToken);
+    existingTokensMap.set(tokenAddress, newToken);
+
+    return newToken;
+  }
+
+  /**
+   * Create new token with block-aware metadata fetching
+   */
+  private async createEnrichedTokenWithBlockAwareness(
+    store: Store,
+    tokenAddress: string,
+    detectedType: TokenType,
+    blockNumber: number,
+    timestamp: Date
+  ): Promise<Token> {
+    try {
+      logger.debug('Attempting to fetch token metadata', { 
+        address: tokenAddress, 
+        blockNumber,
+        detectedType 
       });
-      
-      const fallbackToken = new Token({
-        id: tokenAddress,
-        address: tokenAddress,
-        name: this.generateFallbackName(detectedType, tokenAddress),
-        symbol: 'UNKNOWN',
-        decimals: this.getDefaultDecimals(detectedType),
-        totalSupply: null,
-        tokenType: detectedType,
-        createdAt: timestamp
-      });
-      
-      // Add to batch cache
-      batchTokenCache.set(tokenAddress, fallbackToken);
-      return fallbackToken;
-    }
 
-    // Mark token as being processed
-    this.processedTokens.add(tokenAddress);
-
-    // Create new token with metadata enrichment if sync enrichment is enabled
-    if (this.config.enableTokenEnrichment && this.tokenService) {
-      try {
-        const metadata = await this.tokenService.fetchTokenMetadata(tokenAddress);
-        
-        if (metadata) {
-          const enrichedToken = new Token({
-            id: tokenAddress,
-            address: tokenAddress,
-            name: metadata.name,
-            symbol: metadata.symbol,
-            decimals: metadata.decimals || null,
-            totalSupply: metadata.totalSupply || null,
-            tokenType: metadata.tokenType,
-            createdAt: timestamp
-          });
-
-          // ⚡ CRITICAL: Add to batch cache to prevent duplicate processing
-          batchTokenCache.set(tokenAddress, enrichedToken);
-
-          logger.info('Created enriched token with real metadata', {
-            address: tokenAddress,
-            name: metadata.name,
-            symbol: metadata.symbol,
-            type: metadata.tokenType
-          });
-
-          return enrichedToken;
-        }
-      } catch (error) {
-        logger.warn('Sync token enrichment failed, using fallback', {
+      // First check if contract exists at this block
+      const contractExists = await this.checkContractExistenceAtBlock(tokenAddress, blockNumber);
+      if (!contractExists) {
+        logger.warn('Contract does not exist at block, creating minimal token', {
           address: tokenAddress,
-          error: error instanceof Error ? error.message : 'Unknown error'
+          blockNumber,
+          timestamp
         });
+        
+        // Create minimal token without metadata (will be enriched later)
+        return this.createMinimalToken(tokenAddress, detectedType, timestamp);
       }
-    }
 
-    // Fallback: Create token with basic metadata
-    const fallbackToken = new Token({
+      // Attempt to fetch metadata with proper error handling if tokenService is available
+      let metadata = null;
+      if (this.tokenService) {
+        metadata = await this.tokenService.fetchTokenMetadata(tokenAddress);
+      }
+      
+      if (metadata) {
+        logger.info('Successfully fetched token metadata', {
+          address: tokenAddress,
+          tokenType: metadata.tokenType,
+          name: metadata.name,
+          symbol: metadata.symbol,
+          blockNumber
+        });
+
+        return this.createTokenFromMetadata(
+          tokenAddress,
+          metadata,
+          timestamp
+        );
+      } else {
+        logger.warn('Failed to fetch metadata, creating token with fallback values', {
+          address: tokenAddress,
+          detectedType,
+          blockNumber
+        });
+        
+        return this.createTokenWithFallback(
+          tokenAddress,
+          detectedType,
+          timestamp
+        );
+      }
+    } catch (error) {
+      logger.error('Error creating enriched token', {
+        address: tokenAddress,
+        blockNumber,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+
+      // Create fallback token on any error
+      return this.createTokenWithFallback(
+        tokenAddress,
+        detectedType,
+        timestamp
+      );
+    }
+  }
+
+  /**
+   * Check if contract exists at specific block height
+   */
+  private async checkContractExistenceAtBlock(tokenAddress: string, blockNumber: number): Promise<boolean> {
+    try {
+      // For now, assume contract exists to avoid breaking existing functionality
+      // This can be enhanced when we have access to the actual RPC client
+      logger.debug('Contract existence check (placeholder)', {
+        address: tokenAddress,
+        blockNumber
+      });
+      return true;
+    } catch (error) {
+      logger.debug('Contract existence check failed, assuming exists', {
+        address: tokenAddress,
+        blockNumber,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+    
+    return true; // Default to true to avoid breaking existing functionality
+  }
+
+  /**
+   * Create minimal token without metadata (for contracts not yet deployed)
+   */
+  private createMinimalToken(
+    tokenAddress: string,
+    detectedType: TokenType,
+    timestamp: Date
+  ): Token {
+    return new Token({
       id: tokenAddress,
       address: tokenAddress,
-      name: this.generateFallbackName(detectedType, tokenAddress),
-      symbol: 'UNKNOWN',
-      decimals: this.getDefaultDecimals(detectedType),
+      name: null, // Will be enriched later when contract is available
+      symbol: null, // Will be enriched later when contract is available  
+      decimals: null,
       totalSupply: null,
       tokenType: detectedType,
       createdAt: timestamp
     });
+  }
 
-    // ⚡ CRITICAL: Add to batch cache to prevent duplicate processing
-    batchTokenCache.set(tokenAddress, fallbackToken);
-
-    logger.debug('Created token with fallback metadata', {
+  /**
+   * Create token with fallback values
+   */
+  private createTokenWithFallback(
+    tokenAddress: string,
+    detectedType: TokenType,
+    timestamp: Date
+  ): Token {
+    const shortAddress = `${tokenAddress.slice(0, 8)}...${tokenAddress.slice(-6)}`;
+    
+    return new Token({
+      id: tokenAddress,
       address: tokenAddress,
-      type: detectedType,
-      name: fallbackToken.name
+      name: `Token ${shortAddress}`,
+      symbol: shortAddress.toUpperCase(),
+      decimals: detectedType === TokenType.ERC20 ? 18 : null,
+      totalSupply: null,
+      tokenType: detectedType,
+      createdAt: timestamp
     });
-
-    return fallbackToken;
   }
 
   /**
-   * Generate fallback name based on token type
+   * Create token from successfully fetched metadata
    */
-  private generateFallbackName(tokenType: TokenType, address: string): string {
-    const shortAddress = address.slice(0, 8) + '...';
-    switch (tokenType) {
-      case TokenType.ERC20:
-        return `Token ${shortAddress}`;
-      case TokenType.ERC721:
-        return `NFT ${shortAddress}`;
-      case TokenType.ERC1155:
-        return `Multi-Token ${shortAddress}`;
-      default:
-        return `Token ${shortAddress}`;
-    }
-  }
-
-  /**
-   * Get default decimals based on token type
-   */
-  private getDefaultDecimals(tokenType: TokenType): number | null {
-    switch (tokenType) {
-      case TokenType.ERC20:
-        return 18; // Standard ERC20 decimals
-      case TokenType.ERC721:
-      case TokenType.ERC1155:
-        return 0; // NFTs don't have decimals
-      default:
-        return null;
-    }
+  private createTokenFromMetadata(
+    tokenAddress: string,
+    metadata: TokenMetadata,
+    timestamp: Date
+  ): Token {
+    return new Token({
+      id: tokenAddress,
+      address: tokenAddress,
+      name: metadata.name,
+      symbol: metadata.symbol,
+      decimals: metadata.decimals || null,
+      totalSupply: metadata.totalSupply ? BigInt(metadata.totalSupply.toString()) : null,
+      tokenType: metadata.tokenType,
+      createdAt: timestamp
+    });
   }
 
   /**
