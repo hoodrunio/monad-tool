@@ -126,12 +126,12 @@ export class TokenDetectionService implements ITokenDetectionService {
       // 4. Save to database for future use
       await this.saveTokenToDatabase(tokenAddress, eventDetection.tokenType, metadata);
 
-      logger.info('Token detected via event analysis', {
+ /*      logger.info('Token detected via event analysis', {
         tokenAddress,
         type: eventDetection.tokenType,
         confidence: result.confidence,
         method: eventDetection.detectionMethod,
-      });
+      }); */
 
       return result;
 

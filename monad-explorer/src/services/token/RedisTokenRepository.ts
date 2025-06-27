@@ -43,12 +43,12 @@ export class RedisTokenRepository implements ITokenRepository {
     // Mark as exists (TTL: 7 days)
     await this.cache.set(existsKey, true, 7 * 24 * 60 * 60 * 1000);
 
-    logger.debug('Token saved to Redis repository', {
+/*     logger.debug('Token saved to Redis repository', {
       address: normalizedAddress,
       type: tokenInfo.type,
       name: tokenInfo.name,
       symbol: tokenInfo.symbol,
-    });
+    }); */
   }
 
   async update(address: string, updates: Partial<TokenInfo>): Promise<void> {

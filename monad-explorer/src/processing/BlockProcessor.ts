@@ -1,7 +1,7 @@
 import { serviceContainer } from '../services/core/ServiceContainer';
 import { ITokenDetectionService } from '../interfaces/services/ITokenDetectionService';
 import { logger } from '../utils/logger';
-import { Account, Block, Transaction, Log, MethodSignature } from '../model/generated';
+import { Account, Block, Transaction, Log, MethodSignature, Token, TokenTransfer, TokenType } from '../model/generated';
 
 export interface ProcessingResult {
   blocks: Block[];
@@ -9,8 +9,8 @@ export interface ProcessingResult {
   accounts: Map<string, Account>;
   logs: Log[];
   methodSignatures: Map<string, MethodSignature>;
-  tokenTransfers: any[];
-  enrichedTokens: any[];
+  tokenTransfers: TokenTransfer[];
+  tokens: Token[];
 }
 
 /**
@@ -52,7 +52,7 @@ export class BlockProcessor {
         logsProcessed: result.logs.length,
         accountsProcessed: result.accounts.size,
         tokenTransfersDetected: result.tokenTransfers.length,
-        tokensEnriched: result.enrichedTokens.length,
+        tokensEnriched: result.tokens.length,
       });
 
       return result;
@@ -286,7 +286,7 @@ export class BlockProcessor {
       logger.info('Token transfer processing completed', {
         processedLogs: tokenLogs.length,
         detectedTransfers: result.tokenTransfers.length,
-        enrichedTokens: result.enrichedTokens.length,
+        enrichedTokens: result.tokens.length,
       });
 
     } catch (error) {
@@ -334,29 +334,47 @@ export class BlockProcessor {
     });
 
     if (detection.detectedType) {
-      logger.info('Token detected via event analysis', {
+     /*  logger.info('Token detected via event analysis', {
         address: log.address,
         type: detection.detectedType,
         confidence: detection.confidence,
         blockNumber: log.transaction.block.number,
+      }); */
+
+      // Create proper TokenTransfer entity
+      const tokenTransfer = new TokenTransfer({
+        id: `${log.id}-transfer`,
+        transaction: log.transaction,
+        log: log,
+        fromAddress: log.topics[1] ? `0x${log.topics[1].slice(26)}` : '0x0000000000000000000000000000000000000000',
+        toAddress: log.topics[2] ? `0x${log.topics[2].slice(26)}` : '0x0000000000000000000000000000000000000000',
+        value: 0n, // Will be parsed from log data
+        tokenId: null,
+        timestamp: log.transaction.timestamp,
+        token: undefined, // Will be set if token entity exists
       });
 
-      // Add to results
-      result.tokenTransfers.push({
-        logId: log.id,
-        tokenAddress: log.address,
-        tokenType: detection.detectedType,
-        confidence: detection.confidence,
-        blockNumber: log.transaction.block.number,
-      });
+      result.tokenTransfers.push(tokenTransfer);
 
-      // Track enriched tokens (no longer need RPC calls for interface detection)
-      result.enrichedTokens.push({
-        address: log.address,
-        type: detection.detectedType,
-        detectionMethod: 'event_based',
-        processed: true,
-      });
+      // Create or update Token entity
+      const existingToken = result.tokens.find(t => t.address.toLowerCase() === log.address.toLowerCase());
+      if (!existingToken) {
+        const token = new Token({
+          id: log.address.toLowerCase(),
+          address: log.address.toLowerCase(),
+          name: null,
+          symbol: null,
+          decimals: null,
+          totalSupply: null,
+          tokenType: detection.detectedType as TokenType,
+          createdAt: log.transaction.timestamp,
+        });
+
+        result.tokens.push(token);
+        tokenTransfer.token = token;
+      } else {
+        tokenTransfer.token = existingToken;
+      }
     } else {
       logger.debug('Log is not a token transfer event', {
         address: log.address,
@@ -376,7 +394,7 @@ export class BlockProcessor {
       logs: [],
       methodSignatures: new Map(),
       tokenTransfers: [],
-      enrichedTokens: [],
+      tokens: [],
     };
   }
 

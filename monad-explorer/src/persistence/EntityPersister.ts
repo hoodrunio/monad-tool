@@ -20,7 +20,7 @@ export class EntityPersister {
       logs: result.logs.length,
       methodSignatures: result.methodSignatures.size,
       tokenTransfers: result.tokenTransfers.length,
-      enrichedTokens: result.enrichedTokens.length,
+      tokens: result.tokens.length,
     });
 
     try {
@@ -171,19 +171,19 @@ export class EntityPersister {
    * Persist token entities (must be before token transfers due to foreign key constraints)
    */
   private async persistTokens(store: any, result: ProcessingResult): Promise<void> {
-    if (result.enrichedTokens.length === 0) {
+    if (result.tokens.length === 0) {
       return;
     }
 
     try {
-      await store.upsert(result.enrichedTokens);
+      await store.upsert(result.tokens);
       
       logger.debug('Tokens persisted successfully', { 
-        count: result.enrichedTokens.length 
+        count: result.tokens.length 
       });
     } catch (error) {
       logger.error('Failed to persist tokens', {
-        count: result.enrichedTokens.length,
+        count: result.tokens.length,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
@@ -223,7 +223,7 @@ export class EntityPersister {
            result.logs.length +
            result.methodSignatures.size +
            result.tokenTransfers.length +
-           result.enrichedTokens.length;
+           result.tokens.length;
   }
 
   /**
@@ -240,7 +240,7 @@ export class EntityPersister {
       logs: result.logs.length,
       methodSignatures: result.methodSignatures.size,
       tokenTransfers: result.tokenTransfers.length,
-      enrichedTokens: result.enrichedTokens.length,
+      tokens: result.tokens.length,
     };
 
     return {
