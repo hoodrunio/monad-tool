@@ -1,0 +1,80 @@
+export interface RpcResponse<T = unknown> {
+  success: boolean;
+  data?: T;
+  error?: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
+}
+
+export interface RpcCallOptions {
+  timeout?: number;
+  retries?: number;
+  blockTag?: string | number;
+}
+
+export interface ContractCallOptions extends RpcCallOptions {
+  from?: string;
+  gas?: string;
+  gasPrice?: string;
+}
+
+export interface IRpcClient {
+  /**
+   * Make a raw JSON-RPC call
+   */
+  call<T = unknown>(
+    method: string, 
+    params?: unknown[], 
+    options?: RpcCallOptions
+  ): Promise<T>;
+
+  /**
+   * Get contract code at specific block
+   */
+  getCode(address: string, blockTag?: string | number): Promise<string>;
+
+  /**
+   * Call a contract method
+   */
+  callContract<T = unknown>(
+    to: string,
+    data: string,
+    options?: ContractCallOptions
+  ): Promise<T>;
+
+  /**
+   * Get current block number
+   */
+  getBlockNumber(): Promise<number>;
+
+  /**
+   * Get block by number or hash
+   */
+  getBlock(blockHashOrNumber: string | number, includeTransactions?: boolean): Promise<unknown>;
+
+  /**
+   * Get transaction by hash
+   */
+  getTransaction(hash: string): Promise<unknown>;
+
+  /**
+   * Get transaction receipt
+   */
+  getTransactionReceipt(hash: string): Promise<unknown>;
+
+  /**
+   * Check if client is healthy
+   */
+  isHealthy(): Promise<boolean>;
+
+  /**
+   * Get connection status
+   */
+  getConnectionStatus(): {
+    connected: boolean;
+    lastSuccessfulCall: Date | null;
+    errorCount: number;
+  };
+} 
