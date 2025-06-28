@@ -62,6 +62,7 @@ services:
       CLICKHOUSE_PORT: 8123
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: monad_redis_pass
     depends_on:
       clickhouse:
         condition: service_healthy
