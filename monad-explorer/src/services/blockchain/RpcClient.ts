@@ -112,16 +112,33 @@ export class RpcClient implements IRpcClient {
         const isLastAttempt = attempt === retries;
         const responseTime = Date.now() - startTime;
         const isRetryable = (error as any).isRetryable !== false;
+        const isExecutionReverted = error instanceof Error && error.message.includes('execution reverted');
 
         if (isLastAttempt || !isRetryable) {
-          this.recordFailure();
-          logger.error('RPC call failed after all retries', {
-            method,
-            params: this.sanitizeParams(params),
-            attempts: attempt + 1,
-            error: error instanceof Error ? error.message : 'Unknown error',
-            responseTime,
-          });
+          // Only record as failure if it's not an execution reverted error
+          if (!isExecutionReverted) {
+            this.recordFailure();
+          }
+          
+          // Log execution reverted as debug, real errors as error
+          if (isExecutionReverted) {
+            logger.debug('Contract method not implemented (normal behavior)', {
+              method,
+              params: this.sanitizeParams(params),
+              attempts: attempt + 1,
+              message: error instanceof Error ? error.message : 'Unknown error',
+              responseTime,
+            });
+          } else {
+            logger.error('RPC call failed after all retries', {
+              method,
+              params: this.sanitizeParams(params),
+              attempts: attempt + 1,
+              error: error instanceof Error ? error.message : 'Unknown error',
+              responseTime,
+            });
+          }
+          
           throw this.enhanceError(error, method, params);
         } else {
           const delay = this.calculateRetryDelay(attempt);

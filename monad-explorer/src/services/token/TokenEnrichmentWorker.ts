@@ -136,12 +136,16 @@ export class TokenEnrichmentWorker {
    * Process a single token enrichment message
    */
   private async processTokenEnrichment(message: TokenEnrichmentMessage): Promise<void> {
-    const { tokenAddress, blockNumber } = message;
+    const { tokenAddress, blockNumber, detectedType } = message;
     
-    logger.debug('Processing token enrichment message', {
+    // 🔍 DEBUG: Log what we received
+/*     logger.debug('🔍 DEBUG: Processing token enrichment message', {
       tokenAddress,
       blockNumber,
-    });
+      detectedType,
+      detectedTypeType: typeof detectedType,
+      rawMessage: JSON.stringify(message),
+    }); */
 
     try {
       // Check if token already has complete metadata in Redis
@@ -151,62 +155,49 @@ export class TokenEnrichmentWorker {
         existingToken.symbol && 
         typeof existingToken.decimals === 'number';
 
-      if (hasCompleteMetadata) {
-        logger.debug('Token has complete metadata in Redis, updating PostgreSQL', {
+      // Skip if already processed (even with incomplete metadata)
+      const isAlreadyProcessed = existingToken && (
+        hasCompleteMetadata || 
+        existingToken.processed === true
+      );
+
+      if (isAlreadyProcessed) {
+        logger.debug('Token already processed, skipping', {
           tokenAddress,
-          existingMetadata: {
-            name: existingToken.name,
-            symbol: existingToken.symbol,
-            decimals: existingToken.decimals,
-            // Convert BigInt to string for logging
-            totalSupply: existingToken.totalSupply ? existingToken.totalSupply.toString() : undefined,
-          },
+          hasCompleteMetadata,
+          isProcessed: existingToken.processed
         });
-
-        // Even if Redis has metadata, we need to update PostgreSQL
-        const metadata: TokenMetadata = {
-          name: existingToken.name,
-          symbol: existingToken.symbol,
-          decimals: existingToken.decimals,
-          totalSupply: existingToken.totalSupply,
-          contractExists: true, // If we have metadata, contract exists
-        };
-
-        await this.updatePostgreSQLToken(tokenAddress, metadata);
+        this.processedCount++; // Count skipped tokens as processed
         return;
       }
 
-      // Fetch fresh metadata if not available or incomplete
-      logger.debug('Token needs metadata fetching', {
-        tokenAddress,
-        hasExisting: !!existingToken,
-        existingMetadata: existingToken ? {
-          name: existingToken.name,
-          symbol: existingToken.symbol,
-          decimals: existingToken.decimals,
-          // Convert BigInt to string for logging
-          totalSupply: existingToken.totalSupply ? existingToken.totalSupply.toString() : undefined,
-        } : null,
-      });
-
-      // Try ERC20 first, then ERC721 if it fails
-      let metadata = await this.metadataFetcher.fetchMetadata(tokenAddress, TokenType.ERC20, blockNumber);
+      // Use detected type from event analysis (no cascade)
+      const tokenType = this.parseTokenType(detectedType) || TokenType.ERC20;
       
-      if (!metadata || !metadata.contractExists) {
-        // Try ERC721 if ERC20 failed
-        metadata = await this.metadataFetcher.fetchMetadata(tokenAddress, TokenType.ERC721, blockNumber);
-      }
+      // 🔍 DEBUG: Log the parsing result
+  /*     logger.debug('🔍 DEBUG: Token type parsing', {
+        tokenAddress,
+        inputDetectedType: detectedType,
+        parsedTokenType: tokenType,
+        willFallbackToERC20: !detectedType,
+      }); */
+
+      // Fetch metadata for the specific detected type only
+      const metadata = await this.metadataFetcher.fetchMetadata(tokenAddress, tokenType, blockNumber);
 
       if (!metadata || !metadata.contractExists) {
         logger.warn('Failed to fetch token metadata or contract does not exist', { 
           tokenAddress, 
-          blockNumber 
+          blockNumber,
+          tokenType,
         });
+        this.processedCount++; // Count failed fetches as processed
         return;
       }
 
       logger.debug('Token metadata fetched successfully', {
         tokenAddress,
+        tokenType,
         metadata: {
           name: metadata.name,
           symbol: metadata.symbol,
@@ -217,49 +208,23 @@ export class TokenEnrichmentWorker {
         },
       });
 
-      // Determine token type based on metadata
-      const tokenType = metadata.decimals !== undefined ? TokenType.ERC20 : TokenType.ERC721;
-
       // Save to both Redis and PostgreSQL
       await this.saveEnrichedToken(tokenAddress, tokenType, metadata);
+      
+      // Count successful processing
+      this.processedCount++;
 
     } catch (error) {
+      this.errorCount++; // Count errors
       logger.error('Error processing token enrichment', {
         tokenAddress,
         blockNumber,
+        detectedType,
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
       throw error;
     }
-  }
-
-  /**
-   * Fetch metadata with timeout protection
-   */
-  private async fetchMetadataWithTimeout(
-    tokenAddress: string,
-    tokenType: TokenType,
-    blockNumber?: number
-  ): Promise<TokenMetadata> {
-    return new Promise(async (resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`Metadata fetch timeout after ${this.config.processingTimeout}ms`));
-      }, this.config.processingTimeout);
-
-      try {
-        const metadata = await this.metadataFetcher.fetchMetadata(
-          tokenAddress,
-          tokenType,
-          blockNumber
-        );
-        clearTimeout(timeout);
-        resolve(metadata);
-      } catch (error) {
-        clearTimeout(timeout);
-        reject(error);
-      }
-    });
   }
 
   /**
@@ -278,6 +243,7 @@ export class TokenEnrichmentWorker {
       symbol: metadata.symbol || undefined,
       decimals: metadata.decimals ?? undefined,
       totalSupply: metadata.totalSupply || undefined,
+      processed: metadata.processed || false,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -418,14 +384,6 @@ export class TokenEnrichmentWorker {
       await queryRunner.release();
     }
   }
-
-  /**
-   * Check if token already has metadata
-   */
-  private hasMetadata(token: TokenInfo): boolean {
-    return Boolean(token.name || token.symbol || token.decimals !== null);
-  }
-
   /**
    * Parse token type from string
    */

@@ -99,6 +99,18 @@ export class TokenMetadataFetcher implements ITokenMetadataFetcher {
       metadata.totalSupply = totalSupply.value;
     }
 
+    // Mark as processed regardless of what metadata was found
+    metadata.processed = true;
+    
+    logger.debug('ERC20 metadata fetched', {
+      address,
+      hasName: !!metadata.name,
+      hasSymbol: !!metadata.symbol,
+      hasDecimals: typeof metadata.decimals === 'number',
+      hasTotalSupply: !!metadata.totalSupply,
+      processed: true
+    });
+
     return metadata;
   }
 
@@ -125,6 +137,16 @@ export class TokenMetadataFetcher implements ITokenMetadataFetcher {
       metadata.symbol = symbol.value;
     }
 
+    // Mark as processed even if name/symbol are missing (optional for ERC721)
+    metadata.processed = true;
+    
+    logger.debug('ERC721 metadata fetched', {
+      address,
+      hasName: !!metadata.name,
+      hasSymbol: !!metadata.symbol,
+      processed: true
+    });
+
     return metadata;
   }
 
@@ -150,6 +172,14 @@ export class TokenMetadataFetcher implements ITokenMetadataFetcher {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
+
+    // Mark as processed even if no standard metadata available
+    metadata.processed = true;
+    
+    logger.debug('ERC1155 metadata fetched', {
+      address,
+      processed: true
+    });
 
     return metadata;
   }

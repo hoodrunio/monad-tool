@@ -6,6 +6,7 @@ export interface TokenMetadata {
   decimals?: number;
   totalSupply?: bigint;
   contractExists: boolean;
+  processed?: boolean;
 }
 
 export interface ITokenMetadataFetcher {

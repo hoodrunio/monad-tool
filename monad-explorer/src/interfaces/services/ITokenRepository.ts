@@ -7,6 +7,7 @@ export interface TokenInfo {
   symbol?: string;
   decimals?: number;
   totalSupply?: bigint;
+  processed?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
