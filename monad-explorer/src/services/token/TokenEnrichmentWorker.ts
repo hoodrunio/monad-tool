@@ -311,7 +311,8 @@ export class TokenEnrichmentWorker {
   }
 
   /**
-   * Update PostgreSQL Token entity with enriched metadata
+   * Update PostgreSQL Token entity with enriched metadata using atomic transaction
+   * SINGLE WRITER PRINCIPLE: Only this worker updates token metadata
    */
   private async updatePostgreSQLToken(address: string, metadata: TokenMetadata): Promise<void> {
     if (!this.dataSource || !this.dataSource.isInitialized) {
@@ -319,98 +320,102 @@ export class TokenEnrichmentWorker {
       return;
     }
 
+    // Use transaction for atomic status + metadata update
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
     try {
-      const tokenRepository = this.dataSource.getRepository(Token);
+      const tokenRepository = queryRunner.manager.getRepository(Token);
       
-      logger.debug('Attempting PostgreSQL token update', {
+      logger.debug('Attempting atomic PostgreSQL token update', {
         address,
         metadata: {
           name: metadata.name,
           symbol: metadata.symbol,
           decimals: metadata.decimals,
-          // Convert BigInt to string for logging
           totalSupply: metadata.totalSupply ? metadata.totalSupply.toString() : undefined,
           contractExists: metadata.contractExists,
         },
       });
 
-      // Find existing token by address (try both cases)
-      const existingToken = await tokenRepository.findOne({
-        where: { address: address.toLowerCase() }
-      });
+      // 🔒 ATOMIC: Find and lock token with PENDING status for update
+      const tokenToUpdate = await queryRunner.query(`
+        SELECT * FROM token 
+        WHERE (address = $1 OR address = $2) 
+        AND enrichment_status = 'PENDING'
+        FOR UPDATE NOWAIT
+      `, [address.toLowerCase(), address]);
 
-      if (!existingToken) {
-        // Try original case if lowercase didn't work
-        const existingTokenOriginal = await tokenRepository.findOne({
-          where: { address: address }
+      if (!tokenToUpdate || tokenToUpdate.length === 0) {
+        logger.debug('Token not found or not in PENDING status, skipping update', { 
+          address,
+          searchedAddresses: [address.toLowerCase(), address],
         });
-
-        if (!existingTokenOriginal) {
-          logger.warn('Token not found in PostgreSQL database, skipping update', { 
-            address,
-            triedAddresses: [address.toLowerCase(), address],
-          });
-          return;
-        }
-      }
-
-      const tokenToUpdate = existingToken || await tokenRepository.findOne({
-        where: { address: address }
-      });
-
-      if (!tokenToUpdate) {
-        logger.warn('Unable to find token in PostgreSQL for update', { address });
+        await queryRunner.rollbackTransaction();
         return;
       }
 
-      // Update with enriched metadata
-      const updateData: Partial<Token> = {};
-      
-      if (metadata.name && metadata.name !== tokenToUpdate.name) {
+      const token = tokenToUpdate[0];
+
+      // 🔒 ATOMIC: Update metadata AND status in single operation
+      const updateData: any = {
+        enrichment_status: metadata.contractExists ? 'ENRICHED' : 'FAILED',
+        enriched_at: new Date(),
+        enrichment_attempts: (token.enrichment_attempts || 0) + 1,
+      };
+
+      // Only update fields that have valid data
+      if (metadata.name) {
         updateData.name = metadata.name;
       }
-      
-      if (metadata.symbol && metadata.symbol !== tokenToUpdate.symbol) {
+      if (metadata.symbol) {
         updateData.symbol = metadata.symbol;
       }
-      
-      if (metadata.decimals !== undefined && metadata.decimals !== tokenToUpdate.decimals) {
+      if (metadata.decimals !== undefined) {
         updateData.decimals = metadata.decimals;
       }
-
-      if (metadata.totalSupply && metadata.totalSupply !== tokenToUpdate.totalSupply) {
-        updateData.totalSupply = metadata.totalSupply;
+      if (metadata.totalSupply) {
+        updateData.total_supply = metadata.totalSupply.toString();
       }
 
-      // Only update if we have changes
-      if (Object.keys(updateData).length === 0) {
-        logger.debug('No changes needed for PostgreSQL token', { address });
-        return;
-      }
+      // Build SET clause dynamically
+      const setClause = Object.keys(updateData)
+        .map((key, index) => `${key} = $${index + 2}`)
+        .join(', ');
+      
+      const values = [token.address, ...Object.values(updateData)];
 
-      // Perform the update
-      await tokenRepository.update(
-        { address: tokenToUpdate.address },
-        updateData
-      );
+      await queryRunner.query(`
+        UPDATE token 
+        SET ${setClause}
+        WHERE address = $1
+      `, values);
 
-      logger.debug('✅ PostgreSQL token updated successfully', {
-        address: tokenToUpdate.address,
+      await queryRunner.commitTransaction();
+
+      logger.debug('✅ PostgreSQL token updated atomically', {
+        address: token.address,
+        status: updateData.enrichment_status,
         updatedFields: Object.keys(updateData),
-        changes: {
-          name: updateData.name,
-          symbol: updateData.symbol,
-          decimals: updateData.decimals,
-          totalSupply: updateData.totalSupply ? updateData.totalSupply.toString() : undefined,
-        },
+        attempts: updateData.enrichment_attempts,
       });
 
     } catch (error) {
-      logger.error('❌ Failed to update PostgreSQL token', {
+      await queryRunner.rollbackTransaction();
+      
+      if (error instanceof Error && error.message.includes('could not obtain lock')) {
+        logger.debug('Token is being processed by another worker, skipping', { address });
+        return;
+      }
+
+      logger.error('❌ Failed to update PostgreSQL token atomically', {
         address,
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;
+    } finally {
+      await queryRunner.release();
     }
   }
 

@@ -35,8 +35,9 @@ export class TokenTransfer {
     @BigIntColumn_({nullable: false})
     value!: bigint
 
-    @BigIntColumn_({nullable: true})
-    tokenId!: bigint | undefined | null
+    @Index_()
+    @StringColumn_({nullable: false, name: "token_id"})
+    tokenId!: string
 
     @Index_()
     @DateTimeColumn_({nullable: false})

@@ -1,5 +1,6 @@
 import { ProcessingResult } from '../processing/BlockProcessor';
 import { logger } from '../utils/logger';
+import { In } from 'typeorm';
 
 /**
  * Entity Persister
@@ -30,8 +31,8 @@ export class EntityPersister {
       await this.persistBlocks(store, result);
       await this.persistTransactions(store, result);
       await this.persistLogs(store, result);
-      await this.persistTokens(store, result);
-      await this.persistTokenTransfers(store, result);
+      const successfulTokenIds = await this.persistTokens(store, result);
+      await this.persistTokenTransfers(store, result, successfulTokenIds);
 
       const duration = Date.now() - startTime;
       logger.info('Entity persistence completed successfully', {
@@ -169,44 +170,116 @@ export class EntityPersister {
 
   /**
    * Persist token entities (must be before token transfers due to foreign key constraints)
+   * SMART PERSISTENCE: Check existing tokens first, insert only new ones
    */
-  private async persistTokens(store: any, result: ProcessingResult): Promise<void> {
+  private async persistTokens(store: any, result: ProcessingResult): Promise<Set<string>> {
+    const successfulTokenIds = new Set<string>();
+    
     if (result.tokens.length === 0) {
-      return;
+      return successfulTokenIds;
     }
 
     try {
-      await store.upsert(result.tokens);
+      // ✅ STEP 1: Check which tokens already exist in database
+      const tokenAddresses = result.tokens.map(t => t.address.toLowerCase());
       
-      logger.debug('Tokens persisted successfully', { 
-        count: result.tokens.length 
+      // Use Subsquid store to find existing tokens
+      const existingTokens = await store.find('Token', {
+        where: { 
+          address: In(tokenAddresses)
+        }
       });
+      
+      const existingAddresses = new Set(existingTokens.map((t: any) => t.address.toLowerCase()));
+      
+      logger.debug('Database token existence check completed', {
+        requested: result.tokens.length,
+        existingInDb: existingAddresses.size,
+        newToInsert: result.tokens.length - existingAddresses.size,
+        existingAddresses: Array.from(existingAddresses)
+      });
+
+      // ✅ STEP 2: Mark existing tokens as successful (for FK references)
+      for (const token of result.tokens) {
+        if (existingAddresses.has(token.address.toLowerCase())) {
+          successfulTokenIds.add(token.id);
+          logger.debug('Token already exists in database', {
+            tokenId: token.id,
+            address: token.address
+          });
+        }
+      }
+
+      // ✅ STEP 3: Insert only NEW tokens (those not in database)
+      const newTokens = result.tokens.filter(t => !existingAddresses.has(t.address.toLowerCase()));
+      
+      if (newTokens.length > 0) {
+        logger.debug('Inserting new tokens', {
+          count: newTokens.length,
+          addresses: newTokens.map(t => t.address)
+        });
+        
+        await store.insert(newTokens);
+        
+        for (const token of newTokens) {
+          successfulTokenIds.add(token.id);
+        }
+        
+        logger.debug('✅ New tokens inserted successfully', { 
+          count: newTokens.length
+        });
+      }
+
+      logger.debug('✅ Token persistence completed successfully', { 
+        total: result.tokens.length,
+        existingInDb: existingAddresses.size,
+        inserted: newTokens.length,
+        successful: successfulTokenIds.size
+      });
+      
+      return successfulTokenIds;
+      
     } catch (error) {
-      logger.error('Failed to persist tokens', {
+      logger.error('❌ Failed to persist tokens', {
         count: result.tokens.length,
         error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined
       });
       throw error;
     }
   }
 
   /**
-   * Persist token transfer entities
+   * Persist token transfer entities (only for tokens that exist in database)
    */
-  private async persistTokenTransfers(store: any, result: ProcessingResult): Promise<void> {
+  private async persistTokenTransfers(store: any, result: ProcessingResult, successfulTokenIds: Set<string>): Promise<void> {
     if (result.tokenTransfers.length === 0) {
       return;
     }
 
+    // ✅ Filter token transfers to only include those with valid token references
+    const validTokenTransfers = result.tokenTransfers.filter(transfer => 
+      successfulTokenIds.has(transfer.tokenId)
+    );
+
+    if (validTokenTransfers.length === 0) {
+      logger.debug('No valid token transfers to persist (all tokens failed)', {
+        totalTransfers: result.tokenTransfers.length
+      });
+      return;
+    }
+
     try {
-      await store.insert(result.tokenTransfers);
+      await store.insert(validTokenTransfers);
       
-      logger.debug('Token transfers persisted successfully', { 
-        count: result.tokenTransfers.length 
+      logger.debug('✅ Token transfers persisted successfully', { 
+        total: result.tokenTransfers.length,
+        persisted: validTokenTransfers.length,
+        skipped: result.tokenTransfers.length - validTokenTransfers.length
       });
     } catch (error) {
-      logger.error('Failed to persist token transfers', {
-        count: result.tokenTransfers.length,
+      logger.error('❌ Failed to persist token transfers', {
+        count: validTokenTransfers.length,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;

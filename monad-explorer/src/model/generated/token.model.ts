@@ -1,6 +1,13 @@
 import {Entity as Entity_, Column as Column_, PrimaryColumn as PrimaryColumn_, StringColumn as StringColumn_, Index as Index_, IntColumn as IntColumn_, BigIntColumn as BigIntColumn_, DateTimeColumn as DateTimeColumn_} from "@subsquid/typeorm-store"
 import {TokenType} from "./_tokenType"
 
+export enum TokenEnrichmentStatus {
+    PENDING = "PENDING",
+    ENRICHING = "ENRICHING", 
+    ENRICHED = "ENRICHED",
+    FAILED = "FAILED"
+}
+
 @Entity_()
 export class Token {
     constructor(props?: Partial<Token>) {
@@ -33,4 +40,14 @@ export class Token {
 
     @DateTimeColumn_({nullable: false, name: "created_at"})
     createdAt!: Date
+
+    @Index_()
+    @Column_("varchar", {length: 10, nullable: false, default: "PENDING", name: "enrichment_status"})
+    enrichmentStatus!: TokenEnrichmentStatus
+
+    @DateTimeColumn_({nullable: true, name: "enriched_at"})
+    enrichedAt!: Date | undefined | null
+
+    @IntColumn_({nullable: true, default: 0, name: "enrichment_attempts"})
+    enrichmentAttempts!: number | undefined | null
 }

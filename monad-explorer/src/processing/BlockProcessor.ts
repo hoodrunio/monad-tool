@@ -1,7 +1,7 @@
 import { serviceContainer } from '../services/core/ServiceContainer';
 import { ITokenDetectionService } from '../interfaces/services/ITokenDetectionService';
 import { logger } from '../utils/logger';
-import { Account, Block, Transaction, Log, MethodSignature, Token, TokenTransfer, TokenType } from '../model/generated';
+import { Account, Block, Transaction, Log, MethodSignature, Token, TokenTransfer, TokenType, TokenEnrichmentStatus } from '../model/generated';
 
 export interface ProcessingResult {
   blocks: Block[];
@@ -334,7 +334,7 @@ export class BlockProcessor {
     });
 
     if (detection.detectedType) {
-      // Create proper TokenTransfer entity
+      // Create proper TokenTransfer entity with token_id reference (not object reference)
       const tokenTransfer = new TokenTransfer({
         id: `${log.id}-transfer`,
         transaction: log.transaction,
@@ -342,14 +342,14 @@ export class BlockProcessor {
         fromAddress: log.topics[1] ? `0x${log.topics[1].slice(26)}` : '0x0000000000000000000000000000000000000000',
         toAddress: log.topics[2] ? `0x${log.topics[2].slice(26)}` : '0x0000000000000000000000000000000000000000',
         value: 0n, // Will be parsed from log data
-        tokenId: null,
+        tokenId: log.address.toLowerCase(), // ✅ Use token address as foreign key
         timestamp: log.transaction.timestamp,
-        token: undefined, // Will be set if token entity exists
+        token: undefined, // ✅ No direct object reference to avoid FK issues
       });
 
       result.tokenTransfers.push(tokenTransfer);
 
-      // Create or update Token entity
+      // ✅ Create Token entity ONLY if not already in current batch (avoid duplicates)
       const existingToken = result.tokens.find(t => t.address.toLowerCase() === log.address.toLowerCase());
       if (!existingToken) {
         const token = new Token({
@@ -361,10 +361,13 @@ export class BlockProcessor {
           totalSupply: null,
           tokenType: detection.detectedType as TokenType,
           createdAt: log.transaction.timestamp,
+          enrichmentStatus: 'PENDING' as TokenEnrichmentStatus, // Will be enriched by worker
+          enrichedAt: null,
+          enrichmentAttempts: 0,
         });
 
         result.tokens.push(token);
-        tokenTransfer.token = token;
+        // ✅ NO OBJECT REFERENCE: Let database handle FK relationship via tokenId
 
         // Check if async processing is enabled and queue the token for enrichment
         const config = await this.container.resolve<any>('appConfig');
@@ -379,9 +382,8 @@ export class BlockProcessor {
             // Don't throw - continue processing even if queueing fails
           }
         }
-      } else {
-        tokenTransfer.token = existingToken;
       }
+      // ✅ NO OBJECT REFERENCE: TokenTransfer.tokenId already set to token address
     } else {
       logger.debug('Log is not a token transfer event', {
         address: log.address,
