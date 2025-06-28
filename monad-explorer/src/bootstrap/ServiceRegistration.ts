@@ -4,7 +4,7 @@ import { RpcClient } from '../services/blockchain/RpcClient';
 import { TokenDetectionService } from '../services/token/TokenDetectionService';
 import { EventTokenDetector } from '../services/token/EventTokenDetector';
 import { RedisTokenRepository } from '../services/token/RedisTokenRepository';
-import { TokenMetadataFetcher } from '../services/token/TokenMetadataFetcher';
+import { MulticallTokenMetadataFetcher } from '../services/token/MulticallTokenMetadataFetcher';
 import { RedisCache } from '../services/cache/RedisCache';
 import { RabbitMQService } from '../services/queue/RabbitMQService';
 import { logger } from '../utils/logger';
@@ -126,10 +126,10 @@ export class ServiceRegistration {
       return new RedisTokenRepository(cacheService);
     });
 
-    // Register Token Metadata Fetcher
+    // Register Token Metadata Fetcher (with Multicall optimization)
     serviceContainer.registerFactory<ITokenMetadataFetcher>('tokenMetadataFetcher', async () => {
       const rpcClient = await serviceContainer.resolveInternal<IRpcClient>('rpcClient');
-      return new TokenMetadataFetcher(rpcClient);
+      return new MulticallTokenMetadataFetcher(rpcClient);
     });
 
     // Register Token Detection Service (with all dependencies)
