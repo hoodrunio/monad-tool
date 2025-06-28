@@ -1,270 +1,20 @@
 export const ABI_JSON = [
     {
-        "type": "function",
-        "name": "supportsInterface",
-        "constant": true,
-        "stateMutability": "view",
+        "type": "constructor",
+        "stateMutability": "undefined",
         "payable": false,
         "inputs": [
-            {
-                "type": "bytes4",
-                "name": "interfaceId"
-            }
-        ],
-        "outputs": [
-            {
-                "type": "bool",
-                "name": ""
-            }
-        ]
-    },
-    {
-        "type": "function",
-        "name": "name",
-        "constant": true,
-        "stateMutability": "view",
-        "payable": false,
-        "inputs": [],
-        "outputs": [
             {
                 "type": "string",
-                "name": ""
-            }
-        ]
-    },
-    {
-        "type": "function",
-        "name": "symbol",
-        "constant": true,
-        "stateMutability": "view",
-        "payable": false,
-        "inputs": [],
-        "outputs": [
+                "name": "name"
+            },
             {
                 "type": "string",
-                "name": ""
-            }
-        ]
-    },
-    {
-        "type": "function",
-        "name": "tokenURI",
-        "constant": true,
-        "stateMutability": "view",
-        "payable": false,
-        "inputs": [
-            {
-                "type": "uint256",
-                "name": "tokenId"
-            }
-        ],
-        "outputs": [
+                "name": "symbol"
+            },
             {
                 "type": "string",
-                "name": ""
-            }
-        ]
-    },
-    {
-        "type": "function",
-        "name": "balanceOf",
-        "constant": true,
-        "stateMutability": "view",
-        "payable": false,
-        "inputs": [
-            {
-                "type": "address",
-                "name": "owner"
-            }
-        ],
-        "outputs": [
-            {
-                "type": "uint256",
-                "name": "balance"
-            }
-        ]
-    },
-    {
-        "type": "function",
-        "name": "ownerOf",
-        "constant": true,
-        "stateMutability": "view",
-        "payable": false,
-        "inputs": [
-            {
-                "type": "uint256",
-                "name": "tokenId"
-            }
-        ],
-        "outputs": [
-            {
-                "type": "address",
-                "name": "owner"
-            }
-        ]
-    },
-    {
-        "type": "function",
-        "name": "safeTransferFrom",
-        "constant": false,
-        "payable": false,
-        "inputs": [
-            {
-                "type": "address",
-                "name": "from"
-            },
-            {
-                "type": "address",
-                "name": "to"
-            },
-            {
-                "type": "uint256",
-                "name": "tokenId"
-            }
-        ],
-        "outputs": []
-    },
-    {
-        "type": "function",
-        "name": "safeTransferFrom",
-        "constant": false,
-        "payable": false,
-        "inputs": [
-            {
-                "type": "address",
-                "name": "from"
-            },
-            {
-                "type": "address",
-                "name": "to"
-            },
-            {
-                "type": "uint256",
-                "name": "tokenId"
-            },
-            {
-                "type": "bytes",
-                "name": "data"
-            }
-        ],
-        "outputs": []
-    },
-    {
-        "type": "function",
-        "name": "transferFrom",
-        "constant": false,
-        "payable": false,
-        "inputs": [
-            {
-                "type": "address",
-                "name": "from"
-            },
-            {
-                "type": "address",
-                "name": "to"
-            },
-            {
-                "type": "uint256",
-                "name": "tokenId"
-            }
-        ],
-        "outputs": []
-    },
-    {
-        "type": "function",
-        "name": "approve",
-        "constant": false,
-        "payable": false,
-        "inputs": [
-            {
-                "type": "address",
-                "name": "to"
-            },
-            {
-                "type": "uint256",
-                "name": "tokenId"
-            }
-        ],
-        "outputs": []
-    },
-    {
-        "type": "function",
-        "name": "getApproved",
-        "constant": true,
-        "stateMutability": "view",
-        "payable": false,
-        "inputs": [
-            {
-                "type": "uint256",
-                "name": "tokenId"
-            }
-        ],
-        "outputs": [
-            {
-                "type": "address",
-                "name": "operator"
-            }
-        ]
-    },
-    {
-        "type": "function",
-        "name": "setApprovalForAll",
-        "constant": false,
-        "payable": false,
-        "inputs": [
-            {
-                "type": "address",
-                "name": "operator"
-            },
-            {
-                "type": "bool",
-                "name": "approved"
-            }
-        ],
-        "outputs": []
-    },
-    {
-        "type": "function",
-        "name": "isApprovedForAll",
-        "constant": true,
-        "stateMutability": "view",
-        "payable": false,
-        "inputs": [
-            {
-                "type": "address",
-                "name": "owner"
-            },
-            {
-                "type": "address",
-                "name": "operator"
-            }
-        ],
-        "outputs": [
-            {
-                "type": "bool",
-                "name": ""
-            }
-        ]
-    },
-    {
-        "type": "event",
-        "anonymous": false,
-        "name": "Transfer",
-        "inputs": [
-            {
-                "type": "address",
-                "name": "from",
-                "indexed": true
-            },
-            {
-                "type": "address",
-                "name": "to",
-                "indexed": true
-            },
-            {
-                "type": "uint256",
-                "name": "tokenId",
-                "indexed": true
+                "name": "baseURI"
             }
         ]
     },
@@ -311,5 +61,344 @@ export const ABI_JSON = [
                 "indexed": false
             }
         ]
+    },
+    {
+        "type": "event",
+        "anonymous": false,
+        "name": "Transfer",
+        "inputs": [
+            {
+                "type": "address",
+                "name": "from",
+                "indexed": true
+            },
+            {
+                "type": "address",
+                "name": "to",
+                "indexed": true
+            },
+            {
+                "type": "uint256",
+                "name": "tokenId",
+                "indexed": true
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "approve",
+        "constant": false,
+        "payable": false,
+        "inputs": [
+            {
+                "type": "address",
+                "name": "to"
+            },
+            {
+                "type": "uint256",
+                "name": "tokenId"
+            }
+        ],
+        "outputs": []
+    },
+    {
+        "type": "function",
+        "name": "balanceOf",
+        "constant": true,
+        "stateMutability": "view",
+        "payable": false,
+        "inputs": [
+            {
+                "type": "address",
+                "name": "owner"
+            }
+        ],
+        "outputs": [
+            {
+                "type": "uint256",
+                "name": ""
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "baseURI",
+        "constant": true,
+        "stateMutability": "view",
+        "payable": false,
+        "inputs": [],
+        "outputs": [
+            {
+                "type": "string",
+                "name": ""
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "getApproved",
+        "constant": true,
+        "stateMutability": "view",
+        "payable": false,
+        "inputs": [
+            {
+                "type": "uint256",
+                "name": "tokenId"
+            }
+        ],
+        "outputs": [
+            {
+                "type": "address",
+                "name": ""
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "isApprovedForAll",
+        "constant": true,
+        "stateMutability": "view",
+        "payable": false,
+        "inputs": [
+            {
+                "type": "address",
+                "name": "owner"
+            },
+            {
+                "type": "address",
+                "name": "operator"
+            }
+        ],
+        "outputs": [
+            {
+                "type": "bool",
+                "name": ""
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "name",
+        "constant": true,
+        "stateMutability": "view",
+        "payable": false,
+        "inputs": [],
+        "outputs": [
+            {
+                "type": "string",
+                "name": ""
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "ownerOf",
+        "constant": true,
+        "stateMutability": "view",
+        "payable": false,
+        "inputs": [
+            {
+                "type": "uint256",
+                "name": "tokenId"
+            }
+        ],
+        "outputs": [
+            {
+                "type": "address",
+                "name": ""
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "safeTransferFrom",
+        "constant": false,
+        "payable": false,
+        "inputs": [
+            {
+                "type": "address",
+                "name": "from"
+            },
+            {
+                "type": "address",
+                "name": "to"
+            },
+            {
+                "type": "uint256",
+                "name": "tokenId"
+            }
+        ],
+        "outputs": []
+    },
+    {
+        "type": "function",
+        "name": "safeTransferFrom",
+        "constant": false,
+        "payable": false,
+        "inputs": [
+            {
+                "type": "address",
+                "name": "from"
+            },
+            {
+                "type": "address",
+                "name": "to"
+            },
+            {
+                "type": "uint256",
+                "name": "tokenId"
+            },
+            {
+                "type": "bytes",
+                "name": "_data"
+            }
+        ],
+        "outputs": []
+    },
+    {
+        "type": "function",
+        "name": "setApprovalForAll",
+        "constant": false,
+        "payable": false,
+        "inputs": [
+            {
+                "type": "address",
+                "name": "operator"
+            },
+            {
+                "type": "bool",
+                "name": "approved"
+            }
+        ],
+        "outputs": []
+    },
+    {
+        "type": "function",
+        "name": "supportsInterface",
+        "constant": true,
+        "stateMutability": "view",
+        "payable": false,
+        "inputs": [
+            {
+                "type": "bytes4",
+                "name": "interfaceId"
+            }
+        ],
+        "outputs": [
+            {
+                "type": "bool",
+                "name": ""
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "symbol",
+        "constant": true,
+        "stateMutability": "view",
+        "payable": false,
+        "inputs": [],
+        "outputs": [
+            {
+                "type": "string",
+                "name": ""
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "tokenByIndex",
+        "constant": true,
+        "stateMutability": "view",
+        "payable": false,
+        "inputs": [
+            {
+                "type": "uint256",
+                "name": "index"
+            }
+        ],
+        "outputs": [
+            {
+                "type": "uint256",
+                "name": ""
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "tokenOfOwnerByIndex",
+        "constant": true,
+        "stateMutability": "view",
+        "payable": false,
+        "inputs": [
+            {
+                "type": "address",
+                "name": "owner"
+            },
+            {
+                "type": "uint256",
+                "name": "index"
+            }
+        ],
+        "outputs": [
+            {
+                "type": "uint256",
+                "name": ""
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "tokenURI",
+        "constant": true,
+        "stateMutability": "view",
+        "payable": false,
+        "inputs": [
+            {
+                "type": "uint256",
+                "name": "tokenId"
+            }
+        ],
+        "outputs": [
+            {
+                "type": "string",
+                "name": ""
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "totalSupply",
+        "constant": true,
+        "stateMutability": "view",
+        "payable": false,
+        "inputs": [],
+        "outputs": [
+            {
+                "type": "uint256",
+                "name": ""
+            }
+        ]
+    },
+    {
+        "type": "function",
+        "name": "transferFrom",
+        "constant": false,
+        "payable": false,
+        "inputs": [
+            {
+                "type": "address",
+                "name": "from"
+            },
+            {
+                "type": "address",
+                "name": "to"
+            },
+            {
+                "type": "uint256",
+                "name": "tokenId"
+            }
+        ],
+        "outputs": []
     }
 ]

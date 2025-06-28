@@ -1,8 +1,9 @@
 import { IQueueService, TokenEnrichmentMessage } from '../../interfaces/services/IQueueService';
 import { ITokenMetadataFetcher, TokenMetadata } from '../../interfaces/services/ITokenMetadataFetcher';
 import { ITokenRepository, TokenInfo } from '../../interfaces/services/ITokenRepository';
-import { TokenType } from '../../model';
+import { TokenType, Token } from '../../model';
 import { logger } from '../../utils/logger';
+import { DataSource } from 'typeorm';
 
 export interface TokenEnrichmentWorkerConfig {
   concurrency: number;
@@ -15,6 +16,7 @@ export interface TokenEnrichmentWorkerConfig {
 /**
  * Background worker for processing token enrichment messages
  * Consumes from RabbitMQ queue and enriches tokens with metadata
+ * Updates both Redis cache and PostgreSQL database
  */
 export class TokenEnrichmentWorker {
   private isRunning = false;
@@ -34,6 +36,7 @@ export class TokenEnrichmentWorker {
     private readonly queueService: IQueueService,
     private readonly metadataFetcher: ITokenMetadataFetcher,
     private readonly tokenRepository: ITokenRepository,
+    private readonly dataSource: DataSource, // Add TypeORM connection
     config?: Partial<TokenEnrichmentWorkerConfig>
   ) {
     if (config) {
@@ -66,7 +69,7 @@ export class TokenEnrichmentWorker {
 
     try {
       await this.queueService.consumeTokenEnrichment(
-        this.processEnrichmentMessage.bind(this),
+        this.processTokenEnrichment.bind(this),
         {
           concurrency: this.config.concurrency,
           prefetch: this.config.batchSize,
@@ -132,78 +135,101 @@ export class TokenEnrichmentWorker {
   /**
    * Process a single token enrichment message
    */
-  private async processEnrichmentMessage(message: TokenEnrichmentMessage): Promise<void> {
-    const startTime = Date.now();
+  private async processTokenEnrichment(message: TokenEnrichmentMessage): Promise<void> {
+    const { tokenAddress, blockNumber } = message;
     
     logger.debug('Processing token enrichment message', {
-      tokenAddress: message.tokenAddress,
-      blockNumber: message.blockNumber,
+      tokenAddress,
+      blockNumber,
     });
 
     try {
-      // Check if token already exists with metadata
-      const existingToken = await this.tokenRepository.get(message.tokenAddress);
-      if (existingToken && this.hasMetadata(existingToken)) {
-        logger.debug('Token already enriched, skipping', {
-          tokenAddress: message.tokenAddress,
+      // Check if token already has complete metadata in Redis
+      const existingToken = await this.tokenRepository.get(tokenAddress);
+      const hasCompleteMetadata = existingToken && 
+        existingToken.name && 
+        existingToken.symbol && 
+        typeof existingToken.decimals === 'number';
+
+      if (hasCompleteMetadata) {
+        logger.debug('Token has complete metadata in Redis, updating PostgreSQL', {
+          tokenAddress,
+          existingMetadata: {
+            name: existingToken.name,
+            symbol: existingToken.symbol,
+            decimals: existingToken.decimals,
+            // Convert BigInt to string for logging
+            totalSupply: existingToken.totalSupply ? existingToken.totalSupply.toString() : undefined,
+          },
         });
-        this.processedCount++;
+
+        // Even if Redis has metadata, we need to update PostgreSQL
+        const metadata: TokenMetadata = {
+          name: existingToken.name,
+          symbol: existingToken.symbol,
+          decimals: existingToken.decimals,
+          totalSupply: existingToken.totalSupply,
+          contractExists: true, // If we have metadata, contract exists
+        };
+
+        await this.updatePostgreSQLToken(tokenAddress, metadata);
         return;
       }
 
-      // Determine token type from message or detect it
-      const tokenType = this.parseTokenType(message.detectedType);
-      if (!tokenType) {
-        logger.warn('Invalid token type in message', {
-          tokenAddress: message.tokenAddress,
-          detectedType: message.detectedType,
-        });
-        this.errorCount++;
-        return;
-      }
-
-      // Fetch metadata from blockchain
-      const metadata = await this.fetchMetadataWithTimeout(
-        message.tokenAddress,
-        tokenType,
-        message.blockNumber
-      );
-
-      if (!metadata.contractExists) {
-        logger.debug('Contract does not exist, skipping enrichment', {
-          tokenAddress: message.tokenAddress,
-          blockNumber: message.blockNumber,
-        });
-        this.processedCount++;
-        return;
-      }
-
-      // Save enriched token to repository
-      await this.saveEnrichedToken(message.tokenAddress, tokenType, metadata);
-
-      const duration = Date.now() - startTime;
-      this.processedCount++;
-
-      logger.debug('Token enrichment completed', {
-        tokenAddress: message.tokenAddress,
-        tokenType,
-        name: metadata.name,
-        symbol: metadata.symbol,
-        duration: `${duration}ms`,
+      // Fetch fresh metadata if not available or incomplete
+      logger.debug('Token needs metadata fetching', {
+        tokenAddress,
+        hasExisting: !!existingToken,
+        existingMetadata: existingToken ? {
+          name: existingToken.name,
+          symbol: existingToken.symbol,
+          decimals: existingToken.decimals,
+          // Convert BigInt to string for logging
+          totalSupply: existingToken.totalSupply ? existingToken.totalSupply.toString() : undefined,
+        } : null,
       });
+
+      // Try ERC20 first, then ERC721 if it fails
+      let metadata = await this.metadataFetcher.fetchMetadata(tokenAddress, TokenType.ERC20, blockNumber);
+      
+      if (!metadata || !metadata.contractExists) {
+        // Try ERC721 if ERC20 failed
+        metadata = await this.metadataFetcher.fetchMetadata(tokenAddress, TokenType.ERC721, blockNumber);
+      }
+
+      if (!metadata || !metadata.contractExists) {
+        logger.warn('Failed to fetch token metadata or contract does not exist', { 
+          tokenAddress, 
+          blockNumber 
+        });
+        return;
+      }
+
+      logger.debug('Token metadata fetched successfully', {
+        tokenAddress,
+        metadata: {
+          name: metadata.name,
+          symbol: metadata.symbol,
+          decimals: metadata.decimals,
+          // Convert BigInt to string for logging
+          totalSupply: metadata.totalSupply ? metadata.totalSupply.toString() : undefined,
+          contractExists: metadata.contractExists,
+        },
+      });
+
+      // Determine token type based on metadata
+      const tokenType = metadata.decimals !== undefined ? TokenType.ERC20 : TokenType.ERC721;
+
+      // Save to both Redis and PostgreSQL
+      await this.saveEnrichedToken(tokenAddress, tokenType, metadata);
 
     } catch (error) {
-      this.errorCount++;
-      const duration = Date.now() - startTime;
-      
-      logger.error('Token enrichment failed', {
-        tokenAddress: message.tokenAddress,
-        blockNumber: message.blockNumber,
-        duration: `${duration}ms`,
-        error: error instanceof Error ? error.message : 'Unknown error',
+      logger.error('Error processing token enrichment', {
+        tokenAddress,
+        blockNumber,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
       });
-
-      // Re-throw to trigger retry mechanism in queue
       throw error;
     }
   }
@@ -237,13 +263,14 @@ export class TokenEnrichmentWorker {
   }
 
   /**
-   * Save enriched token to repository
+   * Save enriched token to both Redis cache and PostgreSQL database
    */
   private async saveEnrichedToken(
     address: string,
     tokenType: TokenType,
     metadata: TokenMetadata
   ): Promise<void> {
+    // Prepare token info for Redis cache
     const tokenInfo: TokenInfo = {
       address,
       type: tokenType,
@@ -255,14 +282,136 @@ export class TokenEnrichmentWorker {
       updatedAt: new Date(),
     };
 
-    await this.tokenRepository.save(tokenInfo);
+    try {
+      // 1. Save to Redis cache for fast access
+      await this.tokenRepository.save(tokenInfo);
 
-    logger.debug('Enriched token saved to repository', {
-      address,
-      type: tokenType,
-      name: metadata.name,
-      symbol: metadata.symbol,
-    });
+      // 2. Update PostgreSQL database for GraphQL queries  
+      await this.updatePostgreSQLToken(address, metadata);
+
+      logger.debug('✅ Token enrichment completed successfully', {
+        address,
+        type: tokenType,
+        metadata: {
+          name: metadata.name,
+          symbol: metadata.symbol,
+          decimals: metadata.decimals,
+          // Convert BigInt to string for logging
+          totalSupply: metadata.totalSupply ? metadata.totalSupply.toString() : undefined,
+        },
+      });
+
+    } catch (error) {
+      logger.error('Failed to save enriched token', {
+        address,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Update PostgreSQL Token entity with enriched metadata
+   */
+  private async updatePostgreSQLToken(address: string, metadata: TokenMetadata): Promise<void> {
+    if (!this.dataSource || !this.dataSource.isInitialized) {
+      logger.warn('PostgreSQL DataSource not initialized, skipping update', { address });
+      return;
+    }
+
+    try {
+      const tokenRepository = this.dataSource.getRepository(Token);
+      
+      logger.debug('Attempting PostgreSQL token update', {
+        address,
+        metadata: {
+          name: metadata.name,
+          symbol: metadata.symbol,
+          decimals: metadata.decimals,
+          // Convert BigInt to string for logging
+          totalSupply: metadata.totalSupply ? metadata.totalSupply.toString() : undefined,
+          contractExists: metadata.contractExists,
+        },
+      });
+
+      // Find existing token by address (try both cases)
+      const existingToken = await tokenRepository.findOne({
+        where: { address: address.toLowerCase() }
+      });
+
+      if (!existingToken) {
+        // Try original case if lowercase didn't work
+        const existingTokenOriginal = await tokenRepository.findOne({
+          where: { address: address }
+        });
+
+        if (!existingTokenOriginal) {
+          logger.warn('Token not found in PostgreSQL database, skipping update', { 
+            address,
+            triedAddresses: [address.toLowerCase(), address],
+          });
+          return;
+        }
+      }
+
+      const tokenToUpdate = existingToken || await tokenRepository.findOne({
+        where: { address: address }
+      });
+
+      if (!tokenToUpdate) {
+        logger.warn('Unable to find token in PostgreSQL for update', { address });
+        return;
+      }
+
+      // Update with enriched metadata
+      const updateData: Partial<Token> = {};
+      
+      if (metadata.name && metadata.name !== tokenToUpdate.name) {
+        updateData.name = metadata.name;
+      }
+      
+      if (metadata.symbol && metadata.symbol !== tokenToUpdate.symbol) {
+        updateData.symbol = metadata.symbol;
+      }
+      
+      if (metadata.decimals !== undefined && metadata.decimals !== tokenToUpdate.decimals) {
+        updateData.decimals = metadata.decimals;
+      }
+
+      if (metadata.totalSupply && metadata.totalSupply !== tokenToUpdate.totalSupply) {
+        updateData.totalSupply = metadata.totalSupply;
+      }
+
+      // Only update if we have changes
+      if (Object.keys(updateData).length === 0) {
+        logger.debug('No changes needed for PostgreSQL token', { address });
+        return;
+      }
+
+      // Perform the update
+      await tokenRepository.update(
+        { address: tokenToUpdate.address },
+        updateData
+      );
+
+      logger.debug('✅ PostgreSQL token updated successfully', {
+        address: tokenToUpdate.address,
+        updatedFields: Object.keys(updateData),
+        changes: {
+          name: updateData.name,
+          symbol: updateData.symbol,
+          decimals: updateData.decimals,
+          totalSupply: updateData.totalSupply ? updateData.totalSupply.toString() : undefined,
+        },
+      });
+
+    } catch (error) {
+      logger.error('❌ Failed to update PostgreSQL token', {
+        address,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 
   /**
