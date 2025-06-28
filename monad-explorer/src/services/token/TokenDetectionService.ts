@@ -93,6 +93,7 @@ export class TokenDetectionService implements ITokenDetectionService {
 
   /**
    * Detect token type from transfer event (main detection method)
+   * Only performs event-based detection - NO metadata fetching
    */
   public async detectFromTransferEvent(
     tokenAddress: string, 
@@ -108,30 +109,26 @@ export class TokenDetectionService implements ITokenDetectionService {
         return this.createEmptyResult();
       }
 
-      // 2. Fetch metadata only if needed (minimal RPC calls)
-      const metadata = await this.metadataFetcher.fetchMetadata(
-        tokenAddress, 
-        eventDetection.tokenType, 
-        blockNumber
-      );
+      // 2. Just check if contract exists (minimal RPC call)
+      const contractExists = await this.metadataFetcher.contractExists(tokenAddress, blockNumber);
 
-      if (!metadata.contractExists) {
+      if (!contractExists) {
         logger.debug('Contract does not exist', { tokenAddress });
         return this.createEmptyResult();
       }
 
-      // 3. Create result
-      const result = this.createResultFromDetection(eventDetection, metadata);
+      // 3. Create result from detection only (no metadata needed)
+      const result = this.createResultFromDetection(eventDetection);
 
-      // 4. Save to database for future use
-      await this.saveTokenToDatabase(tokenAddress, eventDetection.tokenType, metadata);
+      // 4. Save basic token info to database WITHOUT metadata (for enrichment queue)
+      await this.saveBasicTokenToDatabase(tokenAddress, eventDetection.tokenType, blockNumber);
 
- /*      logger.info('Token detected via event analysis', {
+      logger.debug('Token detected via event analysis', {
         tokenAddress,
         type: eventDetection.tokenType,
         confidence: result.confidence,
         method: eventDetection.detectionMethod,
-      }); */
+      });
 
       return result;
 
@@ -169,8 +166,7 @@ export class TokenDetectionService implements ITokenDetectionService {
   }
 
   private createResultFromDetection(
-    eventDetection: TokenDetectionFromEvent, 
-    metadata: TokenMetadata
+    eventDetection: TokenDetectionFromEvent
   ): TokenDetectionResult {
     return {
       isERC20: eventDetection.tokenType === TokenType.ERC20,
@@ -182,33 +178,34 @@ export class TokenDetectionService implements ITokenDetectionService {
     };
   }
 
-  private async saveTokenToDatabase(
+  /**
+   * Save basic token info to database WITHOUT metadata (for enrichment queue)
+   */
+  private async saveBasicTokenToDatabase(
     address: string, 
     tokenType: TokenType, 
-    metadata: TokenMetadata
+    blockNumber?: number
   ): Promise<void> {
     try {
       const tokenInfo: TokenInfo = {
         address,
         type: tokenType,
-        name: metadata.name,
-        symbol: metadata.symbol,
-        decimals: metadata.decimals,
-        totalSupply: metadata.totalSupply,
+        name: undefined, // Will be enriched by worker
+        symbol: undefined, // Will be enriched by worker
+        decimals: undefined, // Will be enriched by worker
+        totalSupply: undefined, // Will be enriched by worker
         createdAt: new Date(),
         updatedAt: new Date(),
       };
 
       await this.tokenRepository.save(tokenInfo);
       
-      logger.debug('Token saved to database', { 
+      logger.debug('Basic token info saved to cache - metadata will be fetched by worker', { 
         address, 
-        type: tokenType, 
-        name: metadata.name, 
-        symbol: metadata.symbol 
+        type: tokenType 
       });
     } catch (error) {
-      logger.warn('Failed to save token to database', {
+      logger.warn('Failed to save basic token info to cache', {
         address,
         tokenType,
         error: error instanceof Error ? error.message : 'Unknown error',

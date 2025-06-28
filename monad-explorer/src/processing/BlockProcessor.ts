@@ -352,13 +352,14 @@ export class BlockProcessor {
       // ✅ Create Token entity ONLY if not already in current batch (avoid duplicates)
       const existingToken = result.tokens.find(t => t.address.toLowerCase() === log.address.toLowerCase());
       if (!existingToken) {
+        // Create basic token entity without metadata - will be enriched by worker
         const token = new Token({
           id: log.address.toLowerCase(),
           address: log.address.toLowerCase(),
-          name: null,
-          symbol: null,
-          decimals: null,
-          totalSupply: null,
+          name: null, // Will be enriched by worker
+          symbol: null, // Will be enriched by worker  
+          decimals: null, // Will be enriched by worker
+          totalSupply: null, // Will be enriched by worker
           tokenType: detection.detectedType as TokenType,
           createdAt: log.transaction.timestamp,
           enrichmentStatus: 'PENDING' as TokenEnrichmentStatus, // Will be enriched by worker
@@ -369,7 +370,7 @@ export class BlockProcessor {
         result.tokens.push(token);
         // ✅ NO OBJECT REFERENCE: Let database handle FK relationship via tokenId
 
-        // Check if async processing is enabled and queue the token for enrichment
+        // Queue the token for enrichment (metadata will be fetched by worker)
         const config = await this.container.resolve<any>('appConfig');
         if (config.processor.enableAsyncProcessing) {
           try {

@@ -138,34 +138,24 @@ export class TokenEnrichmentWorker {
   private async processTokenEnrichment(message: TokenEnrichmentMessage): Promise<void> {
     const { tokenAddress, blockNumber, detectedType } = message;
     
-    // 🔍 DEBUG: Log what we received
-/*     logger.debug('🔍 DEBUG: Processing token enrichment message', {
-      tokenAddress,
-      blockNumber,
-      detectedType,
-      detectedTypeType: typeof detectedType,
-      rawMessage: JSON.stringify(message),
-    }); */
-
     try {
-      // Check if token already has complete metadata in Redis
+      // Check if token already has complete metadata in cache/database
       const existingToken = await this.tokenRepository.get(tokenAddress);
+      
+      // Skip if already fully enriched with complete metadata
       const hasCompleteMetadata = existingToken && 
         existingToken.name && 
         existingToken.symbol && 
         typeof existingToken.decimals === 'number';
 
-      // Skip if already processed (even with incomplete metadata)
-      const isAlreadyProcessed = existingToken && (
-        hasCompleteMetadata || 
-        existingToken.processed === true
-      );
+      // Skip if already processed (even if metadata is incomplete)
+      const isAlreadyProcessed = existingToken && existingToken.processed === true;
 
-      if (isAlreadyProcessed) {
+      if (hasCompleteMetadata || isAlreadyProcessed) {
         logger.debug('Token already processed, skipping', {
           tokenAddress,
           hasCompleteMetadata,
-          isProcessed: existingToken.processed
+          isProcessed: existingToken?.processed
         });
         this.processedCount++; // Count skipped tokens as processed
         return;
@@ -173,13 +163,12 @@ export class TokenEnrichmentWorker {
 
       // Use detected type from event analysis (no cascade)
       const tokenType = this.parseTokenType(detectedType) || TokenType.ERC20;
-      
-      // 🔍 DEBUG: Log the parsing result
-  /*     logger.debug('🔍 DEBUG: Token type parsing', {
+
+     /*  logger.debug('Fetching metadata for token', {
         tokenAddress,
-        inputDetectedType: detectedType,
-        parsedTokenType: tokenType,
-        willFallbackToERC20: !detectedType,
+        tokenType,
+        blockNumber,
+        message: 'This is where the REAL metadata fetching happens'
       }); */
 
       // Fetch metadata for the specific detected type only
