@@ -18,15 +18,15 @@ export class Transaction {
     @ManyToOne_(() => Block, {nullable: true})
     block!: Block
 
-    @IntColumn_({nullable: false})
+    @IntColumn_({nullable: false, name: "transaction_index"})
     transactionIndex!: number
 
     @Index_()
-    @StringColumn_({nullable: false})
+    @StringColumn_({nullable: false, name: "from_address"})
     fromAddress!: string
 
     @Index_()
-    @StringColumn_({nullable: true})
+    @StringColumn_({nullable: true, name: "to_address"})
     toAddress!: string | undefined | null
 
     @BigIntColumn_({nullable: false})
@@ -35,10 +35,10 @@ export class Transaction {
     @BigIntColumn_({nullable: false})
     gas!: bigint
 
-    @BigIntColumn_({nullable: false})
+    @BigIntColumn_({nullable: false, name: "gas_price"})
     gasPrice!: bigint
 
-    @BigIntColumn_({nullable: true})
+    @BigIntColumn_({nullable: true, name: "gas_used"})
     gasUsed!: bigint | undefined | null
 
     @StringColumn_({nullable: true})
@@ -57,36 +57,36 @@ export class Transaction {
     @IntColumn_({nullable: true})
     type!: number | undefined | null
 
-    @BigIntColumn_({nullable: true})
+    @BigIntColumn_({nullable: true, name: "effective_gas_price"})
     effectiveGasPrice!: bigint | undefined | null
 
-    @BigIntColumn_({nullable: true})
+    @BigIntColumn_({nullable: true, name: "max_fee_per_gas"})
     maxFeePerGas!: bigint | undefined | null
 
-    @BigIntColumn_({nullable: true})
+    @BigIntColumn_({nullable: true, name: "max_priority_fee_per_gas"})
     maxPriorityFeePerGas!: bigint | undefined | null
 
-    @StringColumn_({nullable: true})
+    @StringColumn_({nullable: true, name: "contract_address"})
     contractAddress!: string | undefined | null
 
-    @BigIntColumn_({nullable: true})
+    @BigIntColumn_({nullable: true, name: "cumulative_gas_used"})
     cumulativeGasUsed!: bigint | undefined | null
 
-    @BigIntColumn_({nullable: true})
+    @BigIntColumn_({nullable: true, name: "transaction_fee"})
     transactionFee!: bigint | undefined | null
 
-    @StringColumn_({nullable: true})
+    @StringColumn_({nullable: true, name: "method_name"})
     methodName!: string | undefined | null
 
-    @StringColumn_({nullable: true})
+    @StringColumn_({nullable: true, name: "method_id"})
     methodID!: string | undefined | null
 
-    @StringColumn_({nullable: true})
+    @StringColumn_({nullable: true, name: "input_decoded"})
     inputDecoded!: string | undefined | null
 
-    @BooleanColumn_({nullable: false})
+    @BooleanColumn_({nullable: false, name: "is_contract_interaction"})
     isContractInteraction!: boolean
 
-    @BooleanColumn_({nullable: false})
+    @BooleanColumn_({nullable: false, name: "is_contract_creation"})
     isContractCreation!: boolean
 }

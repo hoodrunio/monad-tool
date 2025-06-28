@@ -23,22 +23,22 @@ export class Contract {
     creationTransaction!: Transaction
 
     @Index_()
-    @DateTimeColumn_({nullable: false})
+    @DateTimeColumn_({nullable: false, name: "created_at"})
     createdAt!: Date
 
     @StringColumn_({nullable: true})
     bytecode!: string | undefined | null
 
-    @StringColumn_({nullable: true})
+    @StringColumn_({nullable: true, name: "source_code"})
     sourceCode!: string | undefined | null
 
     @Index_()
-    @BooleanColumn_({nullable: false})
+    @BooleanColumn_({nullable: false, name: "is_verified"})
     isVerified!: boolean
 
     @StringColumn_({nullable: true})
     name!: string | undefined | null
 
-    @StringColumn_({nullable: true})
+    @StringColumn_({nullable: true, name: "compiler_version"})
     compilerVersion!: string | undefined | null
 }

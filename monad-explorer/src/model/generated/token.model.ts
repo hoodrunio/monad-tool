@@ -24,13 +24,13 @@ export class Token {
     @IntColumn_({nullable: true})
     decimals!: number | undefined | null
 
-    @BigIntColumn_({nullable: true})
+    @BigIntColumn_({nullable: true, name: "total_supply"})
     totalSupply!: bigint | undefined | null
 
     @Index_()
-    @Column_("varchar", {length: 7, nullable: false})
+    @Column_("varchar", {length: 7, nullable: false, name: "token_type"})
     tokenType!: TokenType
 
-    @DateTimeColumn_({nullable: false})
+    @DateTimeColumn_({nullable: false, name: "created_at"})
     createdAt!: Date
 }

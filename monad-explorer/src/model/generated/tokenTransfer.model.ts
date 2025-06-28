@@ -25,11 +25,11 @@ export class TokenTransfer {
     log!: Log
 
     @Index_()
-    @StringColumn_({nullable: false})
+    @StringColumn_({nullable: false, name: "from_address"})
     fromAddress!: string
 
     @Index_()
-    @StringColumn_({nullable: false})
+    @StringColumn_({nullable: false, name: "to_address"})
     toAddress!: string
 
     @BigIntColumn_({nullable: false})
