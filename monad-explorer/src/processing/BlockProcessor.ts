@@ -334,26 +334,12 @@ export class BlockProcessor {
     });
 
     if (detection.detectedType) {
-      // Create proper TokenTransfer entity with token_id reference (not object reference)
-      const tokenTransfer = new TokenTransfer({
-        id: `${log.id}-transfer`,
-        transaction: log.transaction,
-        log: log,
-        fromAddress: log.topics[1] ? `0x${log.topics[1].slice(26)}` : '0x0000000000000000000000000000000000000000',
-        toAddress: log.topics[2] ? `0x${log.topics[2].slice(26)}` : '0x0000000000000000000000000000000000000000',
-        value: 0n, // Will be parsed from log data
-        tokenId: log.address.toLowerCase(), // ✅ Use token address as foreign key
-        timestamp: log.transaction.timestamp,
-        token: undefined, // ✅ No direct object reference to avoid FK issues
-      });
-
-      result.tokenTransfers.push(tokenTransfer);
-
-      // ✅ Create Token entity ONLY if not already in current batch (avoid duplicates)
-      const existingToken = result.tokens.find(t => t.address.toLowerCase() === log.address.toLowerCase());
-      if (!existingToken) {
+      // ✅ Create Token entity FIRST (ensure it exists before creating transfer)
+      let tokenEntity = result.tokens.find(t => t.address.toLowerCase() === log.address.toLowerCase());
+      
+      if (!tokenEntity) {
         // Create basic token entity without metadata - will be enriched by worker
-        const token = new Token({
+        tokenEntity = new Token({
           id: log.address.toLowerCase(),
           address: log.address.toLowerCase(),
           name: null, // Will be enriched by worker
@@ -367,8 +353,7 @@ export class BlockProcessor {
           enrichmentAttempts: 0,
         });
 
-        result.tokens.push(token);
-        // ✅ NO OBJECT REFERENCE: Let database handle FK relationship via tokenId
+        result.tokens.push(tokenEntity);
 
         // Queue the token for enrichment (metadata will be fetched by worker)
         const config = await this.container.resolve<any>('appConfig');
@@ -384,7 +369,34 @@ export class BlockProcessor {
           }
         }
       }
-      // ✅ NO OBJECT REFERENCE: TokenTransfer.tokenId already set to token address
+
+      // ✅ Extract NFT token ID for ERC721/1155 (from topics[3] if exists)
+      let nftTokenId = '0'; // Default for ERC20 (string format)
+      if (detection.detectedType === TokenType.ERC721 || detection.detectedType === TokenType.ERC1155) {
+        try {
+          if (log.topics[3]) {
+            nftTokenId = BigInt(log.topics[3]).toString();
+          }
+        } catch (error) {
+          logger.debug('Failed to parse NFT token ID, using 0', { address: log.address });
+        }
+      }
+
+      // ✅ Create TokenTransfer with proper object reference
+      const tokenTransfer = new TokenTransfer({
+        id: `${log.id}-transfer`,
+        token: tokenEntity, // ✅ Proper object reference (TypeORM will handle FK)
+        transaction: log.transaction,
+        log: log,
+        fromAddress: log.topics[1] ? `0x${log.topics[1].slice(26)}` : '0x0000000000000000000000000000000000000000',
+        toAddress: log.topics[2] ? `0x${log.topics[2].slice(26)}` : '0x0000000000000000000000000000000000000000',
+        value: 0n, // Will be parsed from log data
+        tokenId: nftTokenId, // ✅ Proper NFT token ID usage
+        timestamp: log.transaction.timestamp,
+      });
+
+      result.tokenTransfers.push(tokenTransfer);
+
     } else {
       logger.debug('Log is not a token transfer event', {
         address: log.address,

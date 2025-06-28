@@ -250,7 +250,8 @@ export class EntityPersister {
   }
 
   /**
-   * Persist token transfer entities (only for tokens that exist in database)
+   * Persist token transfer entities
+   * Since TokenTransfer now uses object references, TypeORM will handle FK constraints
    */
   private async persistTokenTransfers(store: any, result: ProcessingResult, successfulTokenIds: Set<string>): Promise<void> {
     if (result.tokenTransfers.length === 0) {
@@ -258,8 +259,9 @@ export class EntityPersister {
     }
 
     // ✅ Filter token transfers to only include those with valid token references
+    // Since we use object references, check if the referenced token entity is in successfulTokenIds
     const validTokenTransfers = result.tokenTransfers.filter(transfer => 
-      successfulTokenIds.has(transfer.tokenId)
+      transfer.token && successfulTokenIds.has(transfer.token.id)
     );
 
     if (validTokenTransfers.length === 0) {
