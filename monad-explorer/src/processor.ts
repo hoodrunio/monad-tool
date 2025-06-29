@@ -7,6 +7,11 @@ import {
     Log as _Log,
     Transaction as _Transaction,
 } from '@subsquid/evm-processor'
+import { appConfig } from './config/AppConfig'
+
+const config = appConfig.getConfig();
+
+const startBlock = config.processor.startBlock;
 
 export const processor = new EvmBatchProcessor()
     // Remove archive for Monad - use RPC-only mode
@@ -66,15 +71,15 @@ export const processor = new EvmBatchProcessor()
     })
     .setBlockRange({
         // Start from recent blocks (latest - 1000) for faster testing
-        from: 23628431, // Recent Monad testnet blocks
+        from: startBlock, // Recent Monad testnet blocks
     })
     // Index all transactions for RPC-only mode
     .addTransaction({
-        range: {from: 23628431}
+        range: {from: startBlock}
     })
     // Index all logs for event processing
     .addLog({
-        range: {from: 23628431}
+        range: {from: startBlock}
     })
 
 export type Fields = EvmBatchProcessorFields<typeof processor>

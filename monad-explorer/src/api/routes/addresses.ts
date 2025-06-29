@@ -76,6 +76,7 @@ export function createAddressRoutes(serviceContainer: ServiceContainer): Router 
           { fromAddress: address },
           { toAddress: address }
         ],
+        relations: ['block'],
         order: { timestamp: 'DESC' },
         skip: offset,
         take: limit,

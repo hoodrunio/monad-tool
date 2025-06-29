@@ -6,6 +6,7 @@ import { ParsedTokenTransfer } from '../../interfaces/processing/ILogTokenTransf
 import { asyncHandler, ApiErrorResponse, successResponse } from '../middleware/errorHandlers';
 import { validateBlockNumber, validatePaginationParams, validateBoolean } from '../validators/common';
 import { prepareForApiResponse } from '../../utils/bigint-serializer';
+import { In } from 'typeorm';
 
 /**
  * Create block routes using logs-first architecture
@@ -266,12 +267,31 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
 
     const store = await serviceContainer.resolve<StoreAdapter>('store');
     
+    // First get transactions for this block
+    const blockTransactions = await store.Transaction.find({
+      where: { block: { number: parseInt(blockNumber) } },
+      select: ['id']
+    });
+    
+    if (blockTransactions.length === 0) {
+      return successResponse(res, prepareForApiResponse({
+        blockNumber: parseInt(blockNumber),
+        logs: []
+      }), 'No logs found for block', 200, {
+        totalCount: 0,
+        limit,
+        offset,
+        hasMore: false
+      });
+    }
+
+    // Then get logs for those transactions
+    const transactionIds = blockTransactions.map(tx => tx.id);
     const [logs, totalCount] = await store.Log.findAndCount({
       where: { 
-        transaction: { 
-          block: { number: parseInt(blockNumber) } 
-        }
+        transaction: { id: In(transactionIds) }
       },
+      relations: ['transaction'],
       order: { id: 'ASC' },
       skip: offset,
       take: limit,

@@ -6,6 +6,7 @@ import {
 import { ILogTokenTransferParser, ParsedTokenTransfer } from '../../interfaces/processing/ILogTokenTransferParser';
 import { ICacheService } from '../../interfaces/cache/ICacheService';
 import { logger } from '../../utils/logger';
+import { In } from 'typeorm';
 
 export class TransactionService implements ITransactionService {
   private readonly cachePrefix = 'tx:enriched';
@@ -105,10 +106,10 @@ export class TransactionService implements ITransactionService {
       const logs = await this.store.Log.find({
         where: { 
           transaction: { 
-            hash: { $in: transactionHashes } 
+            hash: In(transactionHashes)
           } 
         },
-        order: { transaction: 'ASC', logIndex: 'ASC' },
+        order: { logIndex: 'ASC' },
         relations: ['transaction']
       });
 
@@ -176,10 +177,10 @@ export class TransactionService implements ITransactionService {
       const logs = await this.store.Log.find({
         where: { 
           transaction: { 
-            hash: { $in: transactionHashes } 
+            hash: In(transactionHashes)
           } 
         },
-        order: { transaction: 'ASC', logIndex: 'ASC' },
+        order: { logIndex: 'ASC' },
         relations: ['transaction']
       });
 
@@ -278,23 +279,28 @@ export class TransactionService implements ITransactionService {
       // Build query for logs that might be token transfers involving this address
       const transferSignatures = this.logTokenTransferParser.getSupportedSignatures();
       
-      let whereConditions: any = {
-        topics: { $elemMatch: { $in: transferSignatures } }
-      };
+      let whereConditions: any = {};
 
       // If token address is specified, filter by it
       if (tokenAddress) {
         whereConditions.address = tokenAddress.toLowerCase();
       }
 
-      // Get logs that are token transfers
-      const [logs, totalLogs] = await this.store.Log.findAndCount({
+      // Get logs and filter by signatures in application layer
+      // This is more reliable than complex TypeORM array queries
+      const [allLogs, totalAllLogs] = await this.store.Log.findAndCount({
         where: whereConditions,
-        order: { transaction: 'DESC', logIndex: 'ASC' },
-        skip: offset,
-        take: limit * 2, // Get more logs to account for filtering
+        order: { id: 'DESC' },
+        take: limit * 5, // Get more logs to account for filtering
         relations: ['transaction', 'transaction.block']
       });
+
+      // Filter logs that match transfer signatures
+      const logs = allLogs.filter((log: any) => 
+        log.topics && log.topics.length > 0 && transferSignatures.includes(log.topics[0])
+      );
+
+      const totalLogs = logs.length;
 
       if (logs.length === 0) {
         return { transfers: [], total: 0 };
@@ -326,7 +332,7 @@ export class TransactionService implements ITransactionService {
       );
 
       // Apply pagination to the filtered results
-      const paginatedTransfers = relevantTransfers.slice(0, limit);
+      const paginatedTransfers = relevantTransfers.slice(offset, offset + limit);
 
       const duration = Date.now() - startTime;
       logger.debug('Retrieved token transfers for address', {
