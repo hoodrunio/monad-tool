@@ -93,19 +93,12 @@ type Token @entity {
   totalSupply: BigInt
   tokenType: TokenType! @index
   createdAt: DateTime!
+  enrichmentStatus: TokenEnrichmentStatus! @index
+  enrichedAt: DateTime
+  enrichmentAttempts: Int!
 }
 
-type TokenTransfer @entity {
-  id: ID! # transaction hash + log index
-  token: Token!
-  transaction: Transaction!
-  log: Log!
-  fromAddress: String! @index
-  toAddress: String! @index
-  value: BigInt!
-  tokenId: BigInt
-  timestamp: DateTime! @index
-}
+# TokenTransfer removed - now computed at runtime from logs via TransactionService
 
 type TokenBalance @entity {
   id: ID! # account address + token address
@@ -153,4 +146,10 @@ enum TokenType {
   ERC721
   ERC1155
   UNKNOWN
+}
+
+enum TokenEnrichmentStatus {
+  PENDING
+  ENRICHED
+  FAILED
 }

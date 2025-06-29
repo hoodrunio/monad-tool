@@ -1,7 +1,8 @@
 import { serviceContainer } from '../services/core/ServiceContainer';
 import { ITokenDetectionService } from '../interfaces/services/ITokenDetectionService';
+import { ILogTokenTransferParser } from '../interfaces/processing/ILogTokenTransferParser';
 import { logger } from '../utils/logger';
-import { Account, Block, Transaction, Log, MethodSignature, Token, TokenTransfer, TokenType, TokenEnrichmentStatus } from '../model/generated';
+import { Account, Block, Transaction, Log, MethodSignature, Token, TokenType, TokenEnrichmentStatus } from '../model/generated';
 
 export interface ProcessingResult {
   blocks: Block[];
@@ -9,8 +10,8 @@ export interface ProcessingResult {
   accounts: Map<string, Account>;
   logs: Log[];
   methodSignatures: Map<string, MethodSignature>;
-  tokenTransfers: TokenTransfer[];
   tokens: Token[];
+  // ✅ TokenTransfers are now runtime-computed from logs, not stored
 }
 
 /**
@@ -41,8 +42,8 @@ export class BlockProcessor {
         await this.processBlock(block, result);
       }
 
-      // Process token transfers if enabled
-      await this.processTokenTransfers(result, store);
+      // Process token detection if enabled
+      await this.processTokenDetection(result, store);
 
       const duration = Date.now() - startTime;
       logger.info('Block processing completed successfully', {
@@ -51,7 +52,6 @@ export class BlockProcessor {
         transactionsProcessed: result.transactions.length,
         logsProcessed: result.logs.length,
         accountsProcessed: result.accounts.size,
-        tokenTransfersDetected: result.tokenTransfers.length,
         tokensEnriched: result.tokens.length,
       });
 
@@ -247,9 +247,9 @@ export class BlockProcessor {
   }
 
   /**
-   * Process token transfers if enabled
+   * Process token detection if enabled
    */
-  private async processTokenTransfers(result: ProcessingResult, store: any): Promise<void> {
+  private async processTokenDetection(result: ProcessingResult, store: any): Promise<void> {
     try {
       const config = await this.container.resolve<any>('appConfig');
       
@@ -263,10 +263,10 @@ export class BlockProcessor {
 
       const tokenDetectionService = await this.container.resolve<ITokenDetectionService>('tokenDetectionService');
       
-      // Filter logs that might be token transfers
-      const tokenLogs = this.filterTokenTransferLogs(result.logs);
+      // Filter logs that might be token events
+      const tokenLogs = this.filterTokenEventLogs(result.logs);
       
-      logger.debug('Processing potential token transfer logs', {
+      logger.debug('Processing potential token event logs', {
         totalLogs: result.logs.length,
         tokenLogs: tokenLogs.length,
       });
@@ -274,18 +274,17 @@ export class BlockProcessor {
       // Process token detection for each relevant log
       for (const log of tokenLogs) {
         try {
-          await this.processTokenTransferLog(log, tokenDetectionService, result, store);
+          await this.processTokenDetectionLog(log, tokenDetectionService, result, store);
         } catch (error) {
-          logger.warn('Failed to process token transfer log', {
+          logger.warn('Failed to process token detection log', {
             logId: log.id,
             error: error instanceof Error ? error.message : 'Unknown error',
           });
         }
       }
 
-      logger.info('Token transfer processing completed', {
+      logger.info('Token detection processing completed', {
         processedLogs: tokenLogs.length,
-        detectedTransfers: result.tokenTransfers.length,
         enrichedTokens: result.tokens.length,
       });
 
@@ -297,9 +296,9 @@ export class BlockProcessor {
   }
 
   /**
-   * Filter logs that might be token transfers
+   * Filter logs that might be token events
    */
-  private filterTokenTransferLogs(logs: any[]): any[] {
+  private filterTokenEventLogs(logs: any[]): any[] {
     const transferSignatures = [
       '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', // ERC20/ERC721 Transfer
       '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62', // ERC1155 TransferSingle
@@ -313,9 +312,9 @@ export class BlockProcessor {
   }
 
   /**
-   * Process a single token transfer log with event-based detection
+   * Process a single token detection log with event-based detection
    */
-  private async processTokenTransferLog(
+  private async processTokenDetectionLog(
     log: any,
     tokenDetectionService: ITokenDetectionService,
     result: ProcessingResult,
@@ -382,20 +381,15 @@ export class BlockProcessor {
         }
       }
 
-      // ✅ Create TokenTransfer with proper object reference
-      const tokenTransfer = new TokenTransfer({
-        id: `${log.id}-transfer`,
-        token: tokenEntity, // ✅ Proper object reference (TypeORM will handle FK)
-        transaction: log.transaction,
-        log: log,
+      // ✅ LOGS-FIRST APPROACH: TokenTransfers are now computed at runtime from logs
+      // No need to store TokenTransfer entities - they will be parsed from logs when needed
+      logger.debug('Token detected and stored', {
+        tokenAddress: log.address,
+        tokenType: detection.detectedType,
         fromAddress: log.topics[1] ? `0x${log.topics[1].slice(26)}` : '0x0000000000000000000000000000000000000000',
         toAddress: log.topics[2] ? `0x${log.topics[2].slice(26)}` : '0x0000000000000000000000000000000000000000',
-        value: 0n, // Will be parsed from log data
-        tokenId: nftTokenId, // ✅ Proper NFT token ID usage
-        timestamp: log.transaction.timestamp,
+        nftTokenId: nftTokenId,
       });
-
-      result.tokenTransfers.push(tokenTransfer);
 
     } else {
       logger.debug('Log is not a token transfer event', {
@@ -454,7 +448,6 @@ export class BlockProcessor {
       accounts: new Map(),
       logs: [],
       methodSignatures: new Map(),
-      tokenTransfers: [],
       tokens: [],
     };
   }

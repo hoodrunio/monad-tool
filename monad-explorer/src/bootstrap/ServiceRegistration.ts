@@ -7,6 +7,8 @@ import { RedisTokenRepository } from '../services/token/RedisTokenRepository';
 import { MulticallTokenMetadataFetcher } from '../services/token/MulticallTokenMetadataFetcher';
 import { RedisCache } from '../services/cache/RedisCache';
 import { RabbitMQService } from '../services/queue/RabbitMQService';
+import { LogTokenTransferParser } from '../services/parsing/LogTokenTransferParser';
+import { TransactionService } from '../services/transaction/TransactionService';
 import { logger } from '../utils/logger';
 
 // Import interfaces
@@ -17,6 +19,8 @@ import { ITokenRepository } from '../interfaces/services/ITokenRepository';
 import { ITokenMetadataFetcher } from '../interfaces/services/ITokenMetadataFetcher';
 import { ICacheService } from '../interfaces/cache/ICacheService';
 import { IQueueService } from '../interfaces/services/IQueueService';
+import { ILogTokenTransferParser } from '../interfaces/processing/ILogTokenTransferParser';
+import { ITransactionService } from '../interfaces/services/ITransactionService';
 
 /**
  * Service Registration Module
@@ -140,6 +144,25 @@ export class ServiceRegistration {
       const cacheService = await serviceContainer.resolveInternal<ICacheService>('cacheService');
       
       return new TokenDetectionService(eventDetector, tokenRepository, metadataFetcher, cacheService);
+    });
+
+    // Register Log Token Transfer Parser (for runtime parsing from logs)
+    serviceContainer.registerFactory<ILogTokenTransferParser>('logTokenTransferParser', async () => {
+      const eventDetector = await serviceContainer.resolveInternal<IEventTokenDetector>('eventTokenDetector');
+      const tokenRepository = await serviceContainer.resolveInternal<ITokenRepository>('tokenRepository');
+      
+      return new LogTokenTransferParser(eventDetector, tokenRepository);
+    });
+
+    // Register Transaction Service (with runtime token transfer parsing)
+    // Note: TransactionService requires store parameter which will be passed during resolution
+    serviceContainer.registerInstance<any>('transactionServiceFactory', {
+      async create(store: any): Promise<ITransactionService> {
+        const logTokenTransferParser = await serviceContainer.resolveInternal<ILogTokenTransferParser>('logTokenTransferParser');
+        const cacheService = await serviceContainer.resolveInternal<ICacheService>('cacheService').catch(() => undefined);
+        
+        return new TransactionService(store, logTokenTransferParser, cacheService);
+      }
     });
 
     logger.debug('Business services registered');

@@ -1,5 +1,6 @@
 import { Store } from '@subsquid/typeorm-store';
-import { Log, Transaction, TokenTransfer, Token } from '../../model';
+import { Log, Transaction, Token } from '../../model';
+import { ParsedTokenTransfer } from './ILogTokenTransferParser';
 
 export interface LogProcessingContext {
   store: Store;
@@ -11,13 +12,13 @@ export interface LogProcessingContext {
 export interface TokenTransferDetection {
   isTokenTransfer: boolean;
   transferType?: 'ERC20' | 'ERC721' | 'ERC1155';
-  transfer?: TokenTransfer;
+  transfer?: ParsedTokenTransfer; // ✅ Now uses runtime-parsed transfer
   token?: Token;
 }
 
 export interface LogProcessingResult {
   processedLogs: Log[];
-  tokenTransfers: TokenTransfer[];
+  tokenTransfers: ParsedTokenTransfer[]; // ✅ Now uses runtime-parsed transfers
   enrichedTokens: Token[];
   errors: Array<{ logId: string; error: string }>;
 }

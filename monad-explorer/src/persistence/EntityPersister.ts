@@ -20,7 +20,6 @@ export class EntityPersister {
       accounts: result.accounts.size,
       logs: result.logs.length,
       methodSignatures: result.methodSignatures.size,
-      tokenTransfers: result.tokenTransfers.length,
       tokens: result.tokens.length,
     });
 
@@ -31,8 +30,8 @@ export class EntityPersister {
       await this.persistBlocks(store, result);
       await this.persistTransactions(store, result);
       await this.persistLogs(store, result);
-      const successfulTokenIds = await this.persistTokens(store, result);
-      await this.persistTokenTransfers(store, result, successfulTokenIds);
+      await this.persistTokens(store, result);
+      // ✅ TokenTransfers are now computed at runtime from logs - no persistence needed
 
       const duration = Date.now() - startTime;
       logger.info('Entity persistence completed successfully', {
@@ -169,14 +168,14 @@ export class EntityPersister {
   }
 
   /**
-   * Persist token entities (must be before token transfers due to foreign key constraints)
+   * Persist token entities 
    * SMART PERSISTENCE: Check existing tokens first, insert only new ones
    */
-  private async persistTokens(store: any, result: ProcessingResult): Promise<Set<string>> {
+  private async persistTokens(store: any, result: ProcessingResult): Promise<void> {
     const successfulTokenIds = new Set<string>();
     
     if (result.tokens.length === 0) {
-      return successfulTokenIds;
+      return;
     }
 
     try {
@@ -237,8 +236,6 @@ export class EntityPersister {
         successful: successfulTokenIds.size
       });
       
-      return successfulTokenIds;
-      
     } catch (error) {
       logger.error('❌ Failed to persist tokens', {
         count: result.tokens.length,
@@ -249,44 +246,7 @@ export class EntityPersister {
     }
   }
 
-  /**
-   * Persist token transfer entities
-   * Since TokenTransfer now uses object references, TypeORM will handle FK constraints
-   */
-  private async persistTokenTransfers(store: any, result: ProcessingResult, successfulTokenIds: Set<string>): Promise<void> {
-    if (result.tokenTransfers.length === 0) {
-      return;
-    }
-
-    // ✅ Filter token transfers to only include those with valid token references
-    // Since we use object references, check if the referenced token entity is in successfulTokenIds
-    const validTokenTransfers = result.tokenTransfers.filter(transfer => 
-      transfer.token && successfulTokenIds.has(transfer.token.id)
-    );
-
-    if (validTokenTransfers.length === 0) {
-      logger.debug('No valid token transfers to persist (all tokens failed)', {
-        totalTransfers: result.tokenTransfers.length
-      });
-      return;
-    }
-
-    try {
-      await store.insert(validTokenTransfers);
-      
-      logger.debug('✅ Token transfers persisted successfully', { 
-        total: result.tokenTransfers.length,
-        persisted: validTokenTransfers.length,
-        skipped: result.tokenTransfers.length - validTokenTransfers.length
-      });
-    } catch (error) {
-      logger.error('❌ Failed to persist token transfers', {
-        count: validTokenTransfers.length,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      throw error;
-    }
-  }
+  // ✅ TokenTransfer persistence removed - now computed at runtime from logs
 
   /**
    * Calculate total number of entities to persist
@@ -297,7 +257,6 @@ export class EntityPersister {
            result.accounts.size +
            result.logs.length +
            result.methodSignatures.size +
-           result.tokenTransfers.length +
            result.tokens.length;
   }
 
@@ -314,7 +273,6 @@ export class EntityPersister {
       accounts: result.accounts.size,
       logs: result.logs.length,
       methodSignatures: result.methodSignatures.size,
-      tokenTransfers: result.tokenTransfers.length,
       tokens: result.tokens.length,
     };
 

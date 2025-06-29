@@ -1,12 +1,6 @@
 import {Entity as Entity_, Column as Column_, PrimaryColumn as PrimaryColumn_, StringColumn as StringColumn_, Index as Index_, IntColumn as IntColumn_, BigIntColumn as BigIntColumn_, DateTimeColumn as DateTimeColumn_} from "@subsquid/typeorm-store"
 import {TokenType} from "./_tokenType"
-
-export enum TokenEnrichmentStatus {
-    PENDING = "PENDING",
-    ENRICHING = "ENRICHING", 
-    ENRICHED = "ENRICHED",
-    FAILED = "FAILED"
-}
+import {TokenEnrichmentStatus} from "./_tokenEnrichmentStatus"
 
 @Entity_()
 export class Token {
@@ -31,23 +25,23 @@ export class Token {
     @IntColumn_({nullable: true})
     decimals!: number | undefined | null
 
-    @BigIntColumn_({nullable: true, name: "total_supply"})
+    @BigIntColumn_({nullable: true})
     totalSupply!: bigint | undefined | null
 
     @Index_()
-    @Column_("varchar", {length: 7, nullable: false, name: "token_type"})
+    @Column_("varchar", {length: 7, nullable: false})
     tokenType!: TokenType
 
-    @DateTimeColumn_({nullable: false, name: "created_at"})
+    @DateTimeColumn_({nullable: false})
     createdAt!: Date
 
     @Index_()
-    @Column_("varchar", {length: 10, nullable: false, default: "PENDING", name: "enrichment_status"})
+    @Column_("varchar", {length: 8, nullable: false})
     enrichmentStatus!: TokenEnrichmentStatus
 
-    @DateTimeColumn_({nullable: true, name: "enriched_at"})
+    @DateTimeColumn_({nullable: true})
     enrichedAt!: Date | undefined | null
 
-    @IntColumn_({nullable: true, default: 0, name: "enrichment_attempts"})
-    enrichmentAttempts!: number | undefined | null
+    @IntColumn_({nullable: false})
+    enrichmentAttempts!: number
 }
