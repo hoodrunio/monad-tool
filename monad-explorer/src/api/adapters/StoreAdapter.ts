@@ -1,5 +1,5 @@
 import { DataSource } from 'typeorm';
-import { Transaction, Log, Block } from '../../model/generated';
+import { Transaction, Log, Block, TokenBalance } from '../../model/generated';
 
 export interface StoreAdapter {
   Transaction: {
@@ -15,12 +15,17 @@ export interface StoreAdapter {
     findOne(options: any): Promise<Block | null>;
     find(options: any): Promise<Block[]>;
   };
+  TokenBalance: {
+    findOne(options: any): Promise<TokenBalance | null>;
+    find(options: any): Promise<TokenBalance[]>;
+  };
 }
 
 export function createStoreAdapter(dataSource: DataSource): StoreAdapter {
   const transactionRepo = dataSource.getRepository(Transaction);
   const logRepo = dataSource.getRepository(Log);
   const blockRepo = dataSource.getRepository(Block);
+  const tokenBalanceRepo = dataSource.getRepository(TokenBalance);
 
   return {
     Transaction: {
@@ -204,6 +209,51 @@ export function createStoreAdapter(dataSource: DataSource): StoreAdapter {
           return result;
         } catch (error) {
           throw new Error(`Block find failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+    },
+
+    TokenBalance: {
+      async findOne(options: any): Promise<TokenBalance | null> {
+        try {
+          const result = await tokenBalanceRepo.findOne({
+            where: options.where,
+            relations: options.relations || []
+          });
+          return result;
+        } catch (error) {
+          throw new Error(`TokenBalance findOne failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      },
+
+      async find(options: any): Promise<TokenBalance[]> {
+        try {
+          const queryOptions: any = {};
+          
+          if (options.where) {
+            queryOptions.where = options.where;
+          }
+          
+          if (options.relations) {
+            queryOptions.relations = options.relations;
+          }
+          
+          if (options.order) {
+            queryOptions.order = options.order;
+          }
+          
+          if (options.skip !== undefined) {
+            queryOptions.skip = options.skip;
+          }
+          
+          if (options.take !== undefined) {
+            queryOptions.take = options.take;
+          }
+
+          const result = await tokenBalanceRepo.find(queryOptions);
+          return result;
+        } catch (error) {
+          throw new Error(`TokenBalance find failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
       }
     }
