@@ -10,8 +10,10 @@
     "db:create-migration": "sqd migration:generate",
     "processor:start": "node -r dotenv/config lib/main.js",
     "worker:token-enrichment": "npm run build && npx ts-node scripts/start-token-enrichment-worker.ts",
-    "query-node:start": "squid-graphql-server --dumb-cache in-memory --dumb-cache-ttl 1000 --dumb-cache-size 100 --dumb-cache-max-age 1000"
-  },
+    "query-node:start": "squid-graphql-server --dumb-cache in-memory --dumb-cache-ttl 1000 --dumb-cache-size 100 --dumb-cache-max-age 1000",
+    "api:start": "npm run build && node -r dotenv/config lib/api/server.js",
+    "api:dev": "npx ts-node -r dotenv/config src/api/server.ts"
+    },
   "dependencies": {
     "@subsquid/evm-abi": "^0.3.0",
     "@subsquid/evm-processor": "^1.27.2",
@@ -24,17 +26,24 @@
     "@types/winston": "^2.4.4",
     "amqplib": "^0.10.6",
     "axios": "^1.6.2",
+    "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "ethers": "^6.14.4",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^7.1.0",
     "ioredis": "^5.3.2",
     "pg": "^8.12.0",
     "typeorm": "^0.3.17",
+    "typeorm-naming-strategies": "^4.1.0",
     "viem": "^2.31.4",
     "winston": "^3.14.2"
   },
   "devDependencies": {
     "@subsquid/evm-typegen": "^3.1.0",
     "@subsquid/typeorm-codegen": "^2.0.0",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
     "@types/node": "^20.8.10",
     "typescript": "~5.2.2"
   }

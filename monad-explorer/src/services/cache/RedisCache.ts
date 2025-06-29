@@ -1,6 +1,7 @@
 import Redis, { RedisOptions } from 'ioredis';
 import { ICacheService, CacheMetrics } from '../../interfaces/cache/ICacheService';
 import { logger } from '../../utils/logger';
+import { serializeWithBigInt, deserializeWithBigInt } from '../../utils/bigint-serializer';
 
 export interface RedisCacheConfig {
   host: string;
@@ -103,7 +104,7 @@ export class RedisCache implements ICacheService {
       this.updateHitRate();
 
       try {
-        return JSON.parse(value) as T;
+        return deserializeWithBigInt<T>(value);
       } catch {
         // If parsing fails, return as string
         return value as unknown as T;
@@ -121,11 +122,12 @@ export class RedisCache implements ICacheService {
 
   public async set<T = unknown>(key: string, value: T, ttl?: number): Promise<void> {
     try {
-      const serializedValue = typeof value === 'string' ? value : JSON.stringify(value);
+      const serializedValue = typeof value === 'string' ? value : serializeWithBigInt(value);
       const cacheTtl = ttl || this.config.defaultTtl;
 
       if (cacheTtl > 0) {
-        await this.client.setex(key, Math.floor(cacheTtl / 1000), serializedValue);
+        const ttlSeconds = Math.max(1, Math.floor(cacheTtl / 1000)); // Ensure at least 1 second
+        await this.client.setex(key, ttlSeconds, serializedValue);
       } else {
         await this.client.set(key, serializedValue);
       }
@@ -198,7 +200,7 @@ export class RedisCache implements ICacheService {
         this.metrics.hits++;
 
         try {
-          return JSON.parse(value) as T;
+          return deserializeWithBigInt<T>(value);
         } catch {
           return value as unknown as T;
         }
@@ -228,11 +230,12 @@ export class RedisCache implements ICacheService {
       const pipeline = this.client.pipeline();
 
       for (const { key, value, ttl } of entries) {
-        const serializedValue = typeof value === 'string' ? value : JSON.stringify(value);
+        const serializedValue = typeof value === 'string' ? value : serializeWithBigInt(value);
         const cacheTtl = ttl || this.config.defaultTtl;
 
         if (cacheTtl > 0) {
-          pipeline.setex(key, Math.floor(cacheTtl / 1000), serializedValue);
+          const ttlSeconds = Math.max(1, Math.floor(cacheTtl / 1000)); // Ensure at least 1 second
+          pipeline.setex(key, ttlSeconds, serializedValue);
         } else {
           pipeline.set(key, serializedValue);
         }
