@@ -6,7 +6,7 @@ import { ITokenRepository } from '../../interfaces/services/ITokenRepository';
 import { ITokenMetadataFetcher } from '../../interfaces/services/ITokenMetadataFetcher';
 import { ITransactionService } from '../../interfaces/services/ITransactionService';
 import { asyncHandler, ApiErrorResponse, successResponse } from '../middleware/errorHandlers';
-import { validateAddress, validatePaginationParams, validateBoolean } from '../validators/common';
+import { validateAddress, validatePaginationParams } from '../validators/common';
 import { prepareForApiResponse } from '../../utils/bigint-serializer';
 import { TokenType } from '../../model';
 
