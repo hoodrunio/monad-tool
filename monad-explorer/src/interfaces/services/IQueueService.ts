@@ -15,6 +15,14 @@ export interface TokenEnrichmentMessage {
   detectedType?: string;
 }
 
+export interface ContractEnrichmentMessage {
+  contractAddress: string;
+  creator: string;
+  blockNumber: number;
+  transactionHash: string;
+  deploymentBytecode?: string;
+}
+
 export interface InternalTransactionMessage {
   transactionHash: string;
   blockNumber: number;
@@ -72,6 +80,14 @@ export interface IQueueService {
   ): Promise<void>;
 
   /**
+   * Publish contract enrichment message
+   */
+  publishContractEnrichment(
+    message: ContractEnrichmentMessage,
+    options?: PublishOptions
+  ): Promise<void>;
+
+  /**
    * Publish internal transaction message
    */
   publishInternalTransaction(
@@ -93,6 +109,14 @@ export interface IQueueService {
    */
   consumeTokenEnrichment(
     handler: MessageHandler<TokenEnrichmentMessage>,
+    options?: ConsumeOptions
+  ): Promise<void>;
+
+  /**
+   * Consume contract enrichment messages
+   */
+  consumeContractEnrichment(
+    handler: MessageHandler<ContractEnrichmentMessage>,
     options?: ConsumeOptions
   ): Promise<void>;
 

@@ -17,6 +17,7 @@ export interface ProcessorConfig {
   startBlock: number;
   enableTokenEnrichment: boolean;
   enableAsyncProcessing: boolean;
+  enableContractDiscovery: boolean;
 }
 
 export interface QueueConfig {
@@ -116,6 +117,7 @@ class ConfigManager {
         startBlock: this.getNumberEnv('START_BLOCK', 23460742),
         enableTokenEnrichment: this.getBooleanEnv('ENABLE_TOKEN_ENRICHMENT', true),
         enableAsyncProcessing: this.getBooleanEnv('ENABLE_ASYNC_PROCESSING', false),
+        enableContractDiscovery: this.getBooleanEnv('ENABLE_CONTRACT_DISCOVERY', true),
       },
       queue: {
         rabbitMqUrl,

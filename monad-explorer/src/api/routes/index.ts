@@ -4,6 +4,7 @@ import { createTransactionRoutes } from './transactions';
 import { createBlockRoutes } from './blocks';
 import { createAddressRoutes } from './addresses';
 import { createTokenRoutes } from './tokens';
+import { createContractRoutes } from './contracts';
 
 /**
  * Create API routes for the logs-first architecture
@@ -37,11 +38,21 @@ export function createAPIRoutes(serviceContainer: ServiceContainer): Router {
         },
         tokens: {
           'GET /tokens/:address': 'Get token metadata and statistics',
+          'GET /tokens/:address/transfers': 'Get all token transfers for specific token',
+        },
+        contracts: {
+          'GET /contracts/:address': 'Get contract information with metadata',
+          'GET /contracts/:address/metadata': 'Get contract metadata and analysis',
+          'GET /contracts': 'Get contracts with pagination and filtering',
+          'POST /contracts/:address/enrich': 'Manually trigger contract enrichment',
         },
       },
       features: [
         'Runtime token transfer parsing',
         'No TokenTransfer entity storage',
+        'On-demand contract discovery',
+        'Background contract enrichment',
+        'Smart contract metadata analysis',
         'Sub-100ms response times',
         'Comprehensive error handling',
         'Request validation',
@@ -52,6 +63,8 @@ export function createAPIRoutes(serviceContainer: ServiceContainer): Router {
         'enriched-transaction': '/api/transactions/0x1234...?includeTokenTransfers=true',
         'address-transfers': '/api/addresses/0x1234.../token-transfers?limit=20&tokenAddress=0x5678...',
         'block-transactions': '/api/blocks/12345/transactions?includeTokenTransfers=true',
+        'contract-metadata': '/api/contracts/0x1234...?includeMetadata=true&includeBytecode=false',
+        'contract-enrichment': 'POST /api/contracts/0x1234.../enrich',
       },
     });
   });
@@ -61,6 +74,7 @@ export function createAPIRoutes(serviceContainer: ServiceContainer): Router {
   router.use('/blocks', createBlockRoutes(serviceContainer));
   router.use('/addresses', createAddressRoutes(serviceContainer));
   router.use('/tokens', createTokenRoutes(serviceContainer));
+  router.use('/contracts', createContractRoutes(serviceContainer));
 
   return router;
 } 

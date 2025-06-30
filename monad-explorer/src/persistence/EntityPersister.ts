@@ -14,14 +14,16 @@ export class EntityPersister {
   public async persistEntities(store: any, result: ProcessingResult): Promise<void> {
     const startTime = Date.now();
     
-    logger.info('Starting entity persistence', {
-      blocks: result.blocks.length,
-      transactions: result.transactions.length,
-      accounts: result.accounts.size,
-      logs: result.logs.length,
-      methodSignatures: result.methodSignatures.size,
-      tokens: result.tokens.length,
-    });
+          logger.info('Starting entity persistence', {
+        blocks: result.blocks.length,
+        transactions: result.transactions.length,
+        accounts: result.accounts.size,
+        logs: result.logs.length,
+        methodSignatures: result.methodSignatures.size,
+        tokens: result.tokens.length,
+        contracts: result.contracts.length,
+        discoveredContracts: result.discoveredContracts.length,
+      });
 
     try {
       // Persist entities in optimal order to respect foreign key constraints
@@ -31,6 +33,7 @@ export class EntityPersister {
       await this.persistTransactions(store, result);
       await this.persistLogs(store, result);
       await this.persistTokens(store, result);
+      await this.persistContracts(store, result);
       // ✅ TokenTransfers are now computed at runtime from logs - no persistence needed
 
       const duration = Date.now() - startTime;
@@ -246,6 +249,85 @@ export class EntityPersister {
     }
   }
 
+  /**
+   * Persist contract entities (both creation and discovered contracts)
+   * SMART PERSISTENCE: Check existing contracts first, insert only new ones
+   */
+  private async persistContracts(store: any, result: ProcessingResult): Promise<void> {
+    // Combine both regular contracts and discovered contracts
+    const allContracts = [...result.contracts, ...result.discoveredContracts];
+    
+    if (allContracts.length === 0) {
+      return;
+    }
+
+    try {
+      // Check which contracts already exist in database
+      const contractAddresses = allContracts.map(c => c.address.toLowerCase());
+      
+      const existingContracts = await store.find('Contract', {
+        where: { 
+          address: In(contractAddresses)
+        }
+      });
+      
+      const existingAddresses = new Set(existingContracts.map((c: any) => c.address.toLowerCase()));
+      
+      logger.debug('Database contract existence check completed', {
+        creationContracts: result.contracts.length,
+        discoveredContracts: result.discoveredContracts.length,
+        totalRequested: allContracts.length,
+        existingInDb: existingAddresses.size,
+        newToInsert: allContracts.length - existingAddresses.size,
+      });
+
+      // Insert only NEW contracts (those not in database)
+      const newContracts = allContracts.filter(c => !existingAddresses.has(c.address.toLowerCase()));
+      
+      if (newContracts.length > 0) {
+        // Separate creation and discovered contracts for logging
+        const newCreationContracts = newContracts.filter(c => 
+          result.contracts.some(rc => rc.address === c.address)
+        );
+        const newDiscoveredContracts = newContracts.filter(c => 
+          result.discoveredContracts.some(dc => dc.address === c.address)
+        );
+        
+        logger.debug('Inserting new contracts', {
+          total: newContracts.length,
+          creation: newCreationContracts.length,
+          discovered: newDiscoveredContracts.length,
+          addresses: newContracts.map(c => c.address)
+        });
+        
+        await store.insert(newContracts);
+        
+        logger.debug('✅ New contracts inserted successfully', { 
+          total: newContracts.length,
+          creation: newCreationContracts.length,
+          discovered: newDiscoveredContracts.length,
+        });
+      }
+
+      logger.debug('✅ Contract persistence completed successfully', { 
+        totalContracts: allContracts.length,
+        creationContracts: result.contracts.length,
+        discoveredContracts: result.discoveredContracts.length,
+        existingInDb: existingAddresses.size,
+        inserted: newContracts.length,
+      });
+      
+    } catch (error) {
+      logger.error('❌ Failed to persist contracts', {
+        totalContracts: allContracts.length,
+        creationContracts: result.contracts.length,
+        discoveredContracts: result.discoveredContracts.length,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      throw error;
+    }
+  }
+
   // ✅ TokenTransfer persistence removed - now computed at runtime from logs
 
   /**
@@ -257,7 +339,9 @@ export class EntityPersister {
            result.accounts.size +
            result.logs.length +
            result.methodSignatures.size +
-           result.tokens.length;
+           result.tokens.length +
+           result.contracts.length +
+           result.discoveredContracts.length;
   }
 
   /**
@@ -274,6 +358,8 @@ export class EntityPersister {
       logs: result.logs.length,
       methodSignatures: result.methodSignatures.size,
       tokens: result.tokens.length,
+      contracts: result.contracts.length,
+      discoveredContracts: result.discoveredContracts.length,
     };
 
     return {

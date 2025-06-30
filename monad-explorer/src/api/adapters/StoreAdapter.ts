@@ -1,5 +1,5 @@
 import { DataSource } from 'typeorm';
-import { Transaction, Log, Block, TokenBalance } from '../../model/generated';
+import { Transaction, Log, Block, TokenBalance, Contract } from '../../model/generated';
 import { serviceContainer } from '../../services/core/ServiceContainer';
 import { ITransactionService } from '../../interfaces/services/ITransactionService';
 import { IInternalTransactionService } from '../../interfaces/services/IInternalTransactionService';
@@ -22,6 +22,13 @@ export interface StoreAdapter {
     findOne(options: any): Promise<TokenBalance | null>;
     find(options: any): Promise<TokenBalance[]>;
   };
+  Contract: {
+    findOne(options: any): Promise<Contract | null>;
+    find(options: any): Promise<Contract[]>;
+    findAndCount(options: any): Promise<[Contract[], number]>;
+    save(contract: Contract): Promise<Contract>;
+    count(options?: any): Promise<number>;
+  };
   
   // Service Resolution Methods
   getTransactionService(): Promise<ITransactionService>;
@@ -33,6 +40,7 @@ export function createStoreAdapter(dataSource: DataSource): StoreAdapter {
   const logRepo = dataSource.getRepository(Log);
   const blockRepo = dataSource.getRepository(Block);
   const tokenBalanceRepo = dataSource.getRepository(TokenBalance);
+  const contractRepo = dataSource.getRepository(Contract);
 
   return {
     Transaction: {
@@ -261,6 +269,106 @@ export function createStoreAdapter(dataSource: DataSource): StoreAdapter {
           return result;
         } catch (error) {
           throw new Error(`TokenBalance find failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+    },
+
+    Contract: {
+      async findOne(options: any): Promise<Contract | null> {
+        try {
+          const result = await contractRepo.findOne({
+            where: options.where,
+            relations: options.relations || []
+          });
+          return result;
+        } catch (error) {
+          throw new Error(`Contract findOne failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      },
+
+      async find(options: any): Promise<Contract[]> {
+        try {
+          const queryOptions: any = {};
+          
+          if (options.where) {
+            queryOptions.where = options.where;
+          }
+          
+          if (options.relations) {
+            queryOptions.relations = options.relations;
+          }
+          
+          if (options.order) {
+            queryOptions.order = options.order;
+          }
+          
+          if (options.skip !== undefined) {
+            queryOptions.skip = options.skip;
+          }
+          
+          if (options.take !== undefined) {
+            queryOptions.take = options.take;
+          }
+
+          const result = await contractRepo.find(queryOptions);
+          return result;
+        } catch (error) {
+          throw new Error(`Contract find failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      },
+
+      async findAndCount(options: any): Promise<[Contract[], number]> {
+        try {
+          const queryOptions: any = {};
+          
+          if (options.where) {
+            queryOptions.where = options.where;
+          }
+          
+          if (options.relations) {
+            queryOptions.relations = options.relations;
+          }
+          
+          if (options.order) {
+            queryOptions.order = options.order;
+          }
+          
+          if (options.skip !== undefined) {
+            queryOptions.skip = options.skip;
+          }
+          
+          if (options.take !== undefined) {
+            queryOptions.take = options.take;
+          }
+
+          const result = await contractRepo.findAndCount(queryOptions);
+          return result;
+        } catch (error) {
+          throw new Error(`Contract findAndCount failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      },
+
+      async save(contract: Contract): Promise<Contract> {
+        try {
+          const result = await contractRepo.save(contract);
+          return result;
+        } catch (error) {
+          throw new Error(`Contract save failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      },
+
+      async count(options: any = {}): Promise<number> {
+        try {
+          const queryOptions: any = {};
+          
+          if (options.where) {
+            queryOptions.where = options.where;
+          }
+
+          const result = await contractRepo.count(queryOptions);
+          return result;
+        } catch (error) {
+          throw new Error(`Contract count failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
       }
     },

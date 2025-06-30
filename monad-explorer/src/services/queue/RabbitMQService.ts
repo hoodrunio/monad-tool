@@ -5,6 +5,7 @@ import {
   IQueueService, 
   QueueMessage as IQueueMessage, 
   TokenEnrichmentMessage as ITokenEnrichmentMessage, 
+  ContractEnrichmentMessage as IContractEnrichmentMessage,
   InternalTransactionMessage as IInternalTransactionMessage,
   PublishOptions,
   ConsumeOptions,
@@ -14,7 +15,7 @@ import {
 
 // Legacy interfaces for backward compatibility
 export interface QueueMessage {
-  type: 'TOKEN_ENRICHMENT' | 'INTERNAL_TRANSACTION';
+  type: 'TOKEN_ENRICHMENT' | 'CONTRACT_ENRICHMENT' | 'INTERNAL_TRANSACTION';
   data: any;
   priority?: number;
   retryCount?: number;
@@ -38,6 +39,7 @@ interface QueueConfig {
   exchange: string;
   queues: {
     tokenEnrichment: string;
+    contractEnrichment: string;
     internalTransactions: string;
     deadLetter: string;
   };
@@ -59,6 +61,7 @@ export class RabbitMQService implements IQueueService {
     exchange: 'monad-explorer',
     queues: {
       tokenEnrichment: 'token-enrichment',
+      contractEnrichment: 'contract-enrichment',
       internalTransactions: 'internal-transactions',
       deadLetter: 'dead-letter',
     },
@@ -131,10 +134,12 @@ export class RabbitMQService implements IQueueService {
     };
 
     await this.channel.assertQueue(this.config.queues.tokenEnrichment, queueOptions);
+    await this.channel.assertQueue(this.config.queues.contractEnrichment, queueOptions);
     await this.channel.assertQueue(this.config.queues.internalTransactions, queueOptions);
 
     // Bind queues to exchange
     await this.channel.bindQueue(this.config.queues.tokenEnrichment, this.config.exchange, 'token.*');
+    await this.channel.bindQueue(this.config.queues.contractEnrichment, this.config.exchange, 'contract.*');
     await this.channel.bindQueue(this.config.queues.internalTransactions, this.config.exchange, 'transaction.*');
 
     logger.info('RabbitMQ infrastructure setup completed');
@@ -151,6 +156,19 @@ export class RabbitMQService implements IQueueService {
     };
 
     await this.publish('token-enrichment', queueMessage, options);
+  }
+
+  async publishContractEnrichment(message: IContractEnrichmentMessage, options?: PublishOptions): Promise<void> {
+    const queueMessage: IQueueMessage = {
+      type: 'CONTRACT_ENRICHMENT',
+      data: message,
+      priority: options?.priority || 3,
+      retryCount: 0,
+      timestamp: Date.now(),
+      messageId: `CONTRACT_ENRICHMENT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    };
+
+    await this.publish('contract-enrichment', queueMessage, options);
   }
 
   async publishInternalTransaction(message: IInternalTransactionMessage, options?: PublishOptions): Promise<void> {
@@ -214,6 +232,15 @@ export class RabbitMQService implements IQueueService {
         throw new Error(`Invalid message type: ${message.type}`);
       }
       await handler(message.data as ITokenEnrichmentMessage);
+    }, options);
+  }
+
+  async consumeContractEnrichment(handler: MessageHandler<IContractEnrichmentMessage>, options?: ConsumeOptions): Promise<void> {
+    await this.consume(this.config.queues.contractEnrichment, async (message: IQueueMessage) => {
+      if (message.type !== 'CONTRACT_ENRICHMENT') {
+        throw new Error(`Invalid message type: ${message.type}`);
+      }
+      await handler(message.data as IContractEnrichmentMessage);
     }, options);
   }
 
@@ -374,7 +401,21 @@ export class RabbitMQService implements IQueueService {
         // Publish to retry queue with delay
         setTimeout(async () => {
           if (this.channel) {
-            const routingKey = content.type === 'TOKEN_ENRICHMENT' ? 'token.enrichment' : 'transaction.internal';
+            let routingKey: string;
+            switch (content.type) {
+              case 'TOKEN_ENRICHMENT':
+                routingKey = 'token.enrichment';
+                break;
+              case 'CONTRACT_ENRICHMENT':
+                routingKey = 'contract.enrichment';
+                break;
+              case 'INTERNAL_TRANSACTION':
+                routingKey = 'transaction.internal';
+                break;
+              default:
+                routingKey = 'unknown';
+            }
+            
             const published = this.channel.publish(
               this.config.exchange,
               routingKey,

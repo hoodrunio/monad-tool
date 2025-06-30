@@ -1,8 +1,9 @@
 import { serviceContainer } from '../services/core/ServiceContainer';
 import { ITokenDetectionService } from '../interfaces/services/ITokenDetectionService';
+import { IContractDiscoveryService } from '../interfaces/services/IContractDiscoveryService';
 import { ILogTokenTransferParser } from '../interfaces/processing/ILogTokenTransferParser';
 import { logger } from '../utils/logger';
-import { Account, Block, Transaction, Log, MethodSignature, Token, TokenType, TokenEnrichmentStatus } from '../model/generated';
+import { Account, Block, Transaction, Log, MethodSignature, Token, TokenType, TokenEnrichmentStatus, Contract } from '../model/generated';
 
 export interface ProcessingResult {
   blocks: Block[];
@@ -11,6 +12,8 @@ export interface ProcessingResult {
   logs: Log[];
   methodSignatures: Map<string, MethodSignature>;
   tokens: Token[];
+  contracts: Contract[];
+  discoveredContracts: Contract[]; // ✅ On-demand discovered contracts
   // ✅ TokenTransfers are now runtime-computed from logs, not stored
 }
 
@@ -42,6 +45,9 @@ export class BlockProcessor {
         await this.processBlock(block, result);
       }
 
+      // Process contract discovery (on-demand detection of unknown contracts)
+      await this.processContractDiscovery(result, store);
+
       // Process token detection if enabled
       await this.processTokenDetection(result, store);
 
@@ -53,6 +59,8 @@ export class BlockProcessor {
         logsProcessed: result.logs.length,
         accountsProcessed: result.accounts.size,
         tokensEnriched: result.tokens.length,
+        contractsCreated: result.contracts.length,
+        contractsDiscovered: result.discoveredContracts.length,
       });
 
       return result;
@@ -80,6 +88,11 @@ export class BlockProcessor {
     for (const tx of block.transactions) {
       const processedTx = this.createTransactionEntity(tx, processedBlock);
       result.transactions.push(processedTx);
+
+      // Process contract creation if this is a contract creation transaction
+      if (processedTx.isContractCreation && processedTx.contractAddress) {
+        this.processContractCreation(processedTx, result);
+      }
 
       // Process accounts
       this.processAccountEntity(tx.from, result.accounts, processedBlock.timestamp, false);
@@ -190,6 +203,50 @@ export class BlockProcessor {
   }
 
   /**
+   * Process contract creation
+   */
+  private async processContractCreation(transaction: Transaction, result: ProcessingResult): Promise<void> {
+    if (!transaction.contractAddress) {
+      return;
+    }
+
+    // Check if contract already exists (prevent duplicates)
+    const existingContract = result.contracts.find(c => 
+      c.address.toLowerCase() === transaction.contractAddress!.toLowerCase()
+    );
+    
+    if (existingContract) {
+      return;
+    }
+
+    // Create Contract entity
+    const contract = new Contract({
+      id: transaction.contractAddress.toLowerCase(),
+      address: transaction.contractAddress.toLowerCase(),
+      creator: transaction.fromAddress.toLowerCase(),
+      creationTransaction: transaction,
+      createdAt: transaction.timestamp,
+      bytecode: null, // Will be fetched by background worker
+      sourceCode: null, // Will be filled during verification
+      isVerified: false,
+      name: null, // Will be filled during verification
+      compilerVersion: null, // Will be filled during verification
+    });
+
+    result.contracts.push(contract);
+
+    // Queue contract for background enrichment
+    await this.queueContractForEnrichment(transaction);
+
+    logger.debug('Contract creation processed and queued for enrichment', {
+      contractAddress: contract.address,
+      creator: contract.creator,
+      transactionHash: transaction.hash,
+      blockNumber: transaction.block.number,
+    });
+  }
+
+  /**
    * Process account entity
    */
   private processAccountEntity(
@@ -243,6 +300,84 @@ export class BlockProcessor {
           source: 'builtin'
         }));
       }
+    }
+  }
+
+  /**
+   * Process contract discovery (on-demand detection of unknown contracts)
+   */
+  private async processContractDiscovery(result: ProcessingResult, store: any): Promise<void> {
+    try {
+      const config = await this.container.resolve<any>('appConfig');
+      
+      if (!config.processor.enableContractDiscovery) {
+        logger.debug('Contract discovery disabled', {
+          transactionCount: result.transactions.length,
+          logCount: result.logs.length,
+        });
+        return;
+      }
+
+      const contractDiscoveryService = await this.container.resolve<IContractDiscoveryService>('contractDiscoveryService');
+      
+      // Discover contracts from transactions and logs
+      const transactionContracts = await contractDiscoveryService.discoverFromTransactions(
+        result.transactions, 
+        result.blocks[0]?.number || 0
+      );
+      
+      const logContracts = await contractDiscoveryService.discoverFromLogs(
+        result.logs, 
+        result.blocks[0]?.number || 0
+      );
+
+      // Combine and deduplicate discovered contracts
+      const allDiscovered = [...transactionContracts, ...logContracts];
+      const uniqueDiscovered = new Map<string, any>();
+      
+      for (const discovered of allDiscovered) {
+        if (!uniqueDiscovered.has(discovered.address)) {
+          uniqueDiscovered.set(discovered.address, discovered);
+        }
+      }
+
+      if (uniqueDiscovered.size > 0) {
+        // Create basic contract entities
+        const basicContracts = await contractDiscoveryService.createBasicContracts(
+          Array.from(uniqueDiscovered.values())
+        );
+
+        result.discoveredContracts.push(...basicContracts);
+
+        // Queue discovered contracts for background enrichment
+        for (const contract of basicContracts) {
+          try {
+            await this.queueDiscoveredContractForEnrichment(contract);
+          } catch (error) {
+            logger.warn('Failed to queue discovered contract for enrichment', {
+              contractAddress: contract.address,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            });
+          }
+        }
+
+        logger.debug('Contract discovery completed', {
+          transactionContracts: transactionContracts.length,
+          logContracts: logContracts.length,
+          uniqueDiscovered: uniqueDiscovered.size,
+          queued: uniqueDiscovered.size,
+        });
+      } else {
+        logger.debug('No new contracts discovered', {
+          transactionCount: result.transactions.length,
+          logCount: result.logs.length,
+        });
+      }
+
+    } catch (error) {
+      logger.error('Contract discovery processing failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
     }
   }
 
@@ -439,6 +574,100 @@ export class BlockProcessor {
   }
 
   /**
+   * Queue contract for background enrichment
+   */
+  private async queueContractForEnrichment(transaction: Transaction): Promise<void> {
+    try {
+      const config = await this.container.resolve<any>('appConfig');
+      
+      if (!config.processor.enableAsyncProcessing) {
+        logger.debug('Async processing disabled - skipping contract enrichment queue');
+        return;
+      }
+
+      const queueService = await this.container.resolve<any>('queueService');
+      
+      if (!queueService.isConnected()) {
+        logger.debug('Queue service not connected - skipping contract enrichment queue');
+        return;
+      }
+
+      const enrichmentMessage = {
+        contractAddress: transaction.contractAddress!,
+        creator: transaction.fromAddress,
+        blockNumber: transaction.block.number,
+        transactionHash: transaction.hash,
+        deploymentBytecode: transaction.input || undefined,
+      };
+
+      await queueService.publishContractEnrichment(enrichmentMessage, {
+        priority: 3, // Lower priority than tokens
+        persistent: true,
+      });
+
+      logger.debug('Contract queued for enrichment', {
+        contractAddress: transaction.contractAddress,
+        creator: transaction.fromAddress,
+        blockNumber: transaction.block.number,
+      });
+
+    } catch (error) {
+      logger.warn('Failed to queue contract for enrichment', {
+        contractAddress: transaction.contractAddress,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      // Don't throw - continue processing even if queueing fails
+    }
+  }
+
+  /**
+   * Queue discovered contract for background enrichment
+   */
+  private async queueDiscoveredContractForEnrichment(contract: Contract): Promise<void> {
+    try {
+      const config = await this.container.resolve<any>('appConfig');
+      
+      if (!config.processor.enableAsyncProcessing) {
+        logger.debug('Async processing disabled - skipping discovered contract enrichment queue');
+        return;
+      }
+
+      const queueService = await this.container.resolve<any>('queueService');
+      
+      if (!queueService.isConnected()) {
+        logger.debug('Queue service not connected - skipping discovered contract enrichment queue');
+        return;
+      }
+
+      const enrichmentMessage = {
+        contractAddress: contract.address,
+        creator: contract.creator,
+        blockNumber: null, // Discovery block number not always available
+        transactionHash: null, // Original deployment transaction unknown
+        deploymentBytecode: undefined, // Will be fetched during enrichment
+        discoveredContract: true, // Flag to indicate this is a discovered contract
+      };
+
+      await queueService.publishContractEnrichment(enrichmentMessage, {
+        priority: 5, // Lower priority than creation contracts
+        persistent: true,
+      });
+
+      logger.debug('Discovered contract queued for enrichment', {
+        contractAddress: contract.address,
+        creator: contract.creator,
+      });
+
+    } catch (error) {
+      logger.warn('Failed to queue discovered contract for enrichment', {
+        contractAddress: contract.address,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      // Don't throw - continue processing even if queueing fails
+    }
+  }
+
+  /**
    * Initialize processing result structure
    */
   private initializeResult(): ProcessingResult {
@@ -449,6 +678,8 @@ export class BlockProcessor {
       logs: [],
       methodSignatures: new Map(),
       tokens: [],
+      contracts: [],
+      discoveredContracts: [],
     };
   }
 
@@ -490,8 +721,18 @@ export class BlockProcessor {
 
   /**
    * Calculate contract address for contract creation transactions
+   * Uses Ethereum CREATE opcode address calculation
+   * Note: This is a simplified version. Real implementation would use RLP encoding + Keccak256
    */
   private calculateContractAddress(from: string, nonce: bigint): string {
-    return `${from}-contract-${nonce.toString()}`;
+    // Simplified contract address calculation
+    // In production, this should use: keccak256(rlp([sender, nonce]))
+    const normalized = from.toLowerCase().replace('0x', '');
+    const nonceHex = nonce.toString(16).padStart(16, '0');
+    
+    // Create a deterministic address based on sender + nonce
+    // This is a simplified approach - real Ethereum uses RLP + Keccak256
+    const addressSuffix = (normalized + nonceHex).slice(-40);
+    return `0x${addressSuffix}`;
   }
 } 

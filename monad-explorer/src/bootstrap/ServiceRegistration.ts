@@ -5,6 +5,8 @@ import { TokenDetectionService } from '../services/token/TokenDetectionService';
 import { EventTokenDetector } from '../services/token/EventTokenDetector';
 import { RedisTokenRepository } from '../services/token/RedisTokenRepository';
 import { MulticallTokenMetadataFetcher } from '../services/token/MulticallTokenMetadataFetcher';
+import { ContractMetadataFetcher } from '../services/contract/ContractMetadataFetcher';
+import { ContractDiscoveryService } from '../services/contract/ContractDiscoveryService';
 import { RedisCache } from '../services/cache/RedisCache';
 import { RabbitMQService } from '../services/queue/RabbitMQService';
 import { LogTokenTransferParser } from '../services/parsing/LogTokenTransferParser';
@@ -18,6 +20,8 @@ import { ITokenDetectionService } from '../interfaces/services/ITokenDetectionSe
 import { IEventTokenDetector } from '../interfaces/services/IEventTokenDetector';
 import { ITokenRepository } from '../interfaces/services/ITokenRepository';
 import { ITokenMetadataFetcher } from '../interfaces/services/ITokenMetadataFetcher';
+import { IContractMetadataFetcher } from '../interfaces/services/IContractMetadataFetcher';
+import { IContractDiscoveryService } from '../interfaces/services/IContractDiscoveryService';
 import { ICacheService } from '../interfaces/cache/ICacheService';
 import { IQueueService } from '../interfaces/services/IQueueService';
 import { ILogTokenTransferParser } from '../interfaces/processing/ILogTokenTransferParser';
@@ -136,6 +140,22 @@ export class ServiceRegistration {
     serviceContainer.registerFactory<ITokenMetadataFetcher>('tokenMetadataFetcher', async () => {
       const rpcClient = await serviceContainer.resolveInternal<IRpcClient>('rpcClient');
       return new MulticallTokenMetadataFetcher(rpcClient);
+    });
+
+    // Register Contract Metadata Fetcher (for comprehensive contract analysis)
+    serviceContainer.registerFactory<IContractMetadataFetcher>('contractMetadataFetcher', async () => {
+      const rpcClient = await serviceContainer.resolveInternal<IRpcClient>('rpcClient');
+      const tokenDetectionService = await serviceContainer.resolveInternal<ITokenDetectionService>('tokenDetectionService');
+      const cacheService = await serviceContainer.resolveInternal<ICacheService>('cacheService');
+      return new ContractMetadataFetcher(rpcClient, tokenDetectionService, cacheService);
+    });
+
+    // Register Contract Discovery Service (for on-demand contract detection)
+    serviceContainer.registerFactory<IContractDiscoveryService>('contractDiscoveryService', async () => {
+      const rpcClient = await serviceContainer.resolveInternal<IRpcClient>('rpcClient');
+      const cacheService = await serviceContainer.resolveInternal<ICacheService>('cacheService');
+      // DataSource will be passed when needed
+      return new ContractDiscoveryService(rpcClient, cacheService);
     });
 
     // Register Token Detection Service (with all dependencies)
