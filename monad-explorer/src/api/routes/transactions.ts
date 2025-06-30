@@ -1,9 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { ServiceContainer } from '../../services/core/ServiceContainer';
 import { ITransactionService } from '../../interfaces/services/ITransactionService';
-import { IInternalTransactionService } from '../../interfaces/services/IInternalTransactionService';
 import { asyncHandler, ApiErrorResponse, successResponse } from '../middleware/errorHandlers';
-import { validateTransactionHash, validatePaginationParams, validateBoolean } from '../validators/common';
+import { validateTransactionHash } from '../validators/common';
 import { prepareForApiResponse } from '../../utils/bigint-serializer';
 
 /**
@@ -187,60 +186,3 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
 
   return router;
 }
-
-// Example usage for documentation
-export const transactionRoutesExamples = {
-  'enriched-transaction': {
-    url: 'GET /api/transactions/0x1234567890abcdef1234567890abcdef12345678',
-    description: 'Get enriched transaction with all data',
-    queryParams: {
-      includeTokenTransfers: 'true|false (default: true)',
-      includeTokenMetadata: 'true|false (default: false)',
-      includeDecodedLogs: 'true|false (default: false)'
-    },
-    response: {
-      transaction: {
-        hash: '0x1234...',
-        blockNumber: 12345,
-        fromAddress: '0xabc...',
-        toAddress: '0xdef...',
-        value: '1000000000000000000',
-        gas: '21000',
-        gasUsed: '21000',
-        status: 1,
-        tokenTransfers: [
-          {
-            tokenAddress: '0x123...',
-            fromAddress: '0xabc...',
-            toAddress: '0xdef...',
-            value: '1000000',
-            tokenType: 'ERC20',
-            logIndex: 2
-          }
-        ],
-        decodedLogs: [],
-        isContractInteraction: true,
-        transactionFee: '42000000000000000'
-      }
-    }
-  },
-  'token-transfers-only': {
-    url: 'GET /api/transactions/0x1234567890abcdef1234567890abcdef12345678/token-transfers',
-    description: 'Get only token transfers for transaction',
-    queryParams: {
-      includeMetadata: 'true|false (default: false)'
-    },
-    response: [
-      {
-        tokenAddress: '0x123...',
-        fromAddress: '0xabc...',
-        toAddress: '0xdef...',
-        value: '1000000',
-        tokenType: 'ERC20',
-        transactionHash: '0x1234...',
-        logIndex: 2,
-        blockNumber: 12345
-      }
-    ]
-  }
-}; 
