@@ -9,6 +9,7 @@ import { RedisCache } from '../services/cache/RedisCache';
 import { RabbitMQService } from '../services/queue/RabbitMQService';
 import { LogTokenTransferParser } from '../services/parsing/LogTokenTransferParser';
 import { TransactionService } from '../services/transaction/TransactionService';
+import { InternalTransactionService } from '../services/transaction/InternalTransactionService';
 import { logger } from '../utils/logger';
 
 // Import interfaces
@@ -21,6 +22,7 @@ import { ICacheService } from '../interfaces/cache/ICacheService';
 import { IQueueService } from '../interfaces/services/IQueueService';
 import { ILogTokenTransferParser } from '../interfaces/processing/ILogTokenTransferParser';
 import { ITransactionService } from '../interfaces/services/ITransactionService';
+import { IInternalTransactionService } from '../interfaces/services/IInternalTransactionService';
 
 /**
  * Service Registration Module
@@ -161,7 +163,22 @@ export class ServiceRegistration {
         const logTokenTransferParser = await serviceContainer.resolveInternal<ILogTokenTransferParser>('logTokenTransferParser');
         const cacheService = await serviceContainer.resolveInternal<ICacheService>('cacheService').catch(() => undefined);
         
-        return new TransactionService(store, logTokenTransferParser, cacheService);
+        // Create internal transaction service for transaction service integration
+        const rpcClient = await serviceContainer.resolveInternal<IRpcClient>('rpcClient');
+        const internalTransactionService = new InternalTransactionService(rpcClient, cacheService, store);
+        
+        return new TransactionService(store, logTokenTransferParser, cacheService, internalTransactionService);
+      }
+    });
+
+    // Register Internal Transaction Service (on-demand tracing)  
+    // Note: InternalTransactionService requires store parameter for address-based queries
+    serviceContainer.registerInstance<any>('internalTransactionServiceFactory', {
+      async create(store?: any): Promise<IInternalTransactionService> {
+        const rpcClient = await serviceContainer.resolveInternal<IRpcClient>('rpcClient');
+        const cacheService = await serviceContainer.resolveInternal<ICacheService>('cacheService').catch(() => undefined);
+        
+        return new InternalTransactionService(rpcClient, cacheService, store);
       }
     });
 

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { ServiceContainer } from '../../services/core/ServiceContainer';
 import { ITransactionService } from '../../interfaces/services/ITransactionService';
+import { IInternalTransactionService } from '../../interfaces/services/IInternalTransactionService';
 import { asyncHandler, ApiErrorResponse, successResponse } from '../middleware/errorHandlers';
 import { validateTransactionHash, validatePaginationParams, validateBoolean } from '../validators/common';
 import { prepareForApiResponse } from '../../utils/bigint-serializer';
@@ -20,7 +21,8 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
     const { 
       includeTokenTransfers = 'true',
       includeTokenMetadata = 'true',
-      includeDecodedLogs = 'true'
+      includeDecodedLogs = 'true',
+      includeInternalTransactions = 'true'
     } = req.query;
 
     // Validate transaction hash
@@ -39,7 +41,8 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
     const enrichedTx = await transactionService.getEnrichedTransaction(hash, {
       includeTokenTransfers: includeTokenTransfers === 'true',
       includeTokenMetadata: includeTokenMetadata === 'true',
-      includeDecodedLogs: includeDecodedLogs === 'true'
+      includeDecodedLogs: includeDecodedLogs === 'true',
+      includeInternalTransactions: includeInternalTransactions === 'true'
     });
 
     if (!enrichedTx) {
@@ -95,6 +98,90 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       transferCount: transfers.length,
       runtimeComputed: true,
       storageOptimization: '70% reduction vs entity storage'
+    });
+  }));
+
+  /**
+   * GET /transactions/:hash/internal-transactions
+   * Get internal transactions for a specific transaction (on-demand tracing)
+   */
+  router.get('/:hash/internal-transactions', asyncHandler(async (req: Request, res: Response) => {
+    const { hash } = req.params;
+    const { 
+      includeFailedCalls = 'false',
+      maxDepth = '10',
+      filterByAddress = ''
+    } = req.query;
+
+    // Validate transaction hash
+    if (!validateTransactionHash(hash)) {
+      throw new ApiErrorResponse(
+        'Invalid transaction hash format',
+        400,
+        'INVALID_TRANSACTION_HASH'
+      );
+    }
+
+    // Validate maxDepth
+    const depth = parseInt(maxDepth as string, 10);
+    if (isNaN(depth) || depth < 1 || depth > 20) {
+      throw new ApiErrorResponse(
+        'Invalid maxDepth parameter. Must be between 1 and 20',
+        400,
+        'INVALID_MAX_DEPTH'
+      );
+    }
+
+    // Get InternalTransactionService from container (no store needed for tx-specific queries)
+    const internalTxServiceFactory = await serviceContainer.resolve<any>('internalTransactionServiceFactory');
+    const internalTxService = await internalTxServiceFactory.create();
+
+    // Get internal transactions with options
+    const internalTxs = await internalTxService.getInternalTransactions(hash, {
+      includeFailedCalls: includeFailedCalls === 'true',
+      maxDepth: depth,
+      filterByAddress: filterByAddress ? (filterByAddress as string) : undefined
+    });
+
+    // Convert BigInt fields to strings for JSON response
+    const apiInternalTxs = prepareForApiResponse(internalTxs);
+    
+    successResponse(res, apiInternalTxs, 'Internal transactions retrieved successfully', 200, {
+      architecture: 'on-demand-tracing',
+      internalTransactionCount: internalTxs.length,
+      runtimeComputed: true,
+      storageOptimization: '100% (not stored in DB)',
+      performance: 'trace-based'
+    });
+  }));
+
+  /**
+   * GET /transactions/:hash/has-internal-transactions
+   * Quick check if transaction has internal transactions (lightweight)
+   */
+  router.get('/:hash/has-internal-transactions', asyncHandler(async (req: Request, res: Response) => {
+    const { hash } = req.params;
+
+    // Validate transaction hash
+    if (!validateTransactionHash(hash)) {
+      throw new ApiErrorResponse(
+        'Invalid transaction hash format',
+        400,
+        'INVALID_TRANSACTION_HASH'
+      );
+    }
+
+    // Get InternalTransactionService from container (no store needed for tx-specific queries)
+    const internalTxServiceFactory = await serviceContainer.resolve<any>('internalTransactionServiceFactory');
+    const internalTxService = await internalTxServiceFactory.create();
+
+    // Quick check for internal transactions
+    const hasInternal = await internalTxService.hasInternalTransactions(hash);
+
+    successResponse(res, { hasInternalTransactions: hasInternal }, 'Internal transaction check completed', 200, {
+      architecture: 'on-demand-tracing',
+      performance: 'optimized-check',
+      lightweight: true
     });
   }));
 

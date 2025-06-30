@@ -1,5 +1,5 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import { IRpcClient, RpcCallOptions, ContractCallOptions } from '../../interfaces/blockchain/IRpcClient';
+import { IRpcClient, RpcCallOptions, ContractCallOptions, TraceOptions } from '../../interfaces/blockchain/IRpcClient';
 import { RpcConfig } from '../../config/AppConfig';
 import { logger } from '../../utils/logger';
 
@@ -199,6 +199,20 @@ export class RpcClient implements IRpcClient {
 
   public async getTransactionReceipt(hash: string): Promise<unknown> {
     return this.call('eth_getTransactionReceipt', [hash]);
+  }
+
+  public async traceTransaction(hash: string, options: TraceOptions = {}): Promise<unknown> {
+    const traceConfig = {
+      tracer: options.tracer || 'callTracer',
+      timeout: options.timeout || '60s',
+      disableMemory: options.disableMemory !== false,
+      disableStack: options.disableStack !== false,
+      disableStorage: options.disableStorage !== false,
+      enableMemory: options.enableMemory === true,
+      enableReturnData: options.enableReturnData !== false,
+    };
+
+    return this.call('debug_traceTransaction', [hash, traceConfig]);
   }
 
   public async isHealthy(): Promise<boolean> {

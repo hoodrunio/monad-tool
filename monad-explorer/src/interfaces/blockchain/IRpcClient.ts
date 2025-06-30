@@ -20,6 +20,16 @@ export interface ContractCallOptions extends RpcCallOptions {
   gasPrice?: string;
 }
 
+export interface TraceOptions {
+  tracer?: string;
+  timeout?: string;
+  disableMemory?: boolean;
+  disableStack?: boolean;
+  disableStorage?: boolean;
+  enableMemory?: boolean;
+  enableReturnData?: boolean;
+}
+
 export interface IRpcClient {
   /**
    * Make a raw JSON-RPC call
@@ -63,6 +73,11 @@ export interface IRpcClient {
    * Get transaction receipt
    */
   getTransactionReceipt(hash: string): Promise<unknown>;
+
+  /**
+   * Trace transaction execution to get internal transactions
+   */
+  traceTransaction(hash: string, options?: TraceOptions): Promise<unknown>;
 
   /**
    * Check if client is healthy

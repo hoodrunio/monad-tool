@@ -7,6 +7,7 @@ import { ILogTokenTransferParser, ParsedTokenTransfer } from '../../interfaces/p
 import { ICacheService } from '../../interfaces/cache/ICacheService';
 import { logger } from '../../utils/logger';
 import { In } from 'typeorm';
+import { IInternalTransactionService } from '../../interfaces/services/IInternalTransactionService';
 
 export class TransactionService implements ITransactionService {
   private readonly cachePrefix = 'tx:enriched';
@@ -15,7 +16,8 @@ export class TransactionService implements ITransactionService {
   constructor(
     private readonly store: any, // Subsquid store/database
     private readonly logTokenTransferParser: ILogTokenTransferParser,
-    private readonly cacheService?: ICacheService
+    private readonly cacheService?: ICacheService,
+    private readonly internalTransactionService?: IInternalTransactionService
   ) {}
 
   public async getEnrichedTransaction(
@@ -393,7 +395,8 @@ export class TransactionService implements ITransactionService {
 
         // Enriched data (computed at runtime)
         tokenTransfers: [],
-        decodedLogs: []
+        decodedLogs: [],
+        internalTransactions: []
       };
 
       // Parse token transfers if requested
@@ -429,6 +432,21 @@ export class TransactionService implements ITransactionService {
           eventName: this.getEventName(log.topics[0]),
           decodedData: undefined // Would be populated by a log decoder service
         }));
+      }
+
+      // Parse internal transactions if requested
+      if (options.includeInternalTransactions === true && this.internalTransactionService) {
+        try {
+          const internalTransactions = await this.internalTransactionService.getInternalTransactions(transaction.hash);
+          enrichedTx.internalTransactions = internalTransactions || [];
+        } catch (error) {
+          logger.warn('Failed to get internal transactions', {
+            transactionHash: transaction.hash,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+          // Don't fail the whole request if internal transactions fail
+          enrichedTx.internalTransactions = [];
+        }
       }
 
       return enrichedTx;

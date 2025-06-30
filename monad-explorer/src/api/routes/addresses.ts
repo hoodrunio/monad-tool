@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { ServiceContainer } from '../../services/core/ServiceContainer';
 import { StoreAdapter } from '../adapters/StoreAdapter';
 import { ITransactionService } from '../../interfaces/services/ITransactionService';
+import { IInternalTransactionService } from '../../interfaces/services/IInternalTransactionService';
 import { ParsedTokenTransfer } from '../../interfaces/processing/ILogTokenTransferParser';
 import { asyncHandler, ApiErrorResponse, successResponse } from '../middleware/errorHandlers';
 import { validateAddress, validatePaginationParams, validateBoolean } from '../validators/common';
@@ -231,6 +232,74 @@ export function createAddressRoutes(serviceContainer: ServiceContainer): Router 
          tokenCount: tokenBalances.length
        });
     }
+  }));
+
+  /**
+   * GET /addresses/:address/internal-transactions
+   * Get internal transactions for an address (on-demand tracing)
+   */
+  router.get('/:address/internal-transactions', asyncHandler(async (req: Request, res: Response) => {
+    const address = req.params.address.toLowerCase();
+    const { 
+      includeFailedCalls = 'false',
+      maxDepth = '10',
+      limit = '50',
+      offset = '0'
+    } = req.query;
+
+    if (!validateAddress(address)) {
+      throw new ApiErrorResponse('Invalid address format', 400, 'INVALID_ADDRESS');
+    }
+
+    const { limit: validatedLimit, offset: validatedOffset } = validatePaginationParams(req.query);
+
+    // Validate maxDepth
+    const depth = parseInt(maxDepth as string, 10);
+    if (isNaN(depth) || depth < 1 || depth > 20) {
+      throw new ApiErrorResponse(
+        'Invalid maxDepth parameter. Must be between 1 and 20',
+        400,
+        'INVALID_MAX_DEPTH'
+      );
+    }
+
+    // Get InternalTransactionService from store (with store access for address-based queries)
+    const store = await serviceContainer.resolve<any>('store');
+    const internalTxService = await store.getInternalTransactionService();
+
+    const startTime = Date.now();
+    
+    // Get internal transactions for address
+    const result = await internalTxService.getInternalTransactionsForAddress(
+      address,
+      validatedLimit,
+      validatedOffset,
+      {
+        includeFailedCalls: includeFailedCalls === 'true',
+        maxDepth: depth
+      }
+    );
+    
+    const processingTime = Date.now() - startTime;
+
+    // Convert BigInt fields to strings for JSON response
+    const apiInternalTxs = prepareForApiResponse(result.internalTransactions);
+    
+    successResponse(res, {
+      address: address,
+      internalTransactions: apiInternalTxs,
+      pagination: {
+        limit: validatedLimit,
+        offset: validatedOffset,
+        total: result.total,
+        hasMore: validatedOffset + validatedLimit < result.total
+      },
+      runtime: {
+        processingTime: `${processingTime}ms`,
+        architecture: 'on-demand-tracing',
+        storageOptimization: '100% (not stored in DB)'
+      }
+    }, 'Internal transactions for address retrieved successfully', 200);
   }));
 
   /**

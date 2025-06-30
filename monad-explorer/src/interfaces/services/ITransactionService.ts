@@ -1,4 +1,5 @@
 import { ParsedTokenTransfer } from '../processing/ILogTokenTransferParser';
+import { ParsedInternalTransaction } from './IInternalTransactionService';
 
 export interface EnrichedTransaction {
   // Base transaction data
@@ -25,7 +26,7 @@ export interface EnrichedTransaction {
     eventSignature?: string;
     decodedData?: any;
   }>;
-  
+  internalTransactions: ParsedInternalTransaction[];
   // Metadata
   methodName?: string;
   methodID?: string;
@@ -39,6 +40,7 @@ export interface TransactionQueryOptions {
   includeTokenTransfers?: boolean;
   includeDecodedLogs?: boolean;
   includeTokenMetadata?: boolean;
+  includeInternalTransactions?: boolean;
 }
 
 export interface ITransactionService {

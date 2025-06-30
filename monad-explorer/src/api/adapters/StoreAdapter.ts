@@ -1,5 +1,8 @@
 import { DataSource } from 'typeorm';
 import { Transaction, Log, Block, TokenBalance } from '../../model/generated';
+import { serviceContainer } from '../../services/core/ServiceContainer';
+import { ITransactionService } from '../../interfaces/services/ITransactionService';
+import { IInternalTransactionService } from '../../interfaces/services/IInternalTransactionService';
 
 export interface StoreAdapter {
   Transaction: {
@@ -19,6 +22,10 @@ export interface StoreAdapter {
     findOne(options: any): Promise<TokenBalance | null>;
     find(options: any): Promise<TokenBalance[]>;
   };
+  
+  // Service Resolution Methods
+  getTransactionService(): Promise<ITransactionService>;
+  getInternalTransactionService(): Promise<IInternalTransactionService>;
 }
 
 export function createStoreAdapter(dataSource: DataSource): StoreAdapter {
@@ -256,6 +263,17 @@ export function createStoreAdapter(dataSource: DataSource): StoreAdapter {
           throw new Error(`TokenBalance find failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
       }
+    },
+
+    // Service Resolution Methods
+    async getTransactionService(): Promise<ITransactionService> {
+      const transactionServiceFactory = await serviceContainer.resolve<any>('transactionServiceFactory');
+      return await transactionServiceFactory.create(this);
+    },
+
+    async getInternalTransactionService(): Promise<IInternalTransactionService> {
+      const internalTransactionServiceFactory = await serviceContainer.resolve<any>('internalTransactionServiceFactory');
+      return await internalTransactionServiceFactory.create(this);
     }
   };
 } 
