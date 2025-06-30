@@ -518,13 +518,13 @@ export class BlockProcessor {
 
       // ✅ LOGS-FIRST APPROACH: TokenTransfers are now computed at runtime from logs
       // No need to store TokenTransfer entities - they will be parsed from logs when needed
-      logger.debug('Token detected and stored', {
+      /* logger.debug('Token detected and stored', {
         tokenAddress: log.address,
         tokenType: detection.detectedType,
         fromAddress: log.topics[1] ? `0x${log.topics[1].slice(26)}` : '0x0000000000000000000000000000000000000000',
         toAddress: log.topics[2] ? `0x${log.topics[2].slice(26)}` : '0x0000000000000000000000000000000000000000',
         nftTokenId: nftTokenId,
-      });
+      }); */
 
     } else {
       logger.debug('Log is not a token transfer event', {
@@ -559,10 +559,10 @@ export class BlockProcessor {
         persistent: true,
       });
 
-      logger.debug('Token queued for enrichment', {
+      /* logger.debug('Token queued for enrichment', {
         tokenAddress: log.address,
         blockNumber: log.transaction.block.number,
-      });
+      }); */
 
     } catch (error) {
       logger.error('Failed to queue token for enrichment', {
@@ -653,10 +653,10 @@ export class BlockProcessor {
         persistent: true,
       });
 
-      logger.debug('Discovered contract queued for enrichment', {
+      /* logger.debug('Discovered contract queued for enrichment', {
         contractAddress: contract.address,
         creator: contract.creator,
-      });
+      }); */
 
     } catch (error) {
       logger.warn('Failed to queue discovered contract for enrichment', {

@@ -213,7 +213,7 @@ export class RabbitMQService implements IQueueService {
         throw new Error('Failed to publish message to exchange');
       }
 
-      logger.debug('Message published successfully', { queueName, type: message.type });
+     // logger.debug('Message published successfully', { queueName, type: message.type });
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
       this.errorCount++;
@@ -268,10 +268,10 @@ export class RabbitMQService implements IQueueService {
       try {
         const content = JSON.parse(msg.content.toString()) as T;
         
-        logger.debug('Processing message', { 
+        /* logger.debug('Processing message', { 
           queue: queueName, 
           messageId: msg.properties.messageId
-        });
+        }); */
 
         await handler(content);
         
@@ -280,10 +280,10 @@ export class RabbitMQService implements IQueueService {
           this.channel?.ack(msg);
         }
         
-        logger.debug('Message processed successfully', { 
+        /* logger.debug('Message processed successfully', { 
           queue: queueName, 
           messageId: msg.properties.messageId
-        });
+        }); */
         
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error);

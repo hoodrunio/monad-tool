@@ -152,11 +152,11 @@ export class TokenEnrichmentWorker {
       const isAlreadyProcessed = existingToken && existingToken.processed === true;
 
       if (hasCompleteMetadata || isAlreadyProcessed) {
-        logger.debug('Token already processed, skipping', {
+        /* logger.debug('Token already processed, skipping', {
           tokenAddress,
           hasCompleteMetadata,
           isProcessed: existingToken?.processed
-        });
+        }); */
         this.processedCount++; // Count skipped tokens as processed
         return;
       }
@@ -184,7 +184,7 @@ export class TokenEnrichmentWorker {
         return;
       }
 
-      logger.debug('Token metadata fetched successfully', {
+      /* logger.debug('Token metadata fetched successfully', {
         tokenAddress,
         tokenType,
         metadata: {
@@ -195,7 +195,7 @@ export class TokenEnrichmentWorker {
           totalSupply: metadata.totalSupply ? metadata.totalSupply.toString() : undefined,
           contractExists: metadata.contractExists,
         },
-      });
+      }); */
 
       // Save to both Redis and PostgreSQL
       await this.saveEnrichedToken(tokenAddress, tokenType, metadata);
@@ -244,7 +244,7 @@ export class TokenEnrichmentWorker {
       // 2. Update PostgreSQL database for GraphQL queries  
       await this.updatePostgreSQLToken(address, metadata);
 
-      logger.debug('✅ Token enrichment completed successfully', {
+      /* logger.debug('✅ Token enrichment completed successfully', {
         address,
         type: tokenType,
         metadata: {
@@ -254,7 +254,7 @@ export class TokenEnrichmentWorker {
           // Convert BigInt to string for logging
           totalSupply: metadata.totalSupply ? metadata.totalSupply.toString() : undefined,
         },
-      });
+      }); */
 
     } catch (error) {
       logger.error('Failed to save enriched token', {
@@ -283,7 +283,7 @@ export class TokenEnrichmentWorker {
     try {
       const tokenRepository = queryRunner.manager.getRepository(Token);
       
-      logger.debug('Attempting atomic PostgreSQL token update', {
+      /* logger.debug('Attempting atomic PostgreSQL token update', {
         address,
         metadata: {
           name: metadata.name,
@@ -292,7 +292,7 @@ export class TokenEnrichmentWorker {
           totalSupply: metadata.totalSupply ? metadata.totalSupply.toString() : undefined,
           contractExists: metadata.contractExists,
         },
-      });
+      }); */
 
       // 🔒 ATOMIC: Find and lock token with PENDING status for update
       const tokenToUpdate = await queryRunner.query(`
@@ -349,12 +349,12 @@ export class TokenEnrichmentWorker {
 
       await queryRunner.commitTransaction();
 
-      logger.debug('✅ PostgreSQL token updated atomically', {
+      /* logger.debug('✅ PostgreSQL token updated atomically', {
         address: token.address,
         status: updateData.enrichment_status,
         updatedFields: Object.keys(updateData),
         attempts: updateData.enrichment_attempts,
-      });
+      }); */
 
     } catch (error) {
       await queryRunner.rollbackTransaction();

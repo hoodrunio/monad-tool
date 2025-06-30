@@ -194,21 +194,21 @@ export class EntityPersister {
       
       const existingAddresses = new Set(existingTokens.map((t: any) => t.address.toLowerCase()));
       
-      logger.debug('Database token existence check completed', {
+      /* logger.debug('Database token existence check completed', {
         requested: result.tokens.length,
         existingInDb: existingAddresses.size,
         newToInsert: result.tokens.length - existingAddresses.size,
         existingAddresses: Array.from(existingAddresses)
-      });
+      }); */
 
       // ✅ STEP 2: Mark existing tokens as successful (for FK references)
       for (const token of result.tokens) {
         if (existingAddresses.has(token.address.toLowerCase())) {
           successfulTokenIds.add(token.id);
-          logger.debug('Token already exists in database', {
+          /* logger.debug('Token already exists in database', {
             tokenId: token.id,
             address: token.address
-          });
+          }); */
         }
       }
 
