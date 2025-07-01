@@ -7,6 +7,7 @@ import { RedisTokenRepository } from '../services/token/RedisTokenRepository';
 import { MulticallTokenMetadataFetcher } from '../services/token/MulticallTokenMetadataFetcher';
 import { ContractMetadataFetcher } from '../services/contract/ContractMetadataFetcher';
 import { ContractDiscoveryService } from '../services/contract/ContractDiscoveryService';
+import { OptimizedContractFilter } from '../services/contract/OptimizedContractFilter';
 import { RedisCache } from '../services/cache/RedisCache';
 import { RabbitMQService } from '../services/queue/RabbitMQService';
 import { LogTokenTransferParser } from '../services/parsing/LogTokenTransferParser';
@@ -22,6 +23,7 @@ import { ITokenRepository } from '../interfaces/services/ITokenRepository';
 import { ITokenMetadataFetcher } from '../interfaces/services/ITokenMetadataFetcher';
 import { IContractMetadataFetcher } from '../interfaces/services/IContractMetadataFetcher';
 import { IContractDiscoveryService } from '../interfaces/services/IContractDiscoveryService';
+import { IOptimizedContractFilter } from '../interfaces/services/IOptimizedContractFilter';
 import { ICacheService } from '../interfaces/cache/ICacheService';
 import { IQueueService } from '../interfaces/services/IQueueService';
 import { ILogTokenTransferParser } from '../interfaces/processing/ILogTokenTransferParser';
@@ -150,12 +152,20 @@ export class ServiceRegistration {
       return new ContractMetadataFetcher(rpcClient, tokenDetectionService, cacheService);
     });
 
+    // Register Optimized Contract Filter (for RPC call reduction)
+    serviceContainer.registerFactory<IOptimizedContractFilter>('optimizedContractFilter', async () => {
+      const cacheService = await serviceContainer.resolveInternal<ICacheService>('cacheService');
+      // DataSource will be passed when needed
+      return new OptimizedContractFilter(cacheService);
+    });
+
     // Register Contract Discovery Service (for on-demand contract detection)
     serviceContainer.registerFactory<IContractDiscoveryService>('contractDiscoveryService', async () => {
       const rpcClient = await serviceContainer.resolveInternal<IRpcClient>('rpcClient');
       const cacheService = await serviceContainer.resolveInternal<ICacheService>('cacheService');
+      const optimizedFilter = await serviceContainer.resolveInternal<IOptimizedContractFilter>('optimizedContractFilter');
       // DataSource will be passed when needed
-      return new ContractDiscoveryService(rpcClient, cacheService);
+      return new ContractDiscoveryService(rpcClient, cacheService, optimizedFilter);
     });
 
     // Register Token Detection Service (with all dependencies)

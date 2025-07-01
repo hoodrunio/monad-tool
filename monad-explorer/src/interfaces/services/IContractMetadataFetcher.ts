@@ -31,6 +31,7 @@ export interface ContractAnalysisOptions {
   detectTokenInterface?: boolean;
   analyzeProxy?: boolean;
   timeout?: number;
+  skipContractCheck?: boolean; // Skip contractExists check (for contract enrichment)
 }
 
 export interface ContractAnalysisResult {

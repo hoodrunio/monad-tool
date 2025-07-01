@@ -60,7 +60,7 @@ export function createTokenRoutes(serviceContainer: ServiceContainer): Router {
         const metadata = await tokenMetadataFetcher.fetchMetadata(
           address,
           tokenType,
-          blockNumber ? parseInt(blockNumber as string) : undefined
+          { blockNumber: blockNumber ? parseInt(blockNumber as string) : undefined }
         );
         
         responseData.metadata = metadata;
@@ -304,7 +304,7 @@ export function createTokenRoutes(serviceContainer: ServiceContainer): Router {
     const metadata = await tokenMetadataFetcher.fetchMetadata(
       address,
       detectedTokenType,
-      blockNumber ? parseInt(blockNumber as string) : undefined
+      { blockNumber: blockNumber ? parseInt(blockNumber as string) : undefined }
     );
 
     successResponse(res, prepareForApiResponse({

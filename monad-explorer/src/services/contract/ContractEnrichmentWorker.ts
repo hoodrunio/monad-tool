@@ -154,12 +154,14 @@ export class ContractEnrichmentWorker {
       });
 
       // Fetch comprehensive contract metadata
+      // Skip contractExists check since ContractDiscoveryService already confirmed it's a contract
       const metadata = await this.contractMetadataFetcher.fetchMetadata(contractAddress, {
         blockNumber,
-        fetchBytecode: true,
+        fetchBytecode: false, // ✅ OPTIMIZATION: Skip bytecode fetch during enrichment - fetch on-demand only
         detectTokenInterface: true,
         analyzeProxy: true,
         timeout: this.config.processingTimeout - 10000, // Leave 10s buffer
+        skipContractCheck: true, // ✅ OPTIMIZATION: Skip getCode call - already confirmed during contract discovery
       });
 
       if (!metadata.contractExists) {

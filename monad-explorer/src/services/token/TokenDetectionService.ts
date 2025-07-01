@@ -109,14 +109,9 @@ export class TokenDetectionService implements ITokenDetectionService {
         return this.createEmptyResult();
       }
 
-      // 2. Just check if contract exists (minimal RPC call)
-      const contractExists = await this.metadataFetcher.contractExists(tokenAddress, blockNumber);
-
-      if (!contractExists) {
-        logger.debug('Contract does not exist', { tokenAddress });
-        return this.createEmptyResult();
-      }
-
+      // If an address emits a transfer event, we assume here it's 100% certain to be a contract
+      // Only contracts can emit events, so this check is redundant and expensive
+      
       // 3. Create result from detection only (no metadata needed)
       const result = this.createResultFromDetection(eventDetection);
 

@@ -41,9 +41,6 @@ secp256k1_pubkey = "028890a9064c34f58b1ddfdb1ef5e7bac7a303ca0d6d4388af1c3f8b1b06
 address = "monad-tn.lakestake.io:8000"
 secp256k1_pubkey = "029f324664222e59b8f52bd31da650548ed123511065c23a083924aab3db3f14df"
 [[bootstrap.peers]]
-address = "monad-test-val1.artifact.systems:8000"
-secp256k1_pubkey = "0272c3113cdf229cc9d554ec26c383ac3c4f636e1e89a90649da51bc1764181d51"
-[[bootstrap.peers]]
 address = "monadval.staker.space:8000"
 secp256k1_pubkey = "0314d835a20132081eb9fff0c5c9da5c17883134408dfae8404ae4d22041453540"
 [[bootstrap.peers]]
@@ -305,12 +302,6 @@ secp256k1_pubkey = "02965541bcf8ff7cd811d0410719ba4948ec6bf32db62087791eaf5dc79a
 address = "monad-0.monad.blocknodehub.com:8000"
 secp256k1_pubkey = "02c5da3c5ba03eb54cdaafb8ceba7b94e7c594b04959042a0b86a37828d5484de7"
 [[bootstrap.peers]]
-address = "monad.testnet.izumi.finance:8000"
-secp256k1_pubkey = "036c170e2e538a2e3ada260bf99687a992180492a768242f30ad73e1f97e75b17e"
-[[bootstrap.peers]]
-address = "monad.testnet.zan.top:8000"
-secp256k1_pubkey = "035e4e701a148719be0efad7a049acee436922397635108228fdae20d737e99ee0"
-[[bootstrap.peers]]
 address = "monad-test.tane.network:8000"
 secp256k1_pubkey = "027f13eb2629c289a4e76d72b6a5fb870753bc5d6f09548be74f42b27b0e0841c4"
 [[bootstrap.peers]]
@@ -391,9 +382,6 @@ secp256k1_pubkey = "027a80635f2d7b3db98447ff6d937b1f5a903d7411e75e56446e961e6e6f
 [[bootstrap.peers]]
 address = "monad.testnet.swissstarnode.tech:8000"
 secp256k1_pubkey = "029dc4ab4f8de4ca8151c84e8012d6eae3f0bebeb4b3869afa3bd7300169696edb"
-[[bootstrap.peers]]
-address = "monad.testnet.pinestake.com:8000"
-secp256k1_pubkey = "02a598d5964908b4c45a2792ee1c379032f8612d684364e1ee5607dff13961293d"
 [[bootstrap.peers]]
 address = "monad-testnet.denodes.xyz:8000"
 secp256k1_pubkey = "0251d4526ded18dfccce131079fa551482faf0c120c6814cc9b034e9ace29ed384"
@@ -505,3 +493,66 @@ secp256k1_pubkey = "0396fef6759b35b616fa5a63710d6b2ac3226106e8bf02e8d5ae50d480ab
 [[bootstrap.peers]]
 address = "monad.din.dev:8000"
 secp256k1_pubkey = "03791896d4e2cf5ad01990a7c801ce885c971cb5af05e8f4fa819bbe2e7f24310b"
+[[bootstrap.peers]]
+address = "monad.testnet.zan.top:8000"
+secp256k1_pubkey = "0267167f4d02612d481331053db908de222b4e2cff4655017eb873c0948d73c7b0"
+[[bootstrap.peers]]
+address = "monad.testnet.forthenads.xyz:8000"
+secp256k1_pubkey = "02a285496a665f04d8f7e40958c6dc70275131c931f1f50438592e70d9b272340a"
+[[bootstrap.peers]]
+address = "monad.testnet.pinestake.com:8000"
+secp256k1_pubkey = "0364f3b99cbc91bb96e9dad412993d5359865c52285ae212a83eb0a989a20b3fd1"
+[[bootstrap.peers]]
+address = "monad.ch1.swissborg.io:8000"
+secp256k1_pubkey = "032a2639e9a0f55429e7bbafd41469d12b76da903cc01fd8af732e53815a1a8eab"
+[[bootstrap.peers]]
+address = "ns31798195.ip-51-68-248.eu:8000"
+secp256k1_pubkey = "02c2e754c08f59d9ab32e5eceba7a16f951aa5c66a55c4666f8dccf1c80858f54e"
+[[bootstrap.peers]]
+address = "monad-test-val2.artifact.systems:8000"
+secp256k1_pubkey = "0310f7409ed9e903fd461099f6dbcfada946457270f6142d06a3b0c149b8557ce9"
+[[bootstrap.peers]]
+address = "monad.testnet.blackblocks.io:8000"
+secp256k1_pubkey = "02887740082676012a4d82734599dcb37d5d7bceebda2c0e626750ce77bf6671cf"
+[[bootstrap.peers]]
+address = "monad.testnet.provalidator.io:8000"
+secp256k1_pubkey = "03461cdc4003c63c6fe0a5cd42a379788d85e2a37a122140babc10cf66e9d876d9"
+[[bootstrap.peers]]
+address = "mnd-tstnt.d10s.fi:8000"
+secp256k1_pubkey = "02f59419bfa622ecfd87fe9c699e5624f8dd4ee5540b16d539e8a95fb1cc1af112"
+[[bootstrap.peers]]
+address = "node.monstaker.xyz:8000"
+secp256k1_pubkey = "02d1afacb9ddebed2725bd7f37eaded44d4a35130952ab6a8d0c5610f3221de032"
+[[bootstrap.peers]]
+address = "monad-testnet.delightlabs.sh:8000"
+secp256k1_pubkey = "0322b40febf89fa3cf6a05e9bbd8904b1979a0e43814d92de43ecdf81408037423"
+[[bootstrap.peers]]
+address = "monad.testnet.validators.chainbound.io:8000"
+secp256k1_pubkey = "02c3b7cf8f1ba2da3854db229c8cd75586b649ea0a0673d05bcd0c9dbbf08b0771"
+[[bootstrap.peers]]
+address = "monad.testnet.deadkingsociety.io:8000"
+secp256k1_pubkey = "02ad0211b406434fb225ad605e16218bf01278189cc52f481b89627a8ecb947e67"
+[[bootstrap.peers]]
+address = "magenta-ankara-96ae6.monad.bdnodes.net:8000"
+secp256k1_pubkey = "02fd63de1c6271540ae9c6d5fa326de99922cb11117fe8ce77351f80781b879066"
+[[bootstrap.peers]]
+address = "monad-testnet-validator.unit410.com:8000"
+secp256k1_pubkey = "02421fa275c35d885870e31b4c6a71dba694ae7257222fefe1d0b4bb7f43a8860c"
+[[bootstrap.peers]]
+address = "monad-test2val.silknodes.io:8000"
+secp256k1_pubkey = "021f0795ac40cb2fe01a90af1f684219948a1414fbf6d38cbd52e73e6c395602a2"
+[[bootstrap.peers]]
+address = "monad.testnet.thepharus.com:8000"
+secp256k1_pubkey = "03621644bce1d1015e9f18d823348133ed613b50b6fa347cccfc5976507db55ffe"
+[[bootstrap.peers]]
+address = "monad-testnet-2val.r93axnodes.cloud:8000"
+secp256k1_pubkey = "02f575feaf33bd9e0320f807dc6e7a97716822a73636e0530a915e535ca61a2714"
+[[bootstrap.peers]]
+address = "rskl.xyz:8000"
+secp256k1_pubkey = "03b44097ba0b7a92abf1e319665a160126f0efde20da9d4adcceeb56144da00517"
+[[bootstrap.peers]]
+address = "monad.testnet.izumi.finance:8000"
+secp256k1_pubkey = "028c184548c167ebc4c663e12a9f21dcc3e37d132e7810ca33179729c79f9dfa7f"
+[[bootstrap.peers]]
+address = "monad-testnet-2.certhum.com:8000"
+secp256k1_pubkey = "026189a9b02971459c0e6081a27e58c2ff5c9c00447e40866b8191048f3fececed"

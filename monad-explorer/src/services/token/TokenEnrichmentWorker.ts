@@ -172,7 +172,11 @@ export class TokenEnrichmentWorker {
       }); */
 
       // Fetch metadata for the specific detected type only
-      const metadata = await this.metadataFetcher.fetchMetadata(tokenAddress, tokenType, blockNumber);
+      // Skip contractExists check since token detection already confirmed it's a contract
+      const metadata = await this.metadataFetcher.fetchMetadata(tokenAddress, tokenType, {
+        blockNumber,
+        skipContractCheck: true // ✅ OPTIMIZATION: Skip getCode call - already confirmed during token detection
+      });
 
       if (!metadata || !metadata.contractExists) {
         logger.warn('Failed to fetch token metadata or contract does not exist', { 

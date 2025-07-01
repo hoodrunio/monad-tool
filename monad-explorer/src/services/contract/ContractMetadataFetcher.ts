@@ -15,7 +15,7 @@ import { logger } from '../../utils/logger';
  */
 export class ContractMetadataFetcher implements IContractMetadataFetcher {
   private readonly cachePrefix = 'contract_metadata:';
-  private readonly cacheTtl = 3600; // 1 hour cache
+  private readonly cacheTtl = 86400; // 24 hour cache (contract metadata is mostly immutable)
   
   // Cache statistics
   private cacheStats = {
@@ -63,16 +63,19 @@ export class ContractMetadataFetcher implements IContractMetadataFetcher {
       this.cacheStats.missCount++;
       logger.debug('Contract metadata cache miss, fetching', { address });
 
-      // Check if contract exists
-      const contractExists = await this.contractExists(address, options.blockNumber);
-      if (!contractExists) {
-        const metadata: ContractMetadata = {
-          address: address.toLowerCase(),
-          contractExists: false,
-        };
-        
-        await this.cacheService.set(cacheKey, metadata, this.cacheTtl);
-        return metadata;
+      // Check if contract exists (unless skipped for performance)
+      let contractExists = true; // Assume true if skipping check
+      if (!options.skipContractCheck) {
+        contractExists = await this.contractExists(address, options.blockNumber);
+        if (!contractExists) {
+          const metadata: ContractMetadata = {
+            address: address.toLowerCase(),
+            contractExists: false,
+          };
+          
+          await this.cacheService.set(cacheKey, metadata, this.cacheTtl);
+          return metadata;
+        }
       }
 
       // Fetch basic metadata
@@ -81,14 +84,14 @@ export class ContractMetadataFetcher implements IContractMetadataFetcher {
         contractExists: true,
       };
 
-             // Fetch bytecode if requested
-       if (options.fetchBytecode !== false) {
-         const bytecode = await this.getBytecode(address, options.blockNumber);
-         metadata.runtimeBytecode = bytecode || undefined;
-         if (metadata.runtimeBytecode) {
-           metadata.bytecode = metadata.runtimeBytecode; // Alias for compatibility
-         }
-       }
+                   // Fetch bytecode if explicitly requested
+      if (options.fetchBytecode === true) {
+        const bytecode = await this.getBytecode(address, options.blockNumber);
+        metadata.runtimeBytecode = bytecode || undefined;
+        if (metadata.runtimeBytecode) {
+          metadata.bytecode = metadata.runtimeBytecode; // Alias for compatibility
+        }
+      }
 
       // Detect token interface if requested
       if (options.detectTokenInterface !== false) {

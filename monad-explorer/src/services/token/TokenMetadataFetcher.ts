@@ -1,4 +1,4 @@
-import { ITokenMetadataFetcher, TokenMetadata } from '../../interfaces/services/ITokenMetadataFetcher';
+import { ITokenMetadataFetcher, TokenMetadata, TokenMetadataOptions } from '../../interfaces/services/ITokenMetadataFetcher';
 import { IRpcClient } from '../../interfaces/blockchain/IRpcClient';
 import { TokenType } from '../../model';
 import * as erc20 from '../../abi/ERC20';
@@ -17,12 +17,17 @@ export class TokenMetadataFetcher implements ITokenMetadataFetcher {
   public async fetchMetadata(
     address: string, 
     tokenType: TokenType, 
-    blockNumber?: number
+    options?: TokenMetadataOptions
   ): Promise<TokenMetadata> {
-    const contractExists = await this.contractExists(address, blockNumber);
+    const blockNumber = options?.blockNumber;
     
-    if (!contractExists) {
-      return { contractExists: false };
+    // Skip contract check if explicitly requested (for token enrichment)
+    if (!options?.skipContractCheck) {
+      const contractExists = await this.contractExists(address, blockNumber);
+      
+      if (!contractExists) {
+        return { contractExists: false };
+      }
     }
 
     const metadata: TokenMetadata = { contractExists: true };

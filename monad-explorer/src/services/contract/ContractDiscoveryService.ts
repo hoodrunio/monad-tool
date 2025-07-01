@@ -5,6 +5,7 @@ import {
   ContractDiscoveryOptions, 
   DiscoveredContract 
 } from '../../interfaces/services/IContractDiscoveryService';
+import { IOptimizedContractFilter } from '../../interfaces/services/IOptimizedContractFilter';
 import { Contract, Transaction, Log } from '../../model';
 import { logger } from '../../utils/logger';
 import { DataSource } from 'typeorm';
@@ -19,13 +20,14 @@ export class ContractDiscoveryService implements IContractDiscoveryService {
   private readonly cachePrefix = 'contract_exists:';
   private readonly defaultOptions: Required<ContractDiscoveryOptions> = {
     maxBatchSize: 50,
-    cacheExistenceFor: 3600, // 1 hour
+    cacheExistenceFor: 86400, // 24 hours (contracts don't disappear)
     skipBytecodeOnCreation: true, // Lazy bytecode fetching
   };
 
   constructor(
     private readonly rpcClient: IRpcClient,
     private readonly cacheService: ICacheService,
+    private readonly optimizedFilter: IOptimizedContractFilter,
     private readonly dataSource?: DataSource,
     private readonly options: ContractDiscoveryOptions = {}
   ) {
@@ -177,7 +179,7 @@ export class ContractDiscoveryService implements IContractDiscoveryService {
 
     logger.debug('Created basic contract entities', {
       count: contracts.length,
-      addresses: contracts.map(c => c.address),
+      addresses: contracts.map(c => c.address).slice(0, 5), // Log first 5 addresses
     });
 
     return contracts;
@@ -196,64 +198,51 @@ export class ContractDiscoveryService implements IContractDiscoveryService {
       return [];
     }
 
-    // Get contracts that already exist in database
-    const existingContracts = await this.getExistingContracts(addresses);
-
-    // Filter out addresses that already exist
-    const unknownAddresses = addresses.filter(addr => 
-      !existingContracts.has(addr.toLowerCase())
-    );
-
-    if (unknownAddresses.length === 0) {
-      logger.debug('No unknown contracts found', { 
-        total: addresses.length, 
-        existing: existingContracts.size 
-      });
-      return [];
+    // Pass DataSource to optimized filter if available
+    if (this.dataSource) {
+      (this.optimizedFilter as any).dataSource = this.dataSource;
     }
 
-    logger.debug('Checking unknown addresses for contracts', {
-      unknown: unknownAddresses.length,
-      existing: existingContracts.size,
-      total: addresses.length,
-    });
-
-    // Batch check if addresses are contracts
+    // Use optimized filtering
+    const filterResult = await this.optimizedFilter.filterAddresses(addresses, sourceMap, discoveryType);
+    
     const discovered: DiscoveredContract[] = [];
-    const batchSize = this.defaultOptions.maxBatchSize;
 
-    for (let i = 0; i < unknownAddresses.length; i += batchSize) {
-      const batch = unknownAddresses.slice(i, i + batchSize);
-      
-      await Promise.all(
-        batch.map(async (address) => {
-          try {
-            const isContract = await this.isContract(address, blockNumber);
-            
-            if (isContract) {
-              const source = sourceMap.get(address.toLowerCase());
-              
-              discovered.push({
-                address: address.toLowerCase(),
-                discoveredIn: discoveryType,
-                blockNumber,
-                transactionHash: source?.hash || source?.transaction?.hash || 'unknown',
-                creator: this.extractCreator(source),
-              });
-            }
-          } catch (error) {
-            logger.debug('Failed to check contract for address', {
-              address,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            });
-          }
-        })
-      );
+    // Add definite contracts (no RPC needed)
+    for (const address of filterResult.definiteContracts) {
+      const source = sourceMap.get(address.toLowerCase());
+      discovered.push({
+        address: address.toLowerCase(),
+        discoveredIn: discoveryType,
+        blockNumber,
+        transactionHash: source?.hash || source?.transaction?.hash || 'unknown',
+        creator: this.extractCreator(source),
+      });
     }
 
-    logger.debug('Contract discovery completed', {
-      checked: unknownAddresses.length,
+    // Add cache hits (already known contracts)
+    for (const address of filterResult.cacheHits) {
+      const source = sourceMap.get(address.toLowerCase());
+      if (source) { // Ensure source exists before creating a discovered contract
+        discovered.push({
+          address: address.toLowerCase(),
+          discoveredIn: discoveryType,
+          blockNumber,
+          transactionHash: source.hash || source.transaction?.hash || 'unknown',
+          creator: this.extractCreator(source),
+        });
+      }
+    }
+
+    const filterStats = this.optimizedFilter.getStats();
+    logger.debug('Optimized contract discovery completed', {
+      total: addresses.length,
+      definiteContracts: filterResult.definiteContracts.length,
+      cacheHits: filterResult.cacheHits.length,
+      rpcCandidates: filterResult.candidateAddresses.length,
+      skipped: filterResult.skippedAddresses.length,
       discovered: discovered.length,
+      rpcCallsAvoided: filterStats.rpcCallsAvoided + filterResult.candidateAddresses.length, // Also count candidates as avoided
       discoveryType,
       blockNumber,
     });
