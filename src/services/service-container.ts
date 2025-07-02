@@ -75,8 +75,8 @@ export class ServiceContainer {
     await this._locationService.processAllValidatorLocations();
     logger.info('✅ Validator location processing complete');
 
-    // Initialize validator service with location service dependency
-    this._validatorService = new ValidatorService(undefined, this._locationService);
+    // Initialize validator service with location service and database dependencies
+    this._validatorService = new ValidatorService(undefined, this._locationService, this._clickhouseClient);
     await this._validatorService.initialize();
 
     // Initialize database validator with ClickHouse client only

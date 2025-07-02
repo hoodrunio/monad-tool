@@ -161,8 +161,8 @@ export class DNSAnalyticsController {
   async getNetworkTopology(req: Request, res: Response): Promise<void> {
     try {
       const accurateStats = await this.getAccurateValidatorStats();
-      const geoDistribution = this.validatorService.getGeographicDistribution();
-      const ispDistribution = this.validatorService.getIspDistribution();
+      const geoDistribution = await this.validatorService.getGeographicDistribution();
+      const ispDistribution = await this.validatorService.getIspDistribution();
       
       const topology = {
         totalValidators: accurateStats.totalValidators,
@@ -195,8 +195,8 @@ export class DNSAnalyticsController {
   async getCentralizationRisks(req: Request, res: Response): Promise<void> {
     try {
       const accurateStats = await this.getAccurateValidatorStats();
-      const geoDistribution = this.validatorService.getGeographicDistribution();
-      const ispDistribution = this.validatorService.getIspDistribution();
+      const geoDistribution = await this.validatorService.getGeographicDistribution();
+      const ispDistribution = await this.validatorService.getIspDistribution();
       
       // Use cached provider performance data instead of expensive real-time calculation
       const performanceData = await this.getCachedProviderPerformanceData();
@@ -243,7 +243,7 @@ export class DNSAnalyticsController {
   async getProviderDistribution(req: Request, res: Response): Promise<void> {
     try {
       const accurateStats = await this.getAccurateValidatorStats();
-      const ispDistribution = this.validatorService.getIspDistribution();
+      const ispDistribution = await this.validatorService.getIspDistribution();
       
       // Use cached provider performance data instead of expensive real-time calculation
       const performanceData = await this.getCachedProviderPerformanceData();
@@ -287,7 +287,7 @@ export class DNSAnalyticsController {
   async getGeographicDistribution(req: Request, res: Response): Promise<void> {
     try {
       const accurateStats = await this.getAccurateValidatorStats();
-      const geoDistribution = this.validatorService.getGeographicDistribution();
+      const geoDistribution = await this.validatorService.getGeographicDistribution();
       const totalValidators = accurateStats.totalValidators;
       
       const distribution = Array.from(geoDistribution.entries()).map(([location, count]) => ({
@@ -546,7 +546,7 @@ export class DNSAnalyticsController {
   }
 
   /**
-   * Get accurate validator statistics from database
+   * Get accurate validator statistics from database - ONLY active validators
    */
   private async getAccurateValidatorStats(): Promise<{
     totalValidators: number;
@@ -556,35 +556,22 @@ export class DNSAnalyticsController {
     uniqueProviders: number;
   }> {
     try {
-      // Get total unique validators from both tables
+      // Get total ACTIVE validators from validator_registry only
       const totalValidatorsQuery = `
-        SELECT COUNT(DISTINCT validator_id) as total_validators
-        FROM (
-          SELECT validator_id FROM block_proposals 
-          WHERE timestamp >= now() - INTERVAL 7 DAY
-          UNION DISTINCT
-          SELECT validator_id FROM qc_participation 
-          WHERE timestamp >= now() - INTERVAL 7 DAY
-        )
+        SELECT COUNT(*) as total_validators
+        FROM validator_registry
+        WHERE is_active = 1
       `;
 
-      // Get validators with location data
+      // Get validators with location data - only active ones
       const locationStatsQuery = `
         SELECT 
           COUNT(DISTINCT vr.validator_id) as validators_with_location,
           COUNT(DISTINCT vr.location) as unique_locations,
           COUNT(DISTINCT vr.provider) as unique_providers
-        FROM (
-          SELECT DISTINCT bp.validator_id 
-          FROM block_proposals bp 
-          WHERE bp.timestamp >= now() - INTERVAL 7 DAY
-          UNION DISTINCT
-          SELECT DISTINCT qc.validator_id 
-          FROM qc_participation qc 
-          WHERE qc.timestamp >= now() - INTERVAL 7 DAY
-        ) active_validators
-        JOIN validator_registry vr ON active_validators.validator_id = vr.validator_id
-        WHERE vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'
+        FROM validator_registry vr
+        WHERE vr.is_active = 1
+          AND vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'
           AND vr.provider IS NOT NULL AND vr.provider != '' AND vr.provider != 'unknown'
       `;
 

@@ -1,6 +1,7 @@
 import { ValidatorRegistry, Validator } from '../validator-registry';
 import { UnifiedLocationService } from '../unified-location/UnifiedLocationService';
 import { ValidatorLocation } from '../validator-location/types';
+import { MonadClickHouseClient } from '../../database/clickhouse-client';
 
 export interface CompleteValidator {
   // Core validator data (from ValidatorRegistry)
@@ -38,14 +39,17 @@ export interface ValidatorServiceStats {
 export class ValidatorService {
   private readonly validatorRegistry: ValidatorRegistry;
   private readonly locationService: UnifiedLocationService;
+  private readonly clickhouseClient?: MonadClickHouseClient;
   private isInitialized = false;
 
   constructor(
     validatorRegistry?: ValidatorRegistry,
-    locationService?: UnifiedLocationService
+    locationService?: UnifiedLocationService,
+    clickhouseClient?: MonadClickHouseClient
   ) {
     this.validatorRegistry = validatorRegistry || new ValidatorRegistry();
     this.locationService = locationService || new UnifiedLocationService();
+    this.clickhouseClient = clickhouseClient;
   }
 
   /**
@@ -267,16 +271,72 @@ export class ValidatorService {
   }
 
   /**
-   * Get geographic distribution
+   * Get geographic distribution - ONLY active validators
    */
-  getGeographicDistribution(): Map<string, number> {
+  async getGeographicDistribution(): Promise<Map<string, number>> {
+    if (this.clickhouseClient) {
+      try {
+        const query = `
+          SELECT 
+            location,
+            COUNT(*) as validator_count
+          FROM validator_registry 
+          WHERE is_active = 1
+            AND location IS NOT NULL 
+            AND location != '' 
+            AND location != 'unknown'
+          GROUP BY location
+        `;
+        
+        const result = await this.clickhouseClient.executeRawQuery(query);
+        const distribution = new Map<string, number>();
+        
+        result.forEach(row => {
+          distribution.set(row.location, parseInt(row.validator_count));
+        });
+        
+        return distribution;
+      } catch (error) {
+        console.error('Failed to get geographic distribution from database, falling back to location service:', error);
+      }
+    }
+    
+    // Fallback to location service
     return this.locationService.getGeographicDistribution();
   }
 
   /**
-   * Get ISP distribution
+   * Get ISP distribution - ONLY active validators
    */
-  getIspDistribution(): Map<string, number> {
+  async getIspDistribution(): Promise<Map<string, number>> {
+    if (this.clickhouseClient) {
+      try {
+        const query = `
+          SELECT 
+            provider,
+            COUNT(*) as validator_count
+          FROM validator_registry 
+          WHERE is_active = 1
+            AND provider IS NOT NULL 
+            AND provider != '' 
+            AND provider != 'unknown'
+          GROUP BY provider
+        `;
+        
+        const result = await this.clickhouseClient.executeRawQuery(query);
+        const distribution = new Map<string, number>();
+        
+        result.forEach(row => {
+          distribution.set(row.provider, parseInt(row.validator_count));
+        });
+        
+        return distribution;
+      } catch (error) {
+        console.error('Failed to get ISP distribution from database, falling back to location service:', error);
+      }
+    }
+    
+    // Fallback to location service
     return this.locationService.getIspDistribution();
   }
 
