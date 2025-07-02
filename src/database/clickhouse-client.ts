@@ -3,6 +3,9 @@
 
 import { createClient, ClickHouseClient } from '@clickhouse/client';
 import { ConsensusEvent, LedgerEvent, QCParticipationData, ValidatorInfrastructure, BlockProposalEvent, QCParticipationEvent } from '../log-processor/types';
+import { CompleteValidator } from '../services/unified-validator';
+import { ValidatorLocation } from '../services/validator-location/types';
+import { logger } from '../utils/logger';
 
 export interface ClickHouseConfig {
   host: string;
@@ -566,5 +569,71 @@ export class MonadClickHouseClient {
 
   async executeCommand(command: string): Promise<void> {
     await this.client.command({ query: command });
+  }
+
+  // =============================================
+  // VALIDATOR REGISTRY SYNC
+  // =============================================
+  
+  /**
+   * Updates the validator_registry table with the latest validator data.
+   * This method first truncates the table and then inserts the new data.
+   * @param validators The list of complete validator objects to insert.
+   */
+  async updateValidatorRegistry(validators: CompleteValidator[]): Promise<void> {
+    if (validators.length === 0) {
+      logger.warn('Validator list is empty, skipping registry update.');
+      return;
+    }
+
+    const tableName = 'validator_registry';
+    logger.info(`🚀 Starting sync for ${tableName} with ${validators.length} validators...`);
+
+    try {
+      // Step 1: Truncate the table to remove all old data
+      logger.info(`Truncating table: ${tableName}...`);
+      await this.client.command({
+        query: `TRUNCATE TABLE ${tableName}`,
+        clickhouse_settings: {
+          wait_end_of_query: 1,
+        },
+      });
+      logger.info(`✅ Table ${tableName} truncated successfully.`);
+
+      // Step 2: Prepare and insert the new data
+      const values = validators.map(v => ({
+        validator_id: v.nodeId,
+        node_id: v.nodeId,
+        epoch: v.epoch,
+        stake: v.stake,
+        position: v.position,
+        is_active: v.isActive ? 1 : 0,
+        dns_address: v.location?.dnsAddress || '',
+        dns_host: v.location?.hostname || '',
+        dns_port: v.location?.port || 8000,
+        validator_name: v.location?.validatorName || 'unknown',
+        provider: v.location?.organization || 'unknown',
+        location: v.location?.city ? `${v.location.city}, ${v.location.country}` : v.location?.country || 'unknown',
+        country: v.location?.country || 'unknown',
+        datacenter: v.location?.isp || 'unknown', // Using ISP as a proxy for datacenter
+        last_updated: v.lastUpdated.toISOString().slice(0, 19).replace('T', ' '),
+      }));
+      
+      logger.info(`Inserting ${values.length} records into ${tableName}...`);
+      
+      await this.client.insert({
+        table: tableName,
+        values,
+        format: 'JSONEachRow',
+      });
+
+      logger.info(`✅ Successfully synchronized ${tableName} with ${validators.length} validators.`);
+
+    } catch (error) {
+      logger.error(`❌ Failed to synchronize ${tableName}.`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 } 

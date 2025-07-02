@@ -26,10 +26,8 @@ export class EpochService {
       }
 
       const currentEpoch = Math.floor(latestBlockNumber / this.epochInterval);
-      
-      // Epochs are generally 1-based, but calculation can result in 0.
-      // If the chain is new, we assume epoch 1.
-      const finalEpoch = Math.max(1, currentEpoch);
+      const epoch = Math.max(1, currentEpoch);
+      const finalEpoch = epoch + 1;
 
       logger.info(`Calculated current epoch: ${finalEpoch} (from block ${latestBlockNumber})`);
       return finalEpoch;
@@ -37,7 +35,6 @@ export class EpochService {
       logger.error('Failed to determine current epoch.', {
         error: error instanceof Error ? error.message : String(error),
       });
-      // Fallback or re-throw depending on desired system behavior on failure
       throw new Error('Could not determine the current epoch.');
     }
   }

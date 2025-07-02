@@ -67,6 +67,23 @@ export class FocusedLogProcessor {
       const currentEpoch = this.validatorService.getCurrentEpoch();
       const validators = await this.validatorService.getAllValidators(currentEpoch);
       
+      // --- DATABASE SYNCHRONIZATION ---
+      if (this.clickhouseClient) {
+        try {
+          logger.info('🔄 Synchronizing validator_registry table with the latest data...');
+          await this.clickhouseClient.updateValidatorRegistry(validators);
+          logger.info('✅ Validator registry table synchronized successfully.');
+        } catch (error) {
+          logger.error('🚨 CRITICAL: Failed to synchronize validator_registry table.', {
+            error: error instanceof Error ? error.message : String(error)
+          });
+          // Depending on requirements, you might want to prevent startup if sync fails.
+        }
+      } else {
+        logger.warn('ClickHouse client not available, skipping validator registry DB sync.');
+      }
+      // --- END DATABASE SYNCHRONIZATION ---
+      
       // Convert CompleteValidator[] to ValidatorRegistryEntry[] and populate registry
       const registryEntries = validators.map((validator: CompleteValidator) => ({
         validatorId: validator.nodeId, // Use nodeId as validatorId
