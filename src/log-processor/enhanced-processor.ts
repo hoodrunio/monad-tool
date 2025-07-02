@@ -30,59 +30,20 @@ export class FocusedLogProcessor {
   private lastLedgerEpoch: number = 1;
 
   constructor(clickhouseClient?: MonadClickHouseClient) {
-    this.clickhouseClient = clickhouseClient || null;
+    this.clickhouseClient = clickhouseClient || ServiceContainer.getInstance().getClickHouseClient();
   }
 
   async initialize(): Promise<void> {
     if (!this.isInitialized) {
       logger.info('🔧 Initializing Focused Log Processor...');
       
-      // Get validator service from service container
+      // Get validator service from service container (it's already initialized with the correct epoch)
       const serviceContainer = ServiceContainer.getInstance();
       this.validatorService = serviceContainer.getValidatorService();
-
-      // --- DYNAMIC EPOCH DETERMINATION ---
-      try {
-        const rpcUrl = process.env.RPC_URL;
-        if (!rpcUrl) {
-          throw new Error('RPC_URL environment variable is not set.');
-        }
-        const rpcClient = new NodeRpcClient(rpcUrl);
-        const epochService = new EpochService(rpcClient);
-        const actualCurrentEpoch = await epochService.getCurrentEpoch();
-        
-        // Set the determined epoch in the central validator service
-        this.validatorService.setCurrentEpoch(actualCurrentEpoch);
-        logger.info(`✅ Successfully set current epoch to ${actualCurrentEpoch} from RPC.`);
-
-      } catch (error) {
-        logger.error('🚨 CRITICAL: Failed to determine current epoch from RPC. Falling back to default.', {
-          error: error instanceof Error ? error.message : String(error)
-        });
-        // Continue with default epoch to allow service to start, but with a critical warning.
-      }
-      // --- END DYNAMIC EPOCH DETERMINATION ---
       
       // Get current epoch and populate validator registry maps
       const currentEpoch = this.validatorService.getCurrentEpoch();
       const validators = await this.validatorService.getAllValidators(currentEpoch);
-      
-      // --- DATABASE SYNCHRONIZATION ---
-      if (this.clickhouseClient) {
-        try {
-          logger.info('🔄 Synchronizing validator_registry table with the latest data...');
-          await this.clickhouseClient.updateValidatorRegistry(validators);
-          logger.info('✅ Validator registry table synchronized successfully.');
-        } catch (error) {
-          logger.error('🚨 CRITICAL: Failed to synchronize validator_registry table.', {
-            error: error instanceof Error ? error.message : String(error)
-          });
-          // Depending on requirements, you might want to prevent startup if sync fails.
-        }
-      } else {
-        logger.warn('ClickHouse client not available, skipping validator registry DB sync.');
-      }
-      // --- END DATABASE SYNCHRONIZATION ---
       
       // Convert CompleteValidator[] to ValidatorRegistryEntry[] and populate registry
       const registryEntries = validators.map((validator: CompleteValidator) => ({

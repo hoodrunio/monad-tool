@@ -8,6 +8,8 @@
 
 import { ServiceContainer, ServiceContainerConfig } from '../services/service-container';
 import { logger } from '../utils/logger';
+import { EpochService } from '../services/epoch/EpochService';
+import { NodeRpcClient } from '../services/blockchain/NodeRpcClient';
 
 export interface StartupConfig {
   clickhouse: ServiceContainerConfig['clickhouse'];
@@ -83,6 +85,39 @@ export class ApplicationInitializer {
       result.services.validatorService = true;
       result.services.locationService = true;
       logger.info('✅ Service container verified');
+
+      // --- DYNAMIC EPOCH & DB SYNC ---
+      try {
+        logger.info('🔧 Determining current epoch and synchronizing validator registry...');
+        const rpcUrl = process.env.RPC_URL;
+        if (!rpcUrl) {
+          throw new Error('RPC_URL environment variable is not set.');
+        }
+        const rpcClient = new NodeRpcClient(rpcUrl);
+        const epochService = new EpochService(rpcClient);
+        const validatorService = this.serviceContainer.getValidatorService();
+        const clickhouseClient = this.serviceContainer.getClickHouseClient();
+
+        // 1. Determine and set the correct epoch
+        const actualCurrentEpoch = await epochService.getCurrentEpoch();
+        validatorService.setCurrentEpoch(actualCurrentEpoch);
+        logger.info(`✅ Current epoch set to ${actualCurrentEpoch} from RPC.`);
+
+        // 2. Get the full, enriched validator list for that epoch
+        const validators = await validatorService.getAllValidators(actualCurrentEpoch);
+
+        // 3. Synchronize the database with this fresh data
+        await clickhouseClient.updateValidatorRegistry(validators);
+        logger.info('✅ Validator registry table synchronized with DB successfully.');
+
+      } catch (error) {
+        logger.error('🚨 CRITICAL: Failed to determine epoch or synchronize validator DB. Startup cannot continue.', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+        // This is a fatal error, so we re-throw to stop the application startup.
+        throw error;
+      }
+      // --- END DYNAMIC EPOCH & DB SYNC ---
 
       // =============================================
       // PHASE 2: CRITICAL VALIDATOR VALIDATION
