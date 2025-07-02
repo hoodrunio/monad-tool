@@ -66,6 +66,7 @@ export class EventController {
             bp.status,
             bp.num_tx,
             bp.block_id,
+            COALESCE(vr.validator_name, 'unknown') as validator_name,
             COALESCE(vr.provider, 'unknown') as provider,
             COALESCE(vr.location, 'unknown') as location
           FROM block_proposals bp
@@ -104,6 +105,7 @@ export class EventController {
             qc.participated,
             qc.validator_index,
             qc.participation_rate,
+            COALESCE(vr.validator_name, 'unknown') as validator_name,
             COALESCE(vr.provider, 'unknown') as provider,
             COALESCE(vr.location, 'unknown') as location
           FROM qc_participation qc
@@ -133,6 +135,7 @@ export class EventController {
             block_id: e.block_id
           },
           infrastructure: {
+            validator_name: e.validator_name,
             provider: e.provider,
             location: e.location
           }
@@ -150,6 +153,7 @@ export class EventController {
             participation_rate: parseFloat(e.participation_rate)
           },
           infrastructure: {
+            validator_name: e.validator_name,
             provider: e.provider,
             location: e.location
           }
@@ -482,6 +486,7 @@ export class EventController {
             bp.status,
             bp.num_tx,
             bp.block_id,
+            COALESCE(vr.validator_name, 'unknown') as validator_name,
             COALESCE(vr.provider, 'unknown') as provider,
             COALESCE(vr.location, 'unknown') as location
           FROM block_proposals bp
@@ -508,6 +513,7 @@ export class EventController {
             block_id: e.block_id
           },
           infrastructure: {
+            validator_name: e.validator_name,
             provider: e.provider,
             location: e.location
           }
@@ -551,6 +557,7 @@ export class EventController {
             qc.participated,
             qc.validator_index,
             qc.participation_rate,
+            COALESCE(vr.validator_name, 'unknown') as validator_name,
             COALESCE(vr.provider, 'unknown') as provider,
             COALESCE(vr.location, 'unknown') as location
           FROM qc_participation qc
@@ -577,6 +584,7 @@ export class EventController {
             participation_rate: parseFloat(e.participation_rate)
           },
           infrastructure: {
+            validator_name: e.validator_name,
             provider: e.provider,
             location: e.location
           }
