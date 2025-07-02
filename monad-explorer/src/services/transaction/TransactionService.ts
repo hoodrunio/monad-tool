@@ -439,7 +439,9 @@ export class TransactionService implements ITransactionService {
       // Parse internal transactions if requested
       if (options.includeInternalTransactions === true && this.internalTransactionService) {
         try {
-          const internalTransactions = await this.internalTransactionService.getInternalTransactions(transaction.hash);
+          const internalTransactions = await this.internalTransactionService.getInternalTransactions(transaction.hash, {
+            includeFailedCalls: transaction.status === 0 // For failed transactions, include failed internal calls
+          });
           enrichedTx.internalTransactions = internalTransactions || [];
         } catch (error) {
           logger.warn('Failed to get internal transactions', {
