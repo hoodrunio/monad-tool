@@ -48,46 +48,55 @@ export class NetworkController {
           break;
       }
 
-      // Get block proposal summary
+      // Get total active validators directly from registry
+      const activeValidatorsQuery = `
+        SELECT COUNT(*) as total_active_validators
+        FROM validator_registry 
+        WHERE is_active = 1
+      `;
+
+      // Get block proposal summary - ONLY active validators
       const blockSummaryQuery = `
         SELECT 
           COUNT(*) as total_block_events,
-          COUNT(DISTINCT validator_id) as unique_validators_blocks,
-          COUNT(DISTINCT toDate(timestamp)) as active_days_blocks,
-          MAX(timestamp) as latest_block_event,
-          MIN(timestamp) as earliest_block_event,
-          COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_block_events,
-          (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate
-        FROM block_proposals
-        WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          COUNT(DISTINCT toDate(bp.timestamp)) as active_days_blocks,
+          MAX(bp.timestamp) as latest_block_event,
+          MIN(bp.timestamp) as earliest_block_event,
+          COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as successful_block_events,
+          (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate
+        FROM block_proposals bp
+        INNER JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
+        WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
       `;
 
-      // Get QC participation summary
+      // Get QC participation summary - ONLY active validators
       const qcSummaryQuery = `
         SELECT 
           COUNT(*) as total_qc_events,
-          COUNT(DISTINCT validator_id) as unique_validators_qc,
-          COUNT(DISTINCT toDate(timestamp)) as active_days_qc,
-          MAX(timestamp) as latest_qc_event,
-          MIN(timestamp) as earliest_qc_event,
-          COUNT(CASE WHEN participated = 1 THEN 1 END) as successful_qc_events,
-          (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_success_rate,
-          AVG(participation_rate) as avg_network_participation_rate
-        FROM qc_participation
-        WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          COUNT(DISTINCT toDate(qc.timestamp)) as active_days_qc,
+          MAX(qc.timestamp) as latest_qc_event,
+          MIN(qc.timestamp) as earliest_qc_event,
+          COUNT(CASE WHEN qc.participated = 1 THEN 1 END) as successful_qc_events,
+          (COUNT(CASE WHEN qc.participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_success_rate,
+          AVG(qc.participation_rate) as avg_network_participation_rate
+        FROM qc_participation qc
+        INNER JOIN validator_registry vr ON qc.validator_id = vr.validator_id AND vr.is_active = 1
+        WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
       `;
 
-      const [blockResult, qcResult] = await Promise.all([
+      const [activeValidatorsResult, blockResult, qcResult] = await Promise.all([
+        this.clickhouseClient.executeRawQuery(activeValidatorsQuery),
         this.clickhouseClient.executeRawQuery(blockSummaryQuery),
         this.clickhouseClient.executeRawQuery(qcSummaryQuery)
       ]);
 
+      const [activeValidators] = activeValidatorsResult;
       const [blockSummary] = blockResult;
       const [qcSummary] = qcResult;
 
       const summary = {
         total_events: (parseInt(blockSummary?.total_block_events || 0)) + (parseInt(qcSummary?.total_qc_events || 0)),
-        unique_validators: Math.max(parseInt(blockSummary?.unique_validators_blocks || 0), parseInt(qcSummary?.unique_validators_qc || 0)),
+        unique_validators: parseInt(activeValidators?.total_active_validators || 0),
         event_types: 3, // block_proposal, block_skipped, qc_participation
         active_days: Math.max(parseInt(blockSummary?.active_days_blocks || 0), parseInt(qcSummary?.active_days_qc || 0)),
         avg_processing_delay: 0, // Not available in new schema
