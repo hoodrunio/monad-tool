@@ -16,6 +16,8 @@ import { ValidatorService, CompleteValidator } from '../services/unified-validat
 import { MonadClickHouseClient } from '../database/clickhouse-client';
 import { ServiceContainer } from '../services/service-container';
 import { logger } from '../utils/logger';
+import { EpochService } from '../services/epoch/EpochService';
+import { NodeRpcClient } from '../services/blockchain/NodeRpcClient';
 
 export class FocusedLogProcessor {
   private validatorService: ValidatorService | null = null;
@@ -38,6 +40,28 @@ export class FocusedLogProcessor {
       // Get validator service from service container
       const serviceContainer = ServiceContainer.getInstance();
       this.validatorService = serviceContainer.getValidatorService();
+
+      // --- DYNAMIC EPOCH DETERMINATION ---
+      try {
+        const rpcUrl = process.env.RPC_URL;
+        if (!rpcUrl) {
+          throw new Error('RPC_URL environment variable is not set.');
+        }
+        const rpcClient = new NodeRpcClient(rpcUrl);
+        const epochService = new EpochService(rpcClient);
+        const actualCurrentEpoch = await epochService.getCurrentEpoch();
+        
+        // Set the determined epoch in the central validator service
+        this.validatorService.setCurrentEpoch(actualCurrentEpoch);
+        logger.info(`✅ Successfully set current epoch to ${actualCurrentEpoch} from RPC.`);
+
+      } catch (error) {
+        logger.error('🚨 CRITICAL: Failed to determine current epoch from RPC. Falling back to default.', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+        // Continue with default epoch to allow service to start, but with a critical warning.
+      }
+      // --- END DYNAMIC EPOCH DETERMINATION ---
       
       // Get current epoch and populate validator registry maps
       const currentEpoch = this.validatorService.getCurrentEpoch();

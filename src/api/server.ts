@@ -140,7 +140,7 @@ export class AnalyticsAPIServer {
     this.app.use(helmet());
     
     // Trust proxy for X-Forwarded-For headers (needed for rate limiting behind nginx/reverse proxy)
-    this.app.set('trust proxy', true);
+    this.app.set('trust proxy', 1);
     
     // CORS
     if (this.config.enableCors) {
