@@ -358,20 +358,27 @@ export class ValidatorController {
     const intervalClause = this.getIntervalClause(timeWindow);
     const offset = (page - 1) * limit;
     
-    // First, get the total count
+    // First, get the total count - ONLY counting validators that exist in validator_registry
     const countQuery = `
       WITH 
+        active_validators AS (
+          SELECT validator_id 
+          FROM validator_registry 
+          WHERE is_active = 1
+        ),
         block_metrics AS (
-          SELECT validator_id
-          FROM block_proposals
-          WHERE timestamp >= now() - INTERVAL ${intervalClause}
-          GROUP BY validator_id
+          SELECT bp.validator_id
+          FROM block_proposals bp
+          INNER JOIN active_validators av ON bp.validator_id = av.validator_id
+          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY bp.validator_id
         ),
         qc_metrics AS (
-          SELECT validator_id
-          FROM qc_participation
-          WHERE timestamp >= now() - INTERVAL ${intervalClause}
-          GROUP BY validator_id
+          SELECT qc.validator_id
+          FROM qc_participation qc
+          INNER JOIN active_validators av ON qc.validator_id = av.validator_id
+          WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY qc.validator_id
         )
       SELECT COUNT(DISTINCT COALESCE(b.validator_id, q.validator_id)) as total_count
       FROM block_metrics b
@@ -379,32 +386,39 @@ export class ValidatorController {
       WHERE COALESCE(b.validator_id, q.validator_id) IS NOT NULL
     `;
 
-    // Main query with pagination and stake amounts
+    // Main query with pagination and stake amounts - ONLY include validators in validator_registry
     const query = `
       WITH 
+        active_validators AS (
+          SELECT validator_id, validator_name, provider, location, stake
+          FROM validator_registry 
+          WHERE is_active = 1
+        ),
         block_metrics AS (
           SELECT 
-            validator_id,
+            bp.validator_id,
             COUNT(*) as total_block_opportunities,
-            COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
-            COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
-            (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
-          FROM block_proposals
-          WHERE timestamp >= now() - INTERVAL ${intervalClause}
-          GROUP BY validator_id
+            COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as blocks_proposed,
+            COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END) as blocks_skipped,
+            (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
+          FROM block_proposals bp
+          INNER JOIN active_validators av ON bp.validator_id = av.validator_id
+          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY bp.validator_id
         ),
         qc_metrics AS (
           SELECT 
-            validator_id,
+            qc.validator_id,
             COUNT(*) as total_qc_opportunities,
-            COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
-            (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
-          FROM qc_participation
-          WHERE timestamp >= now() - INTERVAL ${intervalClause}
-          GROUP BY validator_id
+            COUNT(CASE WHEN qc.participated = 1 THEN 1 END) as qc_participations,
+            (COUNT(CASE WHEN qc.participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
+          FROM qc_participation qc
+          INNER JOIN active_validators av ON qc.validator_id = av.validator_id
+          WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY qc.validator_id
         )
       SELECT 
-        COALESCE(b.validator_id, q.validator_id) as validator_id,
+        av.validator_id as validator_id,
         COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
         COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
         (COALESCE(b.block_proposal_ratio, 0) * 0.7 + COALESCE(q.qc_participation_rate, 0) * 0.3) as uptime_score,
@@ -413,14 +427,13 @@ export class ValidatorController {
         COALESCE(b.blocks_skipped, 0) as blocks_skipped,
         COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
         COALESCE(q.qc_participations, 0) as qc_participations,
-        COALESCE(vr.validator_name, 'unknown') as validator_name,
-        COALESCE(vr.provider, 'unknown') as provider,
-        COALESCE(vr.location, 'unknown') as location,
-        COALESCE(vr.stake, 0) as stake
-      FROM block_metrics b
-      FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
-      LEFT JOIN validator_registry vr ON vr.validator_id = COALESCE(b.validator_id, q.validator_id) AND vr.is_active = 1
-      WHERE COALESCE(b.validator_id, q.validator_id) IS NOT NULL
+        av.validator_name as validator_name,
+        av.provider as provider,
+        av.location as location,
+        av.stake as stake
+      FROM active_validators av
+      LEFT JOIN block_metrics b ON av.validator_id = b.validator_id
+      LEFT JOIN qc_metrics q ON av.validator_id = q.validator_id
       ORDER BY ${this.getSortByClause(sortBy)}
       LIMIT ${limit} OFFSET ${offset}
     `;
@@ -473,32 +486,39 @@ export class ValidatorController {
     const intervalClause = this.getIntervalClause(timeWindow);
     
     // Combined query to get both block proposal and QC participation metrics
-    // IMPORTANT: Get provider/location from validator_registry table (has correct data)
+    // IMPORTANT: Only include validators that exist in validator_registry with is_active = 1
     const query = `
       WITH 
+        active_validators AS (
+          SELECT validator_id, validator_name, provider, location, stake
+          FROM validator_registry 
+          WHERE is_active = 1
+        ),
         block_metrics AS (
           SELECT 
-            validator_id,
+            bp.validator_id,
             COUNT(*) as total_block_opportunities,
-            COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
-            COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
-            (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
-          FROM block_proposals
-          WHERE timestamp >= now() - INTERVAL ${intervalClause}
-          GROUP BY validator_id
+            COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as blocks_proposed,
+            COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END) as blocks_skipped,
+            (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
+          FROM block_proposals bp
+          INNER JOIN active_validators av ON bp.validator_id = av.validator_id
+          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY bp.validator_id
         ),
         qc_metrics AS (
           SELECT 
-            validator_id,
+            qc.validator_id,
             COUNT(*) as total_qc_opportunities,
-            COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
-            (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
-          FROM qc_participation
-          WHERE timestamp >= now() - INTERVAL ${intervalClause}
-          GROUP BY validator_id
+            COUNT(CASE WHEN qc.participated = 1 THEN 1 END) as qc_participations,
+            (COUNT(CASE WHEN qc.participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
+          FROM qc_participation qc
+          INNER JOIN active_validators av ON qc.validator_id = av.validator_id
+          WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY qc.validator_id
         )
       SELECT 
-        COALESCE(b.validator_id, q.validator_id) as validator_id,
+        av.validator_id as validator_id,
         COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
         COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
         (COALESCE(b.block_proposal_ratio, 0) * 0.7 + COALESCE(q.qc_participation_rate, 0) * 0.3) as uptime_score,
@@ -507,14 +527,13 @@ export class ValidatorController {
         COALESCE(b.blocks_skipped, 0) as blocks_skipped,
         COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
         COALESCE(q.qc_participations, 0) as qc_participations,
-        COALESCE(vr.validator_name, 'unknown') as validator_name,
-        COALESCE(vr.provider, 'unknown') as provider,
-        COALESCE(vr.location, 'unknown') as location,
-        COALESCE(vr.stake, 0) as stake
-      FROM block_metrics b
-      FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
-      LEFT JOIN validator_registry vr ON vr.validator_id = COALESCE(b.validator_id, q.validator_id) AND vr.is_active = 1
-      WHERE COALESCE(b.validator_id, q.validator_id) IS NOT NULL
+        av.validator_name as validator_name,
+        av.provider as provider,
+        av.location as location,
+        av.stake as stake
+      FROM active_validators av
+      LEFT JOIN block_metrics b ON av.validator_id = b.validator_id
+      LEFT JOIN qc_metrics q ON av.validator_id = q.validator_id
       ORDER BY ${this.getSortByClause(sortBy)}
       LIMIT ${limit}
     `;
