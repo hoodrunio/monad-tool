@@ -28,7 +28,7 @@ RestrictRealtime=yes
 # Resource limits
 LimitNOFILE=65536
 LimitNPROC=4096
-LimitAS=4G
+#LimitAS=4G
 LimitSTACK=8M
 
 # Standard streams
