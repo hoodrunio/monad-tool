@@ -26,6 +26,7 @@ export function createAPIRoutes(serviceContainer: ServiceContainer): Router {
       },
       endpoints: {
         transactions: {
+          'GET /transactions': 'Get latest transactions with basic data (for preview)',
           'GET /transactions/:hash': 'Get enriched transaction with runtime-parsed token transfers',
           'GET /transactions/:hash/token-transfers': 'Get token transfers for specific transaction',
         },
@@ -34,6 +35,8 @@ export function createAPIRoutes(serviceContainer: ServiceContainer): Router {
           'GET /addresses/:address/token-transfers': 'Get token transfers for address',
         },
         blocks: {
+          'GET /blocks': 'Get latest blocks with basic data (for preview)',
+          'GET /blocks/:number': 'Get specific block details',
           'GET /blocks/:number/transactions': 'Get all transactions in a block with enriched data',
         },
         tokens: {
@@ -60,6 +63,8 @@ export function createAPIRoutes(serviceContainer: ServiceContainer): Router {
         'CORS support',
       ],
       examples: {
+        'latest-transactions': '/api/transactions?limit=20&offset=0',
+        'latest-blocks': '/api/blocks?limit=10&offset=0',
         'enriched-transaction': '/api/transactions/0x1234...?includeTokenTransfers=true',
         'address-transfers': '/api/addresses/0x1234.../token-transfers?limit=20&tokenAddress=0x5678...',
         'block-transactions': '/api/blocks/12345/transactions?includeTokenTransfers=true',

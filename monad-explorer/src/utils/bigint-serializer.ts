@@ -50,6 +50,11 @@ export function bigIntToString(obj: unknown): unknown {
     return obj.toString();
   }
 
+  // Handle Date objects specifically
+  if (obj instanceof Date) {
+    return obj.toISOString();
+  }
+
   if (Array.isArray(obj)) {
     return obj.map(bigIntToString);
   }

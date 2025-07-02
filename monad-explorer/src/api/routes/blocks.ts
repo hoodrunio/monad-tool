@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { ServiceContainer } from '../../services/core/ServiceContainer';
 import { StoreAdapter } from '../adapters/StoreAdapter';
+import { Block } from '../../model/generated';
 import { ITransactionService } from '../../interfaces/services/ITransactionService';
 import { ParsedTokenTransfer } from '../../interfaces/processing/ILogTokenTransferParser';
 import { asyncHandler, ApiErrorResponse, successResponse } from '../middleware/errorHandlers';
@@ -13,6 +14,68 @@ import { In } from 'typeorm';
  */
 export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
   const router = Router();
+
+  /**
+   * GET /blocks
+   * Get latest blocks with basic data (for preview)
+   */
+  router.get('/', asyncHandler(async (req: Request, res: Response) => {
+    const { limit, offset } = validatePaginationParams(req.query);
+
+    // Get store from container
+    const store = await serviceContainer.resolve<StoreAdapter>('store');
+
+    // Get latest blocks with basic data
+    const blocks = await store.Block.find({
+      order: { number: 'DESC' },
+      skip: offset,
+      take: limit,
+    });
+
+    // For total count, we'll use a reasonable approximation since Block interface doesn't have findAndCount
+    const totalCount = blocks.length > 0 ? (blocks[0].number || 0) : 0;
+
+    // Get transaction counts for each block
+    const blocksWithTxCount = await Promise.all(
+      blocks.map(async (block: Block) => {
+        const txCount = await store.Transaction.find({
+          where: { block: { number: block.number } },
+          select: ['id']
+        }).then(txs => txs.length);
+
+        return {
+          number: block.number,
+          hash: block.hash,
+          parentHash: block.parentHash,
+          timestamp: block.timestamp,
+          gasUsed: block.gasUsed,
+          gasLimit: block.gasLimit,
+          baseFeePerGas: block.baseFeePerGas,
+          size: block.size,
+          transactionCount: txCount
+        };
+      })
+    );
+
+    // Convert BigInt fields to strings for JSON response
+    const apiResponse = prepareForApiResponse({
+      blocks: blocksWithTxCount,
+      pagination: {
+        limit,
+        offset,
+        total: totalCount,
+        hasMore: offset + limit < totalCount
+      }
+    });
+    
+    successResponse(res, apiResponse, 'Latest blocks retrieved successfully', 200, {
+      totalCount,
+      limit,
+      offset,
+      hasMore: offset + limit < totalCount,
+      dataType: 'preview'
+    });
+  }));
 
   /**
    * GET /blocks/:number

@@ -1,8 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { ServiceContainer } from '../../services/core/ServiceContainer';
+import { StoreAdapter } from '../adapters/StoreAdapter';
+import { Transaction } from '../../model/generated';
 import { ITransactionService } from '../../interfaces/services/ITransactionService';
 import { asyncHandler, ApiErrorResponse, successResponse } from '../middleware/errorHandlers';
-import { validateTransactionHash } from '../validators/common';
+import { validateTransactionHash, validatePaginationParams } from '../validators/common';
 import { prepareForApiResponse } from '../../utils/bigint-serializer';
 
 /**
@@ -10,6 +12,59 @@ import { prepareForApiResponse } from '../../utils/bigint-serializer';
  */
 export function createTransactionRoutes(serviceContainer: ServiceContainer): Router {
   const router = Router();
+
+  /**
+   * GET /transactions
+   * Get latest transactions with basic data (for preview)
+   */
+  router.get('/', asyncHandler(async (req: Request, res: Response) => {
+    const { limit, offset } = validatePaginationParams(req.query);
+
+    // Get store from container
+    const store = await serviceContainer.resolve<StoreAdapter>('store');
+
+    // Get latest transactions with basic data
+    const [transactions, totalCount] = await store.Transaction.findAndCount({
+      relations: ['block'],
+      order: { timestamp: 'DESC' },
+      skip: offset,
+      take: limit,
+    });
+
+    // Format basic transaction data for preview
+    const basicTransactions = transactions.map((tx: Transaction) => ({
+      hash: tx.hash,
+      blockNumber: tx.block.number,
+      fromAddress: tx.fromAddress,
+      toAddress: tx.toAddress,
+      value: tx.value,
+      gasUsed: tx.gasUsed,
+      gasPrice: tx.gasPrice,
+      timestamp: tx.timestamp,
+      status: tx.status,
+      isContractInteraction: tx.isContractInteraction,
+      isContractCreation: tx.isContractCreation
+    }));
+
+    // Convert BigInt fields to strings for JSON response
+    const apiResponse = prepareForApiResponse({
+      transactions: basicTransactions,
+      pagination: {
+        limit,
+        offset,
+        total: totalCount,
+        hasMore: offset + limit < totalCount
+      }
+    });
+    
+    successResponse(res, apiResponse, 'Latest transactions retrieved successfully', 200, {
+      totalCount,
+      limit,
+      offset,
+      hasMore: offset + limit < totalCount,
+      dataType: 'preview'
+    });
+  }));
 
   /**
    * GET /transactions/:hash
