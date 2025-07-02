@@ -32,4 +32,4 @@ fi
 echo "Starting Monad Analytics with Node.js $(node --version) from $(which node)"
 
 # Start the application
-exec node dist/index.js 
+exec node --max-old-space-size=8096 dist/index.js 

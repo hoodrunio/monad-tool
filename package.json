@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "node --max-old-space-size=8096 dist/index.js",
     "dev": "ts-node src/index.ts",
     "test": "echo \"No tests specified\" && exit 0",
     "test:watch": "jest --watch",
