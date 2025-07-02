@@ -47,6 +47,12 @@ export class Transaction {
     @IntColumn_({nullable: true})
     status!: number | undefined | null
 
+    @StringColumn_({nullable: true})
+    error!: string | undefined | null
+
+    @StringColumn_({nullable: true})
+    revertReason!: string | undefined | null
+
     @Index_()
     @DateTimeColumn_({nullable: false})
     timestamp!: Date

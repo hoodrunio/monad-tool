@@ -382,6 +382,8 @@ export class TransactionService implements ITransactionService {
         gasPrice: transaction.gasPrice,
         gasUsed: transaction.gasUsed,
         status: transaction.status,
+        error: transaction.error,
+        revertReason: transaction.revertReason,
         timestamp: transaction.timestamp,
         input: transaction.input,
 

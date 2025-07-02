@@ -28,6 +28,8 @@ type Transaction @entity {
   gasUsed: BigInt
   input: String
   status: Int
+  error: String
+  revertReason: String
   timestamp: DateTime! @index
   nonce: BigInt
   type: Int

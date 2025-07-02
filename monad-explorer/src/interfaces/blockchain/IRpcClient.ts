@@ -75,6 +75,16 @@ export interface IRpcClient {
   getTransactionReceipt(hash: string): Promise<unknown>;
 
   /**
+   * Extract error and revert reason from a failed transaction
+   */
+  getTransactionErrorInfo(hash: string): Promise<{ error: string | null; revertReason: string | null }>;
+
+  /**
+   * Extract revert reason from error message
+   */
+  extractRevertReason(errorMessage: string): string | null;
+
+  /**
    * Trace transaction execution to get internal transactions
    */
   traceTransaction(hash: string, options?: TraceOptions): Promise<unknown>;

@@ -199,7 +199,9 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
               gasUsed: enriched.gasUsed,
               gasPrice: enriched.gasPrice,
               timestamp: enriched.timestamp,
-              status: enriched.status
+              status: enriched.status,
+              error: enriched.error,
+              revertReason: enriched.revertReason
             } : {
               hash: tx.hash,
               blockNumber: tx.block.number,
@@ -209,7 +211,9 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
               gasUsed: tx.gasUsed,
               gasPrice: tx.gasPrice,
               timestamp: block.timestamp,
-              status: tx.status
+              status: tx.status,
+              error: tx.error,
+              revertReason: tx.revertReason
             };
           } catch (error) {
             // If enrichment fails, return basic transaction data
@@ -222,7 +226,9 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
               gasUsed: tx.gasUsed,
               gasPrice: tx.gasPrice,
               timestamp: block.timestamp,
-              status: tx.status
+              status: tx.status,
+              error: tx.error,
+              revertReason: tx.revertReason
             };
           }
         })
@@ -261,7 +267,9 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         gasUsed: tx.gasUsed,
         gasPrice: tx.gasPrice,
         timestamp: block.timestamp,
-        status: tx.status
+        status: tx.status,
+        error: tx.error,
+        revertReason: tx.revertReason
       }));
 
       return successResponse(res, prepareForApiResponse({

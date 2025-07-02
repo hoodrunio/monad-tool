@@ -51,6 +51,9 @@ export class BlockProcessor {
       // Process token detection if enabled
       await this.processTokenDetection(result, store);
 
+      // Process failed transactions to capture error information
+      await this.processFailedTransactions(result);
+
       const duration = Date.now() - startTime;
       logger.info('Block processing completed successfully', {
         duration,
@@ -170,6 +173,8 @@ export class BlockProcessor {
       gasUsed: BigInt(tx.gasUsed || 0),
       input: tx.input,
       status: tx.status,
+      error: null, // Will be populated for failed transactions in post-processing
+      revertReason: null, // Will be populated for failed transactions in post-processing
       timestamp: block.timestamp,
       nonce: BigInt(tx.nonce || 0),
       type: tx.type || 0,
@@ -378,6 +383,71 @@ export class BlockProcessor {
       logger.error('Contract discovery processing failed', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
+    }
+  }
+
+  /**
+   * Process failed transactions to capture error information
+   */
+  private async processFailedTransactions(result: ProcessingResult): Promise<void> {
+    const failedTransactions = result.transactions.filter(tx => tx.status === 0);
+    
+    if (failedTransactions.length === 0) {
+      return;
+    }
+
+    logger.debug('Processing failed transactions for error capture', {
+      failedCount: failedTransactions.length,
+      totalTransactions: result.transactions.length,
+    });
+
+    try {
+      // Get RPC client for error extraction
+      const rpcClient = await this.container.resolve<any>('rpcClient');
+      
+      // Process failed transactions in parallel (with concurrency limit)
+      const concurrency = 5; // Limit concurrent RPC calls
+      const chunks = [];
+      for (let i = 0; i < failedTransactions.length; i += concurrency) {
+        chunks.push(failedTransactions.slice(i, i + concurrency));
+      }
+
+      for (const chunk of chunks) {
+        const promises = chunk.map(async (transaction) => {
+          try {
+            const errorInfo = await rpcClient.getTransactionErrorInfo(transaction.hash);
+            if (errorInfo.error || errorInfo.revertReason) {
+              transaction.error = errorInfo.error;
+              transaction.revertReason = errorInfo.revertReason;
+              
+              logger.debug('Captured error info for failed transaction', {
+                hash: transaction.hash,
+                error: errorInfo.error,
+                revertReason: errorInfo.revertReason,
+              });
+            }
+          } catch (error) {
+            logger.warn('Failed to get error info for transaction', {
+              hash: transaction.hash,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            });
+            // Don't fail the whole process if we can't get error info for one transaction
+          }
+        });
+
+        await Promise.all(promises);
+      }
+
+      logger.info('Failed transaction error processing completed', {
+        processedTransactions: failedTransactions.length,
+        withErrorInfo: failedTransactions.filter(tx => tx.error || tx.revertReason).length,
+      });
+
+    } catch (error) {
+      logger.error('Failed transaction error processing failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      // Don't throw - continue processing even if error capture fails
     }
   }
 

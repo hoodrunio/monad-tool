@@ -42,6 +42,8 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       gasPrice: tx.gasPrice,
       timestamp: tx.timestamp,
       status: tx.status,
+      error: tx.error,
+      revertReason: tx.revertReason,
       isContractInteraction: tx.isContractInteraction,
       isContractCreation: tx.isContractCreation
     }));

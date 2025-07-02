@@ -14,6 +14,8 @@ export interface EnrichedTransaction {
   gasPrice: bigint;
   gasUsed: bigint;
   status: number;
+  error: string | null;
+  revertReason: string | null;
   timestamp: Date;
   input: string;
   

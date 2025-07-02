@@ -53,6 +53,8 @@ export function createAddressRoutes(serviceContainer: ServiceContainer): Router 
           gasPrice: tx.gasPrice,
           timestamp: tx.timestamp,
           status: tx.status,
+          error: tx.error,
+          revertReason: tx.revertReason,
           isContractInteraction: tx.isContractInteraction,
           tokenTransfers: tx.tokenTransfers
         })),
@@ -95,6 +97,8 @@ export function createAddressRoutes(serviceContainer: ServiceContainer): Router 
           gasPrice: tx.gasPrice,
           timestamp: tx.timestamp,
           status: tx.status,
+          error: tx.error,
+          revertReason: tx.revertReason,
           isContractInteraction: tx.isContractInteraction
         }))
       }), 'Address transactions retrieved successfully', 200, {

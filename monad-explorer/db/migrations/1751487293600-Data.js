@@ -1,12 +1,12 @@
-module.exports = class Data1751441507086 {
-    name = 'Data1751441507086'
+module.exports = class Data1751487293600 {
+    name = 'Data1751487293600'
 
     async up(db) {
         await db.query(`CREATE TABLE "block" ("id" character varying NOT NULL, "number" integer NOT NULL, "hash" text NOT NULL, "parent_hash" text NOT NULL, "timestamp" TIMESTAMP WITH TIME ZONE NOT NULL, "size" numeric, "gas_limit" numeric NOT NULL, "gas_used" numeric NOT NULL, "transaction_count" integer NOT NULL, "miner" text, "extra_data" text, "base_fee_per_gas" numeric, CONSTRAINT "PK_d0925763efb591c2e2ffb267572" PRIMARY KEY ("id"))`)
         await db.query(`CREATE INDEX "IDX_38414873c187a3e0c7943bc4c7" ON "block" ("number") `)
         await db.query(`CREATE UNIQUE INDEX "IDX_f8fba63d7965bfee9f304c487a" ON "block" ("hash") `)
         await db.query(`CREATE INDEX "IDX_5c67cbcf4960c1a39e5fe25e87" ON "block" ("timestamp") `)
-        await db.query(`CREATE TABLE "transaction" ("id" character varying NOT NULL, "hash" text NOT NULL, "transaction_index" integer NOT NULL, "from_address" text NOT NULL, "to_address" text, "value" numeric NOT NULL, "gas" numeric NOT NULL, "gas_price" numeric NOT NULL, "gas_used" numeric, "input" text, "status" integer, "timestamp" TIMESTAMP WITH TIME ZONE NOT NULL, "nonce" numeric, "type" integer, "effective_gas_price" numeric, "max_fee_per_gas" numeric, "max_priority_fee_per_gas" numeric, "contract_address" text, "cumulative_gas_used" numeric, "transaction_fee" numeric, "method_name" text, "method_id" text, "input_decoded" text, "is_contract_interaction" boolean NOT NULL, "is_contract_creation" boolean NOT NULL, "block_id" character varying, CONSTRAINT "PK_89eadb93a89810556e1cbcd6ab9" PRIMARY KEY ("id"))`)
+        await db.query(`CREATE TABLE "transaction" ("id" character varying NOT NULL, "hash" text NOT NULL, "transaction_index" integer NOT NULL, "from_address" text NOT NULL, "to_address" text, "value" numeric NOT NULL, "gas" numeric NOT NULL, "gas_price" numeric NOT NULL, "gas_used" numeric, "input" text, "status" integer, "error" text, "revert_reason" text, "timestamp" TIMESTAMP WITH TIME ZONE NOT NULL, "nonce" numeric, "type" integer, "effective_gas_price" numeric, "max_fee_per_gas" numeric, "max_priority_fee_per_gas" numeric, "contract_address" text, "cumulative_gas_used" numeric, "transaction_fee" numeric, "method_name" text, "method_id" text, "input_decoded" text, "is_contract_interaction" boolean NOT NULL, "is_contract_creation" boolean NOT NULL, "block_id" character varying, CONSTRAINT "PK_89eadb93a89810556e1cbcd6ab9" PRIMARY KEY ("id"))`)
         await db.query(`CREATE UNIQUE INDEX "IDX_de4f0899c41c688529784bc443" ON "transaction" ("hash") `)
         await db.query(`CREATE INDEX "IDX_c0e1460f3c9eee975fee81002d" ON "transaction" ("block_id") `)
         await db.query(`CREATE INDEX "IDX_1fd64b7257f3b2b9770ddd152c" ON "transaction" ("from_address") `)

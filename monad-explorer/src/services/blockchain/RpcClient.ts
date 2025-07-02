@@ -201,6 +201,106 @@ export class RpcClient implements IRpcClient {
     return this.call('eth_getTransactionReceipt', [hash]);
   }
 
+  /**
+   * Extract error and revert reason from a failed transaction
+   */
+  public async getTransactionErrorInfo(hash: string): Promise<{ error: string | null; revertReason: string | null }> {
+    try {
+      // Get transaction receipt first
+      const receipt = await this.getTransactionReceipt(hash) as any;
+      
+      if (!receipt) {
+        return { error: null, revertReason: null };
+      }
+
+      // If transaction succeeded, no error
+      if (receipt.status === '0x1') {
+        return { error: null, revertReason: null };
+      }
+
+      // Transaction failed - try to get error details
+      let error: string | null = null;
+      let revertReason: string | null = null;
+
+      try {
+        // Try to get transaction details
+        const transaction = await this.getTransaction(hash) as any;
+        
+        if (transaction) {
+          // Try to replay the transaction to get the error
+          try {
+            await this.callContract(
+              transaction.to || '0x0000000000000000000000000000000000000000',
+              transaction.input || '0x',
+              {
+                from: transaction.from,
+                gas: transaction.gas,
+                gasPrice: transaction.gasPrice,
+                blockTag: parseInt(receipt.blockNumber, 16) - 1 // Use block before the transaction
+              }
+            );
+          } catch (callError: any) {
+            if (callError.message) {
+              error = callError.message;
+              
+              // Extract revert reason from error message
+              const revertMatch = callError.message.match(/execution reverted:?\s*(.*)/i);
+              if (revertMatch && revertMatch[1]) {
+                revertReason = revertMatch[1].trim();
+              } else {
+                // Try to extract from other error patterns
+                const reasonMatch = callError.message.match(/revert (.*)/i);
+                if (reasonMatch && reasonMatch[1]) {
+                  revertReason = reasonMatch[1].trim();
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        // If we can't get detailed error, just mark as failed
+        error = 'Transaction failed';
+      }
+
+      return { 
+        error: error || 'Transaction failed', 
+        revertReason: revertReason || null 
+      };
+
+    } catch (err) {
+      logger.debug('Failed to get transaction error info', {
+        hash,
+        error: err instanceof Error ? err.message : 'Unknown error'
+      });
+      return { error: null, revertReason: null };
+    }
+  }
+
+  /**
+   * Extract revert reason from error message
+   */
+  public extractRevertReason(errorMessage: string): string | null {
+    if (!errorMessage) return null;
+
+    // Common patterns for revert reasons
+    const patterns = [
+      /execution reverted:?\s*(.*)/i,
+      /revert (.*)/i,
+      /VM Exception while processing transaction: revert (.*)/i,
+      /"message":\s*"execution reverted:?\s*([^"]*)/i
+    ];
+
+    for (const pattern of patterns) {
+      const match = errorMessage.match(pattern);
+      if (match && match[1] && match[1].trim()) {
+        return match[1].trim();
+      }
+    }
+
+    // If no specific pattern matches, return first line of error
+    return errorMessage.split('\n')[0].slice(0, 200);
+  }
+
   public async traceTransaction(hash: string, options: TraceOptions = {}): Promise<unknown> {
     const traceConfig = {
       tracer: options.tracer || 'callTracer',
