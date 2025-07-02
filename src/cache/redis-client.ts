@@ -370,10 +370,27 @@ export class MonadRedisClient {
   }
 
   // =============================================
-  // UTILITY METHODS
+  // PUBLIC API
   // =============================================
 
+  async get(key: string): Promise<string | null> {
+    if (!this.client) {
+      throw new Error('Redis client is not connected');
+    }
+    return this.client.get(key);
+  }
+
+  async setex(key: string, seconds: number, value: string): Promise<string> {
+    if (!this.client) {
+      throw new Error('Redis client is not connected');
+    }
+    return this.client.setex(key, seconds, value);
+  }
+
   async ping(): Promise<boolean> {
+    if (!this.client) {
+      return false;
+    }
     try {
       const result = await this.client.ping();
       return result === 'PONG';

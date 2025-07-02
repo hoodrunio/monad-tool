@@ -17,6 +17,11 @@ import { EventController } from './controllers/EventController';
 import { AdminController } from './controllers/AdminController';
 import { QueryPerformanceController } from './controllers/QueryPerformanceController';
 
+// Import services for dependency injection
+import { ValidatorService } from '../services/unified-validator';
+import { ValidatorRegistry } from '../services/validator-registry';
+import { UnifiedLocationService } from '../services/unified-location';
+
 // Import Routes
 import { createHealthRoutes } from './routes/health';
 import { createValidatorRoutes } from './routes/validators';
@@ -47,6 +52,7 @@ export class AnalyticsAPIServer {
   private clickhouseClient: MonadClickHouseClient;
   private redisClient: MonadRedisClient;
   private server: any;
+  private validatorService: ValidatorService;
 
   // Controllers
   private healthController!: HealthController;
@@ -85,6 +91,11 @@ export class AnalyticsAPIServer {
       defaultTtl: 300
     });
 
+    // Initialize core services for dependency injection
+    const validatorRegistry = new ValidatorRegistry();
+    const locationService = new UnifiedLocationService();
+    this.validatorService = new ValidatorService(validatorRegistry, locationService);
+
     // Initialize controllers
     this.initializeControllers();
 
@@ -107,7 +118,8 @@ export class AnalyticsAPIServer {
 
     this.validatorController = new ValidatorController(
       this.clickhouseClient,
-      this.redisClient
+      this.redisClient,
+      this.validatorService
     );
 
     this.networkController = new NetworkController(
@@ -140,7 +152,7 @@ export class AnalyticsAPIServer {
     this.app.use(helmet());
     
     // Trust proxy for X-Forwarded-For headers (needed for rate limiting behind nginx/reverse proxy)
-    this.app.set('trust proxy', true);
+    this.app.set('trust proxy', 1);
     
     // CORS
     if (this.config.enableCors) {
@@ -366,6 +378,9 @@ export class AnalyticsAPIServer {
 
   async start(): Promise<void> {
     try {
+      // Initialize the validator service (and its dependencies) before starting the server
+      await this.validatorService.initialize();
+
       this.server = this.app.listen(this.config.port, () => {
         logger.info(`🚀 Monad Analytics API Server started on port ${this.config.port}`);
         logger.info(`📊 API Documentation: http://localhost:${this.config.port}/api/docs`);

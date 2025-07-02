@@ -4,12 +4,43 @@ import { Request, Response } from 'express';
 import { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { MonadRedisClient } from '../../cache/redis-client';
 import { logger } from '../../utils/logger';
+import { ValidatorService } from '../../services/unified-validator';
 
 export class ValidatorController {
   constructor(
     private clickhouseClient: MonadClickHouseClient,
-    private redisClient: MonadRedisClient
+    private redisClient: MonadRedisClient,
+    private validatorService: ValidatorService
   ) {}
+
+  // =============================================
+  // HELPER TO GET LATEST EPOCH
+  // =============================================
+
+  private async getLatestEpoch(): Promise<number> {
+    const cacheKey = 'latest_epoch';
+    try {
+      const cachedEpoch = await this.redisClient.get(cacheKey);
+      if (cachedEpoch) {
+        return parseInt(cachedEpoch);
+      }
+    } catch (error) {
+        logger.warn('Could not fetch latest epoch from cache', error);
+    }
+    
+    const query = 'SELECT max(epoch) as latestEpoch FROM block_proposals';
+    const result = await this.clickhouseClient.executeRawQuery(query);
+    const latestEpoch = result[0]?.latestEpoch || this.validatorService.getCurrentEpoch() || 1;
+    
+    try {
+        // Cache for 1 minute
+        await this.redisClient.setex(cacheKey, 60, latestEpoch.toString());
+    } catch (error) {
+        logger.warn('Could not set latest epoch in cache', error);
+    }
+
+    return latestEpoch;
+  }
 
   // =============================================
   // VALIDATOR RANKINGS (Separate Metrics)
@@ -17,7 +48,7 @@ export class ValidatorController {
 
   async getValidatorRankings(req: Request, res: Response): Promise<void> {
     try {
-      const timeWindow = (req.query.window as string) || '1h';
+      const timeWindow = (req.query.window as string) || '24h';
       const limit = parseInt(req.query.limit as string) || 50;
       const page = parseInt(req.query.page as string) || 1;
       const sortBy = (req.query.sortBy as string) || 'uptime_score';
@@ -60,46 +91,116 @@ export class ValidatorController {
       }
 
       // Try cache first
-      const cacheKey = `validator_rankings:${timeWindow}:${limit}:${page}:${sortBy}`;
-      const cached = await this.redisClient['client'].get(cacheKey);
+      const cacheKey = `validator_rankings_v2:${timeWindow}:${limit}:${page}:${sortBy}`;
+      const cached = await this.redisClient.get(cacheKey);
       
       if (cached) {
         const cachedData = JSON.parse(cached);
         res.json({
           data: cachedData.data,
           pagination: cachedData.pagination,
-          metadata: {
-            timeWindow,
-            limit,
-            page,
-            sortBy,
-            source: 'cache',
-            formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
-          },
+          metadata: { ...cachedData.metadata, source: 'cache' },
           timestamp: new Date().toISOString()
         });
         return;
       }
 
-      // Calculate rankings with pagination from raw data
-      const result = await this.calculateValidatorRankingsWithPagination(timeWindow, limit, page, sortBy);
+      // 1. Get real-time performance metrics from ClickHouse
+      const performanceMetrics = await this.getPerformanceMetrics(timeWindow);
+
+      // 2. Get the latest epoch
+      const latestEpoch = await this.getLatestEpoch();
+
+      // 3. Get all validators for the latest epoch from ValidatorService to get up-to-date stake info
+      const validatorsFromRegistry = await this.validatorService.getAllValidators(latestEpoch);
       
-      // Cache result for 2 minutes (rankings update frequently)
-      await this.redisClient['client'].setex(cacheKey, 120, JSON.stringify(result));
-      
-      res.json({
-        data: result.data,
-        pagination: result.pagination,
-        metadata: {
-          timeWindow,
-          limit,
-          page,
-          sortBy,
-          source: 'database',
-          formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
-        },
-        timestamp: new Date().toISOString()
+      // 4. Combine performance data with registry data (stake)
+      const combinedData = validatorsFromRegistry.map(validator => {
+        const metrics = performanceMetrics.get(validator.nodeId) || {
+          block_proposal_ratio: 0,
+          qc_participation_rate: 0,
+          uptime_score: 0,
+          total_block_opportunities: 0,
+          blocks_proposed: 0,
+          blocks_skipped: 0,
+          total_qc_opportunities: 0,
+          qc_participations: 0
+        };
+        return {
+          validator_id: validator.nodeId,
+          stake: validator.stake,
+          location: validator.location,
+          ...metrics
+        };
       });
+
+      // 5. Sort the combined data
+      combinedData.sort((a, b) => {
+        switch (sortBy) {
+          case 'stake':
+            return b.stake - a.stake;
+          case 'block_proposal_ratio':
+            return b.block_proposal_ratio - a.block_proposal_ratio;
+          case 'qc_participation_rate':
+            return b.qc_participation_rate - a.qc_participation_rate;
+          default: // uptime_score
+            return b.uptime_score - a.uptime_score;
+        }
+      });
+      
+      // 6. Paginate the results
+      const offset = (page - 1) * limit;
+      const paginatedData = combinedData.slice(offset, offset + limit);
+      const totalCount = combinedData.length;
+      const totalPages = Math.ceil(totalCount / limit);
+
+      const responseData = {
+        data: paginatedData.map((d, i) => ({
+          rank: offset + i + 1,
+          validator_id: d.validator_id,
+          stake: d.stake,
+          metrics: {
+            block_proposal_ratio: d.block_proposal_ratio,
+            qc_participation_rate: d.qc_participation_rate,
+            uptime_score: d.uptime_score
+          },
+          details: {
+            total_block_opportunities: d.total_block_opportunities,
+            total_qc_opportunities: d.total_qc_opportunities,
+            blocks_proposed: d.blocks_proposed,
+            blocks_skipped: d.blocks_skipped,
+            qc_participations: d.qc_participations
+          },
+          infrastructure: {
+            validator_name: d.location?.validatorName || 'unknown',
+            provider: d.location?.organization || 'unknown',
+            location: `${d.location?.city || 'unknown'}, ${d.location?.country || 'unknown'}`
+          }
+        })),
+        pagination: {
+          current_page: page,
+          total_pages: totalPages,
+          total_count: totalCount,
+          per_page: limit,
+          has_next_page: page < totalPages,
+          has_prev_page: page > 1
+        },
+         metadata: {
+            timeWindow,
+            limit,
+            page,
+            sortBy,
+            source: 'database',
+            epoch: latestEpoch,
+            formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
+          },
+      };
+
+      // Cache result for 2 minutes
+      await this.redisClient.setex(cacheKey, 120, JSON.stringify(responseData));
+      
+      res.json({...responseData, timestamp: new Date().toISOString()});
+
     } catch (error) {
       logger.error('Failed to get validator rankings:', error);
       res.status(500).json({
@@ -261,7 +362,7 @@ export class ValidatorController {
 
       // Try cache first
       const cacheKey = `validator_history:${validatorId}:${hours}`;
-      const cached = await this.redisClient['client'].get(cacheKey);
+      const cached = await this.redisClient.get(cacheKey);
       
       if (cached) {
         res.json({
@@ -280,7 +381,7 @@ export class ValidatorController {
       const history = await this.getValidatorHourlyHistory(validatorId, hours);
       
       // Cache result for 5 minutes
-      await this.redisClient['client'].setex(cacheKey, 300, JSON.stringify(history));
+      await this.redisClient.setex(cacheKey, 300, JSON.stringify(history));
       
       res.json({
         validatorId,
@@ -353,6 +454,64 @@ export class ValidatorController {
   // =============================================
   // HELPER METHODS
   // =============================================
+
+  private async getPerformanceMetrics(timeWindow: string): Promise<Map<string, any>> {
+    const intervalClause = this.getIntervalClause(timeWindow);
+    const query = `
+      WITH 
+        block_metrics AS (
+          SELECT 
+            validator_id,
+            COUNT(*) as total_block_opportunities,
+            COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
+            COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
+            (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
+          FROM block_proposals
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY validator_id
+        ),
+        qc_metrics AS (
+          SELECT 
+            validator_id,
+            COUNT(*) as total_qc_opportunities,
+            COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
+            (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
+          FROM qc_participation
+          WHERE timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY validator_id
+        )
+      SELECT 
+        COALESCE(b.validator_id, q.validator_id) as validator_id,
+        COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
+        COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
+        (COALESCE(b.block_proposal_ratio, 0) * 0.7 + COALESCE(q.qc_participation_rate, 0) * 0.3) as uptime_score,
+        COALESCE(b.total_block_opportunities, 0) as total_block_opportunities,
+        COALESCE(b.blocks_proposed, 0) as blocks_proposed,
+        COALESCE(b.blocks_skipped, 0) as blocks_skipped,
+        COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
+        COALESCE(q.qc_participations, 0) as qc_participations
+      FROM block_metrics b
+      FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
+      WHERE COALESCE(b.validator_id, q.validator_id) IS NOT NULL
+    `;
+    
+    const result = await this.clickhouseClient.executeRawQuery(query);
+    const performanceMap = new Map<string, any>();
+    result.forEach(row => {
+      performanceMap.set(row.validator_id, {
+          block_proposal_ratio: parseFloat(row.block_proposal_ratio || 0),
+          qc_participation_rate: parseFloat(row.qc_participation_rate || 0),
+          uptime_score: parseFloat(row.uptime_score || 0),
+          total_block_opportunities: parseInt(row.total_block_opportunities || 0),
+          blocks_proposed: parseInt(row.blocks_proposed || 0),
+          blocks_skipped: parseInt(row.blocks_skipped || 0),
+          total_qc_opportunities: parseInt(row.total_qc_opportunities || 0),
+          qc_participations: parseInt(row.qc_participations || 0)
+      });
+    });
+
+    return performanceMap;
+  }
 
   private async calculateValidatorRankingsWithPagination(timeWindow: string, limit: number, page: number, sortBy: string): Promise<{ data: any[], pagination: any }> {
     const intervalClause = this.getIntervalClause(timeWindow);
