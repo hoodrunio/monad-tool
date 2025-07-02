@@ -536,6 +536,7 @@ export interface ParsedQCData {
   seqNum?: number;
   totalValidators: number;
   participatingValidators: number;
+  blockId: string;
 }
 
 // =============================================

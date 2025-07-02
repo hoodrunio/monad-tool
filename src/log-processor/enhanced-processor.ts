@@ -24,6 +24,8 @@ export class FocusedLogProcessor {
   // Add reverse mapping for BitVec index to validator position
   private bitVecIndexToPosition: Map<number, number> = new Map();
   private isInitialized: boolean = false;
+  private lastLedgerSeqNum: number = 0;
+  private lastLedgerEpoch: number = 1;
 
   constructor(clickhouseClient?: MonadClickHouseClient) {
     this.clickhouseClient = clickhouseClient || null;
@@ -130,15 +132,21 @@ export class FocusedLogProcessor {
     
     // Extract proposed_block events
     if (message === 'proposed_block') {
+      const seqNum = parseInt(fields.seq_num) || 0;
+      const epochNumber = parseInt(fields.epoch) || 1;
+      
+      this.lastLedgerSeqNum = seqNum;
+      this.lastLedgerEpoch = epochNumber;
+
       return {
         timestamp: new Date(log.timestamp),
         validatorId: this.normalizeValidatorId(fields.author || 'unknown'),
-        seqNum: parseInt(fields.seq_num) || 0,
+        seqNum,
         roundNumber: parseInt(fields.round) || 0,
-        epochNumber: parseInt(fields.epoch) || 1,
+        epochNumber,
         status: 'proposed',
         numTx: parseInt(fields.num_tx) || 0,
-        blockId: fields.block_id || undefined,
+        blockId: fields.seq_num || undefined,
         
         // Infrastructure will be populated by enhanceEventsWithInfrastructure
         validatorDns: '',
@@ -154,12 +162,12 @@ export class FocusedLogProcessor {
       return {
         timestamp: new Date(log.timestamp),
         validatorId: this.normalizeValidatorId(fields.author || 'unknown'),
-        seqNum: parseInt(fields.seq_num) || 0, // Try to extract actual seq_num
+        seqNum: this.lastLedgerSeqNum,
         roundNumber: parseInt(fields.round) || 0,
-        epochNumber: parseInt(fields.epoch) || 1,
+        epochNumber: this.lastLedgerEpoch,
         status: 'skipped',
         numTx: 0,
-        blockId: undefined,
+        blockId: String(this.lastLedgerSeqNum) || undefined,
         
         // Infrastructure will be populated by enhanceEventsWithInfrastructure
         validatorDns: '',
@@ -183,7 +191,7 @@ export class FocusedLogProcessor {
     // Look for QC commit events with BitVec data
     if (message === 'try committing blocks using qc' && fields.qc) {
       try {
-        const qcData = this.parseQCData(fields.qc);
+        const qcData = this.parseQCData(fields);
         if (qcData) {
           return this.extractValidatorParticipation(qcData, log.timestamp, fields);
         }
@@ -197,7 +205,12 @@ export class FocusedLogProcessor {
     return [];
   }
 
-  private parseQCData(qcString: string): ParsedQCData | null {
+  private parseQCData(fields: any): ParsedQCData | null {
+    const qcString = fields.qc as string;
+    if (!qcString) {
+        return null;
+    }
+    
     try {
       // Extract BitVec from QC string
       // Expected format: "QC { ... signers: SignerMap(BitVec<u8, bitvec::order::Lsb0> { bits: 169, capacity: 176 } [0, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, ...] }"
@@ -210,12 +223,14 @@ export class FocusedLogProcessor {
       const bitVecString = bitVecMatch[1];
       const signerBits = bitVecString.split(',').map(b => parseInt(b.trim()));
       
-      // Extract round and epoch from QC data
-      const roundMatch = qcString.match(/round:\s*(\d+)/);
+      // Extract round, epoch, and blockId from QC data
+      const roundMatch = qcString.match(/r:\s*(\d+)/);
       const epochMatch = qcString.match(/epoch:\s*(\d+)/);
+      const blockIdMatch = qcString.match(/id:\s*([a-zA-Z0-9\.]+)/);
       
-      const round = roundMatch ? parseInt(roundMatch[1]) : 0;
-      const epoch = epochMatch ? parseInt(epochMatch[1]) : 1;
+      const round = fields.round ? parseInt(fields.round) : (roundMatch ? parseInt(roundMatch[1]) : 0);
+      const epoch = fields.epoch ? parseInt(fields.epoch) : (epochMatch ? parseInt(epochMatch[1]) : 1);
+      const blockId = blockIdMatch ? blockIdMatch[1] : 'unknown';
       
       const totalValidators = signerBits.length;
       const participatingValidators = signerBits.filter(bit => bit === 1).length;
@@ -225,7 +240,8 @@ export class FocusedLogProcessor {
         round,
         epoch,
         totalValidators,
-        participatingValidators
+        participatingValidators,
+        blockId
       };
     } catch (error) {
       logger.error(`Error parsing QC data: ${error}`);
@@ -241,8 +257,8 @@ export class FocusedLogProcessor {
     const events: QCParticipationEvent[] = [];
     const participationRate = qcData.participatingValidators / qcData.totalValidators * 100;
     
-    // Extract seq_num if available
-    const seqNum = parseInt(fields.seq_num) || 0;
+    // seqNum is not available in this log, it will be derived from blockId in the API layer
+    const seqNum = 0;
 
     qcData.signerBits.forEach((participated, bitVecIndex) => {
       // Map BitVec index to validator position, then to validator ID
@@ -260,7 +276,7 @@ export class FocusedLogProcessor {
         validatorIndex: bitVecIndex,
         
         // QC metadata
-        qcId: `${qcData.round}-${qcData.epoch}`,
+        qcId: qcData.blockId,
         totalValidators: qcData.totalValidators,
         participatingValidators: qcData.participatingValidators,
         participationRate,
@@ -287,7 +303,6 @@ export class FocusedLogProcessor {
   // VALIDATOR REGISTRY MANAGEMENT
   // =============================================
 
-
   updateValidatorRegistry(epoch: number, validators: ValidatorRegistryEntry[]): void {
     this.validatorRegistry.clear();
     this.bitVecIndexToPosition.clear();
@@ -307,8 +322,6 @@ export class FocusedLogProcessor {
   private isLedgerTarget(target: string): boolean {
     return target === 'ledger_tail' || target.includes('ledger');
   }
-
-
 
   private isConsensusTarget(target: string): boolean {
     return target.includes('consensus') || 
