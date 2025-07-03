@@ -99,6 +99,7 @@ export function createContractRoutes(serviceContainer: ServiceContainer): Router
     const responseData: any = {
       address: contract.address,
       creator: contract.creator,
+      owner: contract.owner,
       createdAt: contract.createdAt,
       isVerified: contract.isVerified,
       name: contract.name,
@@ -204,10 +205,9 @@ export function createContractRoutes(serviceContainer: ServiceContainer): Router
 
   /**
    * GET /contracts
-   * Get contracts with pagination and filtering
+   * Get top 100 contracts with optional filtering
    */
   router.get('/', asyncHandler(async (req: Request, res: Response) => {
-    const { limit, offset } = validatePaginationParams(req.query);
     const { 
       isVerified, 
       hasSourceCode,
@@ -262,19 +262,19 @@ export function createContractRoutes(serviceContainer: ServiceContainer): Router
       );
     }
 
-    // Get contracts with pagination
+    // Get top 100 contracts
     const [contracts, total] = await store.Contract.findAndCount({
       where,
       relations: ['creationTransaction', 'creationTransaction.block'],
       order: { [orderBy as string]: orderDirection === 'desc' ? 'DESC' : 'ASC' },
-      skip: offset,
-      take: limit
+      take: 100
     });
 
     // Transform contracts for API response
     const contractsData = contracts.map((contract: Contract) => ({
       address: contract.address,
       creator: contract.creator,
+      owner: contract.owner,
       createdAt: contract.createdAt,
       isVerified: contract.isVerified,
       name: contract.name,
@@ -287,13 +287,12 @@ export function createContractRoutes(serviceContainer: ServiceContainer): Router
 
     successResponse(res, prepareForApiResponse({
       contracts: contractsData,
-      total
-    }), 'Contracts retrieved successfully', 200, {
+      total,
+      returned: contracts.length
+    }), 'Top 100 contracts retrieved successfully', 200, {
       totalContracts: total,
       returned: contracts.length,
-      limit,
-      offset,
-      hasMore: offset + limit < total,
+      limit: 100,
       filters: { isVerified, hasSourceCode, creator, createdAfter, createdBefore },
       ordering: { orderBy, orderDirection }
     });
@@ -427,7 +426,7 @@ export function createContractRoutes(serviceContainer: ServiceContainer): Router
 
       const enrichmentMessage = {
         contractAddress: normalizedAddress,
-        creator: contract.creator,
+        creator: contract.creator ?? null,
         blockNumber: 0, // Use 0 for manually triggered enrichment
         transactionHash: 'manual_enrichment',
         deploymentBytecode: undefined

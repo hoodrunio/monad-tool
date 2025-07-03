@@ -229,7 +229,7 @@ export class ContractEnrichmentWorker {
   private async updateContractInDatabase(
     address: string,
     metadata: ContractMetadata,
-    creator: string
+    creator: string | null
   ): Promise<void> {
     if (!this.dataSource || !this.dataSource.isInitialized) {
       logger.warn('PostgreSQL DataSource not initialized, skipping contract update', { address });
@@ -289,12 +289,13 @@ export class ContractEnrichmentWorker {
         // Insert new contract (shouldn't happen usually as BlockProcessor creates it first)
         await queryRunner.query(`
           INSERT INTO contract (
-            id, address, creator, created_at, bytecode, is_verified, name, compiler_version
-          ) VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7)
+            id, address, creator, owner, created_at, bytecode, is_verified, name, compiler_version
+          ) VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8)
         `, [
           address.toLowerCase(),
           address.toLowerCase(),
-          creator.toLowerCase(),
+          creator?.toLowerCase() || null,
+          null, // owner field
           updateData.bytecode,
           updateData.is_verified,
           updateData.name,

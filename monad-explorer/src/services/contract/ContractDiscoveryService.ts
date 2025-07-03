@@ -163,7 +163,8 @@ export class ContractDiscoveryService implements IContractDiscoveryService {
       const contract = new Contract({
         id: discovered.address,
         address: discovered.address,
-        creator: discovered.creator || 'unknown', // Will be enriched later if possible
+        creator: discovered.creator || null, // Null for later-indexed contracts (getlog too expensive)
+        owner: null, // Owner will be determined later if needed
         createdAt: new Date(),
         bytecode: null, // Lazy loading - will be fetched on-demand
         sourceCode: null,
@@ -251,15 +252,14 @@ export class ContractDiscoveryService implements IContractDiscoveryService {
   }
 
   /**
-   * Extract creator from transaction or log (if possible)
+   * Extract creator from transaction or log (NOT USED for discovered contracts)
+   * Creator can only be determined during actual contract creation, not discovery
+   * Discovery types (transaction, log, transfer, api) should always have null creator
    */
   private extractCreator(source: any): string | undefined {
-    if (source?.fromAddress) {
-      return source.fromAddress.toLowerCase();
-    }
-    if (source?.transaction?.fromAddress) {
-      return source.transaction.fromAddress.toLowerCase();
-    }
+    // For discovered contracts (not creation), creator should always be null
+    // Only contract creation transactions (handled by BlockProcessor.processContractCreation) 
+    // can provide reliable creator information
     return undefined;
   }
 

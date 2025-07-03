@@ -15,8 +15,12 @@ export class Contract {
     address!: string
 
     @Index_()
-    @StringColumn_({nullable: false})
-    creator!: string
+    @StringColumn_({nullable: true})
+    creator!: string | undefined | null
+
+    @Index_()
+    @StringColumn_({nullable: true})
+    owner!: string | undefined | null
 
     @Index_()
     @ManyToOne_(() => Transaction, {nullable: true})

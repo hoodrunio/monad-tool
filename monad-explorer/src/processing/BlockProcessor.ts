@@ -229,6 +229,7 @@ export class BlockProcessor {
       id: transaction.contractAddress.toLowerCase(),
       address: transaction.contractAddress.toLowerCase(),
       creator: transaction.fromAddress.toLowerCase(),
+      owner: null, // Owner will be determined later if needed
       creationTransaction: transaction,
       createdAt: transaction.timestamp,
       bytecode: null, // Will be fetched by background worker

@@ -17,7 +17,7 @@ export interface TokenEnrichmentMessage {
 
 export interface ContractEnrichmentMessage {
   contractAddress: string;
-  creator: string;
+  creator: string | null;
   blockNumber: number;
   transactionHash: string;
   deploymentBytecode?: string;
