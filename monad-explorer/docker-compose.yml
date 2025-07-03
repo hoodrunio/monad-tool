@@ -1,10 +1,51 @@
 services:
   db:
     image: postgres:15
+    container_name: monad-explorer-db-secure
     environment:
-      POSTGRES_DB: squid
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${DB_NAME:-squid}
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_USER: ${DB_USER:-squid_user}
+      # Güvenlik için ek ayarlar
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
     ports:
-      - "${DB_PORT}:5432"
-      # command: ["postgres", "-c", "log_statement=all"]
+      # SADECE localhost'a bind edin - internet'e kapalı
+      - "${DB_HOST:-127.0.0.1}:${DB_PORT:-5432}:5432"
+    volumes:
+      # Data persistence için
+      - postgres_secure_data:/var/lib/postgresql/data
+      # Güvenlik: read-only config
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    # Güvenlik ayarları
     shm_size: 1gb
+    restart: unless-stopped
+    # Güvenlik: container'ı read-only yapın (data volume hariç)
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '1.0'
+    # Network güvenliği
+    networks:
+      - monad-explorer-network
+    # Health check
+    #healthcheck:
+      #test: ["CMD-SHELL", "pg_isready -U squid_user -d squid"]
+      #interval: 30s
+      #timeout: 10s
+      #retries: 3
+      #start_period: 30s
+
+volumes:
+  postgres_secure_data:
+    driver: local
+
+networks:
+  monad-explorer-network:
+    driver: bridge
+    # internal: true  # Bu satırı kaldırdık - local erişim için gerekli

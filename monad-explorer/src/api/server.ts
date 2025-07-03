@@ -81,7 +81,7 @@ export class RestApiServer {
         host: process.env.DB_HOST || 'localhost',
         port: parseInt(process.env.DB_PORT || '5433'),
         username: process.env.DB_USER || 'postgres',
-        password: process.env.DB_PASSWORD || 'postgres',
+        password: process.env.DB_PASS || 'postgres',
         database: process.env.DB_NAME || 'squid',
         synchronize: false, // Don't modify schema
         logging: false,
