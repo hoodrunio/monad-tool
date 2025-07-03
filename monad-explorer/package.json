@@ -10,11 +10,11 @@
     "db:create-migration": "sqd migration:generate",
     "processor:start": "node -r dotenv/config lib/main.js",
     "worker:start": "node -r dotenv/config lib/scripts/start-token-enrichment-worker.js",
-    "worker:dev": "npm run build && npx ts-node scripts/start-token-enrichment-worker.ts",
+    "worker:dev": "npm run build && npx ts-node src/scripts/start-token-enrichment-worker.ts",
     "query-node:start": "squid-graphql-server --dumb-cache in-memory --dumb-cache-ttl 1000 --dumb-cache-size 100 --dumb-cache-max-age 1000",
-    "api:start": "npm run build && node -r dotenv/config lib/api/server.js",
+    "api:start": "node -r dotenv/config lib/api/server.js",
     "api:dev": "npx ts-node -r dotenv/config src/api/server.ts"
-    },
+  },
   "dependencies": {
     "@subsquid/evm-abi": "^0.3.0",
     "@subsquid/evm-processor": "^1.27.2",
