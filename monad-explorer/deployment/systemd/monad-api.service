@@ -7,7 +7,7 @@ Requires=monad-processor.service
 Type=simple
 User=root
 WorkingDirectory=/root/monad-tool/monad-explorer
-ExecStart=/root/.nvm/versions/node/v22.14.0/bin/npm run api:start
+ExecStart=/root/.nvm/versions/node/v22.14.0/bin/node -r dotenv/config lib/api/server.js
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
@@ -15,4 +15,4 @@ StandardError=journal
 SyslogIdentifier=monad-api
 
 [Install]
-WantedBy=multi-user.target 
+WantedBy=multi-user.target

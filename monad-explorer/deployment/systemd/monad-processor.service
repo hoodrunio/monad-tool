@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/monad-tool/monad-explorer
-ExecStart=/root/.nvm/versions/node/v22.14.0/bin/npm run processor:start
+ExecStart=/root/.nvm/versions/node/v22.14.0/bin/node -r dotenv/config lib/main.js
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
@@ -14,4 +14,4 @@ StandardError=journal
 SyslogIdentifier=monad-processor
 
 [Install]
-WantedBy=multi-user.target 
+WantedBy=multi-user.target
