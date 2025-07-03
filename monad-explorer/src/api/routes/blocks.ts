@@ -149,6 +149,7 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
     // Get transactions with pagination
     const [transactions, totalCount] = await store.Transaction.findAndCount({
       where: { block: { number: parseInt(blockNumber) } },
+      relations: ['block'],
       order: { id: 'ASC' },
       skip: offset,
       take: limit,
