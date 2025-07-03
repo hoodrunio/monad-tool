@@ -1,5 +1,5 @@
 [Unit]
-Description=Monad Explorer Token Enrichment Worker
+Description=Monad Explorer Enrichment Worker
 After=network.target monad-processor.service
 Requires=monad-processor.service
 
@@ -7,12 +7,12 @@ Requires=monad-processor.service
 Type=simple
 User=root
 WorkingDirectory=/root/monad-tool/monad-explorer
-ExecStart=/root/.nvm/versions/node/v22.14.0/bin/npm run worker:start
+ExecStart=/root/.nvm/versions/node/v22.14.0/bin/node -r dotenv/config lib/scripts/start-token-enrichment-worker.js
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=monad-token-enrichment-worker
+SyslogIdentifier=monad--worker
 
 [Install]
 WantedBy=multi-user.target 
