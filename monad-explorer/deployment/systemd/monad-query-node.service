@@ -5,10 +5,9 @@ Requires=monad-processor.service
 
 [Service]
 Type=simple
-User=your_user
-Group=your_group
-WorkingDirectory=/path/to/your/monad-explorer
-ExecStart=/usr/bin/npm run query-node:start
+User=root
+WorkingDirectory=/root/monad-tool/monad-explorer
+ExecStart=/root/.nvm/versions/node/v22.14.0/bin/npm run query-node:start
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
