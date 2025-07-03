@@ -1,0 +1,18 @@
+[Unit]
+Description=Monad Explorer API
+After=network.target monad-processor.service
+Requires=monad-processor.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/monad-tool/monad-explorer
+ExecStart=/root/.nvm/versions/node/v22.14.0/bin/npm run api:start
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=monad-api
+
+[Install]
+WantedBy=multi-user.target 

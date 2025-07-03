@@ -1,0 +1,17 @@
+[Unit]
+Description=Monad Explorer Processor
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory/root/monad-tool/monad-explorer
+ExecStart=/root/.nvm/versions/node/v22.14.0/bin/npm run processor:start
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=monad-processor
+
+[Install]
+WantedBy=multi-user.target 
