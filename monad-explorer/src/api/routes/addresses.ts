@@ -7,6 +7,10 @@ import { ParsedTokenTransfer } from '../../interfaces/processing/ILogTokenTransf
 import { asyncHandler, ApiErrorResponse, successResponse } from '../middleware/errorHandlers';
 import { validateAddress, validatePaginationParams, validateBoolean } from '../validators/common';
 import { prepareForApiResponse } from '../../utils/bigint-serializer';
+import { OnChainBalanceService } from '../../services/token/OnChainBalanceService';
+import { IRpcClient } from '../../interfaces/blockchain/IRpcClient';
+import { ICacheService } from '../../interfaces/cache/ICacheService';
+import { TokenType } from '../../model';
 
 /**
  * Create address routes using logs-first architecture
@@ -172,69 +176,132 @@ export function createAddressRoutes(serviceContainer: ServiceContainer): Router 
 
   /**
    * GET /addresses/:address/balance
-   * Get token balances for an address
+   * Get token balances for an address (on-chain query)
    */
   router.get('/:address/balance', asyncHandler(async (req: Request, res: Response) => {
     const address = req.params.address.toLowerCase();
     const tokenAddress = req.query.tokenAddress as string;
+    const includeNative = validateBoolean(req.query.includeNative as string, true); // default true
+    const includeMetadata = validateBoolean(req.query.includeMetadata as string, true); // default true
+    const useCache = validateBoolean(req.query.useCache as string, true); // default true
+    const blockNumber = req.query.blockNumber ? parseInt(req.query.blockNumber as string, 10) : undefined;
+
+
 
     if (!validateAddress(address)) {
       throw new ApiErrorResponse('Invalid address format', 400, 'INVALID_ADDRESS');
     }
 
-    const store = await serviceContainer.resolve<StoreAdapter>('store');
-    
+    // Get required services
+    const rpcClient = await serviceContainer.resolve<IRpcClient>('rpcClient');
+    const cacheService = await serviceContainer.resolve<ICacheService>('cacheService').catch(() => undefined);
+    const balanceService = new OnChainBalanceService(rpcClient, cacheService);
+
     if (tokenAddress) {
-      // Get balance for specific token
+      // Get balance for specific token (on-chain)
       if (!validateAddress(tokenAddress)) {
         throw new ApiErrorResponse('Invalid token address format', 400, 'INVALID_TOKEN_ADDRESS');
       }
 
-      const tokenBalance = await store.TokenBalance.findOne({
-        where: { 
-          account: { id: address },
-          token: { id: tokenAddress.toLowerCase() }
-        },
-        relations: ['token']
-      });
+      // First, we need to determine the token type from database or detect it
+      const store = await serviceContainer.resolve<StoreAdapter>('store');
+      let tokenType = TokenType.ERC20; // default assumption
+      
+      try {
+        const tokenRecord = await store.Token.findOne({
+          where: { id: tokenAddress.toLowerCase() }
+        });
+        if (tokenRecord) {
+          tokenType = tokenRecord.tokenType;
+        }
+      } catch (error) {
+        // If token not in DB, assume ERC20
+      }
+
+      const startTime = Date.now();
+      const tokenBalance = await balanceService.getTokenBalance(
+        address,
+        tokenAddress.toLowerCase(),
+        tokenType,
+        {
+          includeMetadata,
+          useCache,
+          cacheTtl: 300, // 5 minutes
+          blockNumber
+        }
+      );
+
+      const queryTime = Date.now() - startTime;
 
       return successResponse(res, prepareForApiResponse({
-         address: address,
-         tokenAddress: tokenAddress.toLowerCase(),
-         balance: tokenBalance ? {
-           amount: tokenBalance.balance,
-           token: {
-             address: tokenBalance.token.id,
-             name: tokenBalance.token.name,
-             symbol: tokenBalance.token.symbol,
-             decimals: tokenBalance.token.decimals,
-             tokenType: tokenBalance.token.tokenType
-           }
-         } : null
-       }), 'Token balance retrieved successfully');
+        address: address,
+        tokenAddress: tokenAddress.toLowerCase(),
+        balance: tokenBalance ? {
+          amount: tokenBalance.balance,
+          token: {
+            address: tokenBalance.tokenAddress,
+            name: tokenBalance.metadata?.name || null,
+            symbol: tokenBalance.metadata?.symbol || null,
+            decimals: tokenBalance.metadata?.decimals || null,
+            tokenType: tokenBalance.tokenType
+          }
+        } : null,
+        onChain: {
+          queryTime: `${queryTime}ms`,
+        }
+      }), 'Token balance retrieved successfully (on-chain)');
     } else {
-      // Get all token balances for address
-      const tokenBalances = await store.TokenBalance.find({
-        where: { account: { id: address } },
-        relations: ['token'],
-        order: { balance: 'DESC' }
+      // Get all token balances for address (on-chain multicall)
+      const store = await serviceContainer.resolve<StoreAdapter>('store');
+      
+      // Get known tokens for this address from database (for token types)
+      const knownTokens = await store.Token.find({
+        select: ['id', 'tokenType'],
+        where: {},
+        take: 100 // Limit to avoid too many RPC calls
       });
 
+      const tokensToQuery = knownTokens.map((token: any) => ({
+         address: token.id,
+         type: token.tokenType
+       }));
+
+      const startTime = Date.now();
+      const result = await balanceService.getMultipleTokenBalances(
+        address,
+        tokensToQuery,
+        {
+          includeNativeBalance: includeNative,
+          includeMetadata,
+          useCache,
+          cacheTtl: 300,
+          blockNumber
+        }
+      );
+
+      const queryTime = Date.now() - startTime;
+
       return successResponse(res, prepareForApiResponse({
-         address: address,
-         balances: tokenBalances.map(balance => ({
-           amount: balance.balance,
-           token: {
-             address: balance.token.id,
-             name: balance.token.name,
-             symbol: balance.token.symbol,
-             decimals: balance.token.decimals,
-             tokenType: balance.token.tokenType
-           }
-         }))
-       }), 'Token balances retrieved successfully', 200, {
-         tokenCount: tokenBalances.length
-       });
+        address: address,
+        nativeBalance: result.nativeBalance || null,
+        balances: result.tokenBalances.map(balance => ({
+          amount: balance.balance,
+          token: {
+            address: balance.tokenAddress,
+            name: balance.metadata?.name || null,
+            symbol: balance.metadata?.symbol || null,
+            decimals: balance.metadata?.decimals || null,
+            tokenType: balance.tokenType
+          }
+        })),
+        onChain: {
+          queryTime: `${queryTime}ms`,
+          tokensQueried: tokensToQuery.length,
+          balancesFound: result.tokenBalances.length
+        }
+      }), 'Token balances retrieved successfully (on-chain)', 200, {
+        tokenCount: result.tokenBalances.length
+      });
     }
   }));
 
@@ -299,10 +366,8 @@ export function createAddressRoutes(serviceContainer: ServiceContainer): Router 
         hasMore: validatedOffset + validatedLimit < result.total
       },
       runtime: {
-        processingTime: `${processingTime}ms`,
-        architecture: 'on-demand-tracing',
-        storageOptimization: '100% (not stored in DB)'
-      }
+        processingTime: `${processingTime}ms`
+        }
     }, 'Internal transactions for address retrieved successfully', 200);
   }));
 

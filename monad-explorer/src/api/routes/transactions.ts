@@ -152,8 +152,6 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
     successResponse(res, apiTransfers, 'Token transfers retrieved successfully', 200, {
       architecture: 'logs-first',
       transferCount: transfers.length,
-      runtimeComputed: true,
-      storageOptimization: '70% reduction vs entity storage'
     });
   }));
 
@@ -203,11 +201,7 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
     const apiInternalTxs = prepareForApiResponse(internalTxs);
     
     successResponse(res, apiInternalTxs, 'Internal transactions retrieved successfully', 200, {
-      architecture: 'on-demand-tracing',
       internalTransactionCount: internalTxs.length,
-      runtimeComputed: true,
-      storageOptimization: '100% (not stored in DB)',
-      performance: 'trace-based'
     });
   }));
 
@@ -235,9 +229,6 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
     const hasInternal = await internalTxService.hasInternalTransactions(hash);
 
     successResponse(res, { hasInternalTransactions: hasInternal }, 'Internal transaction check completed', 200, {
-      architecture: 'on-demand-tracing',
-      performance: 'optimized-check',
-      lightweight: true
     });
   }));
 

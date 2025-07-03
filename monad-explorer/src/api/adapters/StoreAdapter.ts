@@ -1,5 +1,5 @@
 import { DataSource } from 'typeorm';
-import { Transaction, Log, Block, TokenBalance, Contract } from '../../model/generated';
+import { Transaction, Log, Block, TokenBalance, Contract, Token } from '../../model/generated';
 import { serviceContainer } from '../../services/core/ServiceContainer';
 import { ITransactionService } from '../../interfaces/services/ITransactionService';
 import { IInternalTransactionService } from '../../interfaces/services/IInternalTransactionService';
@@ -22,6 +22,10 @@ export interface StoreAdapter {
     findOne(options: any): Promise<TokenBalance | null>;
     find(options: any): Promise<TokenBalance[]>;
   };
+  Token: {
+    findOne(options: any): Promise<Token | null>;
+    find(options: any): Promise<Token[]>;
+  };
   Contract: {
     findOne(options: any): Promise<Contract | null>;
     find(options: any): Promise<Contract[]>;
@@ -40,6 +44,7 @@ export function createStoreAdapter(dataSource: DataSource): StoreAdapter {
   const logRepo = dataSource.getRepository(Log);
   const blockRepo = dataSource.getRepository(Block);
   const tokenBalanceRepo = dataSource.getRepository(TokenBalance);
+  const tokenRepo = dataSource.getRepository(Token);
   const contractRepo = dataSource.getRepository(Contract);
 
   return {
@@ -269,6 +274,55 @@ export function createStoreAdapter(dataSource: DataSource): StoreAdapter {
           return result;
         } catch (error) {
           throw new Error(`TokenBalance find failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+    },
+
+    Token: {
+      async findOne(options: any): Promise<Token | null> {
+        try {
+          const result = await tokenRepo.findOne({
+            where: options.where,
+            relations: options.relations || []
+          });
+          return result;
+        } catch (error) {
+          throw new Error(`Token findOne failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      },
+
+      async find(options: any): Promise<Token[]> {
+        try {
+          const queryOptions: any = {};
+          
+          if (options.where) {
+            queryOptions.where = options.where;
+          }
+          
+          if (options.relations) {
+            queryOptions.relations = options.relations;
+          }
+          
+          if (options.order) {
+            queryOptions.order = options.order;
+          }
+          
+          if (options.skip !== undefined) {
+            queryOptions.skip = options.skip;
+          }
+          
+          if (options.take !== undefined) {
+            queryOptions.take = options.take;
+          }
+          
+          if (options.select) {
+            queryOptions.select = options.select;
+          }
+
+          const result = await tokenRepo.find(queryOptions);
+          return result;
+        } catch (error) {
+          throw new Error(`Token find failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
       }
     },
