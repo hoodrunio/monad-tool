@@ -31,6 +31,43 @@ export class EventController {
         return;
       }
 
+      // Parse comma-separated event types
+      const requestedEventTypes: string[] = eventType ? 
+        (typeof eventType === 'string' ? eventType.split(',').map(t => t.trim()) : []) : 
+        [];
+
+      // Helper function to check if we should query block proposals table
+      const shouldQueryBlockProposals = (): boolean => {
+        if (!eventType) return true; // No filter means include all
+        return requestedEventTypes.some(type => 
+          type === 'block_proposal' || type === 'block_skipped' || type.includes('block')
+        );
+      };
+
+      // Helper function to check if we should query QC participation table
+      const shouldQueryQcParticipation = (): boolean => {
+        if (!eventType) return true; // No filter means include all
+        return requestedEventTypes.includes('qc_participation');
+      };
+
+      // Helper function to get block status filter
+      const getBlockStatusFilter = (): string => {
+        const statusFilters: string[] = [];
+        if (requestedEventTypes.includes('block_proposal')) {
+          statusFilters.push("bp.status = 'proposed'");
+        }
+        if (requestedEventTypes.includes('block_skipped')) {
+          statusFilters.push("bp.status = 'skipped'");
+        }
+        // If no specific status is requested but block events are requested, include all statuses
+        if (requestedEventTypes.some(type => type.includes('block')) && 
+            !requestedEventTypes.includes('block_proposal') && 
+            !requestedEventTypes.includes('block_skipped')) {
+          return ''; // No status filter
+        }
+        return statusFilters.length > 0 ? ` AND (${statusFilters.join(' OR ')})` : '';
+      };
+
       let whereClause = 'WHERE 1=1';
       
       if (validatorId) {
@@ -45,7 +82,7 @@ export class EventController {
       let qcEvents: any[] = [];
 
       // Get block proposal events
-      if (!eventType || eventType === 'block_proposal' || eventType === 'block_skipped') {
+      if (shouldQueryBlockProposals()) {
         // Build where clause with table prefix for block proposals
         let blockWhereClause = 'WHERE 1=1';
         if (validatorId) {
@@ -54,6 +91,7 @@ export class EventController {
         if (minRound) {
           blockWhereClause += ` AND bp.round >= ${minRound}`;
         }
+        blockWhereClause += getBlockStatusFilter();
 
         const blockQuery = `
           SELECT 
@@ -72,8 +110,6 @@ export class EventController {
           FROM block_proposals bp
           LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
           ${blockWhereClause}
-          ${eventType === 'block_skipped' ? 'AND bp.status = \'skipped\'' : ''}
-          ${eventType === 'block_proposal' ? 'AND bp.status = \'proposed\'' : ''}
           ORDER BY bp.timestamp DESC 
           LIMIT ${Math.min(limit, 500)}
         `;
@@ -84,7 +120,7 @@ export class EventController {
       }
 
       // Get QC participation events
-      if (!eventType || eventType === 'qc_participation') {
+      if (shouldQueryQcParticipation()) {
         // Build where clause with table prefix for QC participation
         let qcWhereClause = 'WHERE 1=1';
         if (validatorId) {
@@ -171,6 +207,7 @@ export class EventController {
           limit,
           filters: {
             eventType: eventType || null,
+            requestedEventTypes: requestedEventTypes.length > 0 ? requestedEventTypes : null,
             validatorId: validatorId || null,
             minRound: minRound || null
           }
@@ -309,17 +346,50 @@ export class EventController {
           break;
       }
 
+      // Parse comma-separated event types
+      const requestedEventTypes: string[] = eventType ? 
+        (typeof eventType === 'string' ? eventType.split(',').map(t => t.trim()) : []) : 
+        [];
+
+      // Helper function to check if we should query block proposals table
+      const shouldQueryBlockProposals = (): boolean => {
+        if (!eventType) return true; // No filter means include all
+        return requestedEventTypes.some(type => 
+          type === 'block_proposal' || type === 'block_skipped' || type.includes('block')
+        );
+      };
+
+      // Helper function to check if we should query QC participation table
+      const shouldQueryQcParticipation = (): boolean => {
+        if (!eventType) return true; // No filter means include all
+        return requestedEventTypes.includes('qc_participation');
+      };
+
+      // Helper function to get block status filter
+      const getBlockStatusFilter = (): string => {
+        const statusFilters: string[] = [];
+        if (requestedEventTypes.includes('block_proposal')) {
+          statusFilters.push("status = 'proposed'");
+        }
+        if (requestedEventTypes.includes('block_skipped')) {
+          statusFilters.push("status = 'skipped'");
+        }
+        // If no specific status is requested but block events are requested, include all statuses
+        if (requestedEventTypes.some(type => type.includes('block')) && 
+            !requestedEventTypes.includes('block_proposal') && 
+            !requestedEventTypes.includes('block_skipped')) {
+          return ''; // No status filter
+        }
+        return statusFilters.length > 0 ? ` AND (${statusFilters.join(' OR ')})` : '';
+      };
+
       let blockTimelineQuery = '';
       let qcTimelineQuery = '';
 
       // Build block proposal timeline query
-      if (!eventType || (typeof eventType === 'string' && eventType.includes('block'))) {
+      if (shouldQueryBlockProposals()) {
         let blockWhereClause = `WHERE timestamp >= now() - INTERVAL ${intervalClause}`;
-        if (eventType === 'block_proposal') {
-          blockWhereClause += ` AND status = 'proposed'`;
-        } else if (eventType === 'block_skipped') {
-          blockWhereClause += ` AND status = 'skipped'`;
-        }
+        blockWhereClause += getBlockStatusFilter();
 
         blockTimelineQuery = `
           SELECT 
@@ -336,7 +406,7 @@ export class EventController {
       }
 
       // Build QC participation timeline query
-      if (!eventType || eventType === 'qc_participation') {
+      if (shouldQueryQcParticipation()) {
         qcTimelineQuery = `
           SELECT 
             ${timeGrouping} as time_bucket,
@@ -387,6 +457,7 @@ export class EventController {
           timeWindow,
           granularity,
           eventType: eventType || 'all',
+          requestedEventTypes: requestedEventTypes.length > 0 ? requestedEventTypes : null,
           dataPoints: timeline.length
         },
         timestamp: new Date().toISOString()
@@ -426,6 +497,43 @@ export class EventController {
         return;
       }
 
+      // Parse comma-separated event types
+      const requestedEventTypes: string[] = eventType ? 
+        (typeof eventType === 'string' ? eventType.split(',').map(t => t.trim()) : []) : 
+        [];
+
+      // Helper function to check if we should query block proposals table
+      const shouldQueryBlockProposals = (): boolean => {
+        if (!eventType) return true; // No filter means include all
+        return requestedEventTypes.some(type => 
+          type === 'block_proposal' || type === 'block_skipped' || type.includes('block')
+        );
+      };
+
+      // Helper function to check if we should query QC participation table
+      const shouldQueryQcParticipation = (): boolean => {
+        if (!eventType) return true; // No filter means include all
+        return requestedEventTypes.includes('qc_participation');
+      };
+
+      // Helper function to get block status filter
+      const getBlockStatusFilter = (): string[] => {
+        const statusFilters: string[] = [];
+        if (requestedEventTypes.includes('block_proposal')) {
+          statusFilters.push("bp.status = 'proposed'");
+        }
+        if (requestedEventTypes.includes('block_skipped')) {
+          statusFilters.push("bp.status = 'skipped'");
+        }
+        // If no specific status is requested but block events are requested, include all statuses
+        if (requestedEventTypes.some(type => type.includes('block')) && 
+            !requestedEventTypes.includes('block_proposal') && 
+            !requestedEventTypes.includes('block_skipped')) {
+          return []; // No status filter
+        }
+        return statusFilters;
+      };
+
       let whereConditions: string[] = [];
       
       if (validatorId) {
@@ -443,7 +551,7 @@ export class EventController {
       let events: any[] = [];
 
       // Search block proposals
-      if (!eventType || (typeof eventType === 'string' && eventType.includes('block'))) {
+      if (shouldQueryBlockProposals()) {
         let blockWhereConditions = [];
         
         if (validatorId) {
@@ -458,10 +566,10 @@ export class EventController {
           blockWhereConditions.push(`bp.timestamp <= '${endTime}'`);
         }
         
-        if (eventType === 'block_proposal') {
-          blockWhereConditions.push(`bp.status = 'proposed'`);
-        } else if (eventType === 'block_skipped') {
-          blockWhereConditions.push(`bp.status = 'skipped'`);
+        // Add status filters for specific event types
+        const statusFilters = getBlockStatusFilter();
+        if (statusFilters.length > 0) {
+          blockWhereConditions.push(`(${statusFilters.join(' OR ')})`);
         }
 
         if (searchQuery) {
@@ -521,7 +629,7 @@ export class EventController {
       }
 
       // Search QC participation
-      if (!eventType || eventType === 'qc_participation') {
+      if (shouldQueryQcParticipation()) {
         let qcWhereConditions = [];
 
         if (validatorId) {
@@ -600,6 +708,7 @@ export class EventController {
           searchQuery: searchQuery || null,
           filters: {
             eventType: eventType || null,
+            requestedEventTypes: requestedEventTypes.length > 0 ? requestedEventTypes : null,
             validatorId: validatorId || null,
             startTime: startTime || null,
             endTime: endTime || null
