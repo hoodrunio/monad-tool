@@ -28,5 +28,12 @@ export function createAdminRoutes(adminController: AdminController): Router {
   router.delete('/api/domain-mappings/:hostname', adminController.removeDomainMapping.bind(adminController));
   router.get('/api/domain-mappings/:hostname/check', adminController.checkDomainMapping.bind(adminController));
 
+  // Keybase ID management
+  router.get('/api/keybase-mappings', adminController.getKeybaseMappings.bind(adminController));
+  router.post('/api/keybase-mappings', adminController.addKeybaseMapping.bind(adminController));
+  router.delete('/api/keybase-mappings/:validatorId', adminController.removeKeybaseMapping.bind(adminController));
+  router.get('/api/keybase-mappings/:validatorId/check', adminController.checkKeybaseMapping.bind(adminController));
+  router.post('/api/keybase-mappings/refresh-logos', adminController.refreshKeybaseLogos.bind(adminController));
+
   return router;
 } 

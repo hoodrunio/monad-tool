@@ -13,6 +13,7 @@
     "lint:fix": "eslint src/**/*.ts --fix",
     "health": "ts-node scripts/health-check.ts",
     "schema:init": "ts-node scripts/init-schema.ts",
+    "migrate:keybase": "ts-node scripts/add-keybase-columns.ts",
     "demo:process-logs": "ts-node scripts/demo-process-logs.ts",
     "start-api": "ts-node scripts/start-api.ts",
     "api:dev": "ts-node src/api/main.ts",

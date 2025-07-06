@@ -141,13 +141,15 @@ export class ValidatorController {
           COALESCE(vr.provider, 'unknown') as provider,
           COALESCE(vr.location, 'unknown') as location,
           COALESCE(vr.stake, 0) as stake,
+          COALESCE(vr.keybase_id, '') as keybase_id,
+          COALESCE(vr.keybase_logo_url, '') as keybase_logo_url,
           MIN(b.timestamp) as first_seen,
           MAX(b.timestamp) as last_activity
         FROM block_proposals b
         LEFT JOIN validator_registry vr ON vr.validator_id = b.validator_id AND vr.is_active = 1
         WHERE b.validator_id = '${validatorId}'
           AND b.timestamp >= now() - INTERVAL ${timeWindow}
-        GROUP BY b.validator_id, vr.validator_name, vr.provider, vr.location, vr.stake
+        GROUP BY b.validator_id, vr.validator_name, vr.provider, vr.location, vr.stake, vr.keybase_id, vr.keybase_logo_url
       `;
 
       // Get QC participation metrics
@@ -211,6 +213,10 @@ export class ValidatorController {
           validator_name: blockData?.validator_name || 'unknown',
           provider: blockData?.provider || 'unknown',
           location: blockData?.location || 'unknown'
+        },
+        keybase: {
+          id: blockData?.keybase_id || null,
+          logo_url: blockData?.keybase_logo_url || null
         },
         activity: {
           first_seen: blockData?.first_seen || null,
@@ -390,7 +396,7 @@ export class ValidatorController {
     const query = `
       WITH 
         active_validators AS (
-          SELECT validator_id, validator_name, provider, location, stake
+          SELECT validator_id, validator_name, provider, location, stake, keybase_id, keybase_logo_url
           FROM validator_registry 
           WHERE is_active = 1
         ),
@@ -430,7 +436,9 @@ export class ValidatorController {
         av.validator_name as validator_name,
         av.provider as provider,
         av.location as location,
-        av.stake as stake
+        av.stake as stake,
+        av.keybase_id as keybase_id,
+        av.keybase_logo_url as keybase_logo_url
       FROM active_validators av
       LEFT JOIN block_metrics b ON av.validator_id = b.validator_id
       LEFT JOIN qc_metrics q ON av.validator_id = q.validator_id
@@ -466,6 +474,10 @@ export class ValidatorController {
         validator_name: r.validator_name || 'unknown',
         provider: r.provider || 'unknown',
         location: r.location || 'unknown'
+      },
+      keybase: {
+        id: r.keybase_id || null,
+        logo_url: r.keybase_logo_url || null
       }
     }));
 
@@ -490,7 +502,7 @@ export class ValidatorController {
     const query = `
       WITH 
         active_validators AS (
-          SELECT validator_id, validator_name, provider, location, stake
+          SELECT validator_id, validator_name, provider, location, stake, keybase_id, keybase_logo_url
           FROM validator_registry 
           WHERE is_active = 1
         ),
@@ -530,7 +542,9 @@ export class ValidatorController {
         av.validator_name as validator_name,
         av.provider as provider,
         av.location as location,
-        av.stake as stake
+        av.stake as stake,
+        av.keybase_id as keybase_id,
+        av.keybase_logo_url as keybase_logo_url
       FROM active_validators av
       LEFT JOIN block_metrics b ON av.validator_id = b.validator_id
       LEFT JOIN qc_metrics q ON av.validator_id = q.validator_id
@@ -562,6 +576,10 @@ export class ValidatorController {
         validator_name: r.validator_name || 'unknown',
         provider: r.provider || 'unknown',
         location: r.location || 'unknown'
+      },
+      keybase: {
+        id: r.keybase_id || null,
+        logo_url: r.keybase_logo_url || null
       }
     }));
   }
@@ -696,7 +714,9 @@ export class ValidatorController {
         COALESCE(vr.validator_name, 'unknown') as validator_name,
         COALESCE(vr.provider, 'unknown') as provider,
         COALESCE(vr.location, 'unknown') as location,
-        COALESCE(vr.stake, 0) as stake
+        COALESCE(vr.stake, 0) as stake,
+        COALESCE(vr.keybase_id, '') as keybase_id,
+        COALESCE(vr.keybase_logo_url, '') as keybase_logo_url
       FROM block_metrics b
       FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
       LEFT JOIN validator_registry vr ON vr.validator_id = COALESCE(b.validator_id, q.validator_id) AND vr.is_active = 1
@@ -726,6 +746,10 @@ export class ValidatorController {
         validator_name: v.validator_name || 'unknown',
         provider: v.provider || 'unknown',
         location: v.location || 'unknown'
+      },
+      keybase: {
+        id: v.keybase_id || null,
+        logo_url: v.keybase_logo_url || null
       }
     }));
   }

@@ -52,6 +52,10 @@ CREATE TABLE validator_registry (
     -- Validator identification (extracted from domain)
     validator_name LowCardinality(String) DEFAULT 'unknown',
     
+    -- Keybase integration
+    keybase_id LowCardinality(String) DEFAULT '',
+    keybase_logo_url String DEFAULT '',
+    
     -- ISP/hosting provider (from geolocation)
     provider LowCardinality(String) DEFAULT 'unknown',
     location LowCardinality(String) DEFAULT 'unknown',
