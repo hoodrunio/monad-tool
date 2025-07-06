@@ -27,7 +27,7 @@ export interface EpochInfo {
 
 export class EpochService {
   private readonly epochInterval: number;
-  private avgBlockTimeSeconds: number = 0.5; // Default 2 seconds per block for Monad
+  private avgBlockTimeSeconds: number = 0.5; // Default 0.5 seconds per block for Monad
 
   constructor(private readonly rpcClient: NodeRpcClient, epochInterval: number = 50000) {
     this.epochInterval = epochInterval;

@@ -17,8 +17,8 @@ export class EpochController {
     // Initialize Epoch service with 50k block interval for Monad
     this.epochService = new EpochService(rpcClient, 50000);
     
-    // Set average block time if configured
-    const avgBlockTime = parseFloat(process.env.AVG_BLOCK_TIME || '2');
+    // Set average block time if configured - Monad default is 0.5 seconds
+    const avgBlockTime = parseFloat(process.env.AVG_BLOCK_TIME || '0.5');
     this.epochService.setAverageBlockTime(avgBlockTime);
   }
 
