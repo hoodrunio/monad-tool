@@ -15,7 +15,7 @@
     "schema:init": "ts-node scripts/init-schema.ts",
     "demo:process-logs": "ts-node scripts/demo-process-logs.ts",
     "start-api": "ts-node scripts/start-api.ts",
-    "api:dev": "ts-node --watch src/api/main.ts",
+    "api:dev": "ts-node src/api/main.ts",
     "api:build": "tsc && node dist/api/main.js",
     "api:test": "ts-node scripts/test-api.ts",
     "api:fix": "ts-node scripts/fix-api-issues.ts",

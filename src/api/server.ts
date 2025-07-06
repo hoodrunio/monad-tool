@@ -16,6 +16,7 @@ import { NetworkController } from './controllers/NetworkController';
 import { EventController } from './controllers/EventController';
 import { AdminController } from './controllers/AdminController';
 import { QueryPerformanceController } from './controllers/QueryPerformanceController';
+import { EpochController } from './controllers/EpochController';
 
 // Import Routes
 import { createHealthRoutes } from './routes/health';
@@ -25,6 +26,7 @@ import { createEventRoutes } from './routes/events';
 import { createAdminRoutes } from './routes/admin';
 import { createQueryPerformanceRoutes } from './routes/query-performance';
 import { createDNSAnalyticsRoutes } from './routes/dns-analytics';
+import { createEpochRoutes } from './routes/epoch';
 
 export interface APIServerConfig {
   port: number;
@@ -55,6 +57,7 @@ export class AnalyticsAPIServer {
   private eventController!: EventController;
   private adminController!: AdminController;
   private queryPerformanceController!: QueryPerformanceController;
+  private epochController!: EpochController;
 
   constructor(config: APIServerConfig, ingestionService: DataIngestionService) {
     this.config = config;
@@ -129,6 +132,10 @@ export class AnalyticsAPIServer {
     this.queryPerformanceController = new QueryPerformanceController(
       this.clickhouseClient
     );
+
+    this.epochController = new EpochController(
+      this.redisClient
+    );
   }
 
   // =============================================
@@ -198,6 +205,7 @@ export class AnalyticsAPIServer {
     this.app.use('/', createAdminRoutes(this.adminController));
     this.app.use('/', createQueryPerformanceRoutes(this.queryPerformanceController));
     this.app.use('/', createDNSAnalyticsRoutes(this.clickhouseClient, this.redisClient));
+    this.app.use('/', createEpochRoutes(this.epochController));
 
     // API documentation endpoint
     this.app.get('/api/docs', this.handleApiDocs.bind(this));
@@ -280,6 +288,14 @@ export class AnalyticsAPIServer {
           'POST /api/cache/flush': 'Flush cache (with optional pattern)',
           'POST /api/logs/process': 'Process log batch',
           'GET /api/maintenance/status': 'System maintenance status'
+        },
+        epoch: {
+          'GET /api/epoch/progress': 'Current epoch progress with percentage and time estimates',
+          'GET /api/epoch/info': 'Comprehensive epoch information',
+          'GET /api/epoch/current': 'Current epoch number only',
+          'GET /api/epoch/block/:blockNumber': 'Get epoch information for specific block',
+          'GET /api/epoch/:epochNumber/blocks': 'Get block range for specific epoch',
+          'GET /api/epoch/config': 'Epoch configuration settings'
         }
       },
       timestamp: new Date().toISOString()

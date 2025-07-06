@@ -77,6 +77,43 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
     });
   }));
 
+
+   /**
+   * GET /blocks/latest
+   * Get latest block information
+   */
+   router.get('/latest', asyncHandler(async (req: Request, res: Response) => {
+    const store = await serviceContainer.resolve<StoreAdapter>('store');
+    
+    const latestBlock = await store.Block.findOne({
+      order: { number: 'DESC' },
+    });
+
+    if (!latestBlock) {
+      throw new ApiErrorResponse('No blocks found', 404, 'NO_BLOCKS_FOUND');
+    }
+
+    // Get transaction count for latest block
+    const transactionCount = await store.Transaction.find({
+      where: { block: { number: latestBlock.number } },
+      select: ['id']
+    }).then(txs => txs.length);
+
+    return successResponse(res, prepareForApiResponse({
+      block: {
+        number: latestBlock.number,
+        hash: latestBlock.hash,
+        parentHash: latestBlock.parentHash,
+        timestamp: latestBlock.timestamp,
+        gasUsed: latestBlock.gasUsed,
+        gasLimit: latestBlock.gasLimit,
+        baseFeePerGas: latestBlock.baseFeePerGas,
+        size: latestBlock.size,
+        transactionCount: transactionCount
+      }
+    }));
+  }));
+
   /**
    * GET /blocks/:number
    * Get block details
@@ -287,42 +324,6 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         hasMore: offset + limit < totalCount
       });
     }
-  }));
-
-  /**
-   * GET /blocks/latest
-   * Get latest block information
-   */
-  router.get('/latest', asyncHandler(async (req: Request, res: Response) => {
-    const store = await serviceContainer.resolve<StoreAdapter>('store');
-    
-    const latestBlock = await store.Block.findOne({
-      order: { number: 'DESC' },
-    });
-
-    if (!latestBlock) {
-      throw new ApiErrorResponse('No blocks found', 404, 'NO_BLOCKS_FOUND');
-    }
-
-    // Get transaction count for latest block
-    const transactionCount = await store.Transaction.find({
-      where: { block: { number: latestBlock.number } },
-      select: ['id']
-    }).then(txs => txs.length);
-
-    return successResponse(res, prepareForApiResponse({
-      block: {
-        number: latestBlock.number,
-        hash: latestBlock.hash,
-        parentHash: latestBlock.parentHash,
-        timestamp: latestBlock.timestamp,
-        gasUsed: latestBlock.gasUsed,
-        gasLimit: latestBlock.gasLimit,
-        baseFeePerGas: latestBlock.baseFeePerGas,
-        size: latestBlock.size,
-        transactionCount: transactionCount
-      }
-    }));
   }));
 
   /**
