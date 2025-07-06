@@ -683,7 +683,7 @@ export class AdminController {
         return;
       }
       
-      // Update validator registry with keybase information
+      // Update validator registry with keybase information using INSERT with ReplacingMergeTree
       const updateQuery = `
         INSERT INTO validator_registry 
         (validator_id, node_id, epoch, stake, position, is_active, dns_address, dns_host, dns_port, 
@@ -715,6 +715,9 @@ export class AdminController {
       `;
 
       await this.clickhouseClient.executeCommand(updateQuery);
+      
+      // Force merge to remove duplicates
+      await this.clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
       
       // Clear relevant cache entries
       await this.redisClient.invalidatePattern('validator_*');
@@ -775,7 +778,7 @@ export class AdminController {
         return;
       }
 
-      // Remove keybase mapping by setting it to empty
+      // Remove keybase mapping by setting it to empty using INSERT with ReplacingMergeTree
       const removeQuery = `
         INSERT INTO validator_registry 
         (validator_id, node_id, epoch, stake, position, is_active, dns_address, dns_host, dns_port, 
@@ -807,6 +810,9 @@ export class AdminController {
       `;
 
       await this.clickhouseClient.executeCommand(removeQuery);
+      
+      // Force merge to remove duplicates
+      await this.clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
       
       // Clear relevant cache entries
       await this.redisClient.invalidatePattern('validator_*');
@@ -929,7 +935,7 @@ export class AdminController {
               }
               
               if (logoUrl) {
-                // Update logo URL in database
+                // Update logo URL in database using INSERT with ReplacingMergeTree
                 const updateQuery = `
                   INSERT INTO validator_registry 
                   (validator_id, node_id, epoch, stake, position, is_active, dns_address, dns_host, dns_port, 
