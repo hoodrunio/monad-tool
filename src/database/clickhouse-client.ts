@@ -577,7 +577,7 @@ export class MonadClickHouseClient {
   
   /**
    * Updates the validator_registry table with the latest validator data.
-   * This method first truncates the table and then inserts the new data.
+   * This method preserves existing keybase data while updating other fields.
    * @param validators The list of complete validator objects to insert.
    */
   async updateValidatorRegistry(validators: CompleteValidator[]): Promise<void> {
@@ -590,44 +590,68 @@ export class MonadClickHouseClient {
     logger.info(`🚀 Starting sync for ${tableName} with ${validators.length} validators...`);
 
     try {
-      // Step 1: Truncate the table to remove all old data
-      logger.info(`Truncating table: ${tableName}...`);
-      await this.client.command({
-        query: `TRUNCATE TABLE ${tableName}`,
-        clickhouse_settings: {
-          wait_end_of_query: 1,
-        },
+      // Step 1: Get existing keybase mappings to preserve them
+      logger.info(`Preserving existing keybase mappings...`);
+      const existingKeybaseQuery = `
+        SELECT validator_id, keybase_id, keybase_logo_url
+        FROM ${tableName}
+        WHERE keybase_id != '' AND keybase_id IS NOT NULL
+      `;
+      const existingKeybaseData = await this.executeRawQuery(existingKeybaseQuery);
+      const keybaseMap = new Map<string, { keybase_id: string; keybase_logo_url: string }>();
+      
+      existingKeybaseData.forEach(row => {
+        keybaseMap.set(row.validator_id, {
+          keybase_id: row.keybase_id,
+          keybase_logo_url: row.keybase_logo_url
+        });
       });
-      logger.info(`✅ Table ${tableName} truncated successfully.`);
+      logger.info(`✅ Preserved ${keybaseMap.size} keybase mappings`);
 
-      // Step 2: Prepare and insert the new data
-      const values = validators.map(v => ({
-        validator_id: v.nodeId,
-        node_id: v.nodeId,
-        epoch: v.epoch,
-        stake: v.stake,
-        position: v.position,
-        is_active: v.isActive ? 1 : 0,
-        dns_address: v.location?.dnsAddress || '',
-        dns_host: v.location?.hostname || '',
-        dns_port: v.location?.port || 8000,
-        validator_name: v.location?.validatorName || 'unknown',
-        provider: v.location?.organization || 'unknown',
-        location: v.location?.city ? `${v.location.city}, ${v.location.country}` : v.location?.country || 'unknown',
-        country: v.location?.country || 'unknown',
-        datacenter: v.location?.isp || 'unknown', // Using ISP as a proxy for datacenter
-        last_updated: v.lastUpdated.toISOString().slice(0, 19).replace('T', ' '),
-      }));
+      // Step 2: Prepare and insert the new data with preserved keybase info
+      const values = validators.map(v => {
+        const existingKeybase = keybaseMap.get(v.nodeId);
+        return {
+          validator_id: v.nodeId,
+          node_id: v.nodeId,
+          epoch: v.epoch,
+          stake: v.stake,
+          position: v.position,
+          is_active: v.isActive ? 1 : 0,
+          dns_address: v.location?.dnsAddress || '',
+          dns_host: v.location?.hostname || '',
+          dns_port: v.location?.port || 8000,
+          validator_name: v.location?.validatorName || 'unknown',
+          provider: v.location?.organization || 'unknown',
+          location: v.location?.city ? `${v.location.city}, ${v.location.country}` : v.location?.country || 'unknown',
+          country: v.location?.country || 'unknown',
+          datacenter: v.location?.isp || 'unknown', // Using ISP as a proxy for datacenter
+          keybase_id: existingKeybase?.keybase_id || '',
+          keybase_logo_url: existingKeybase?.keybase_logo_url || '',
+          first_seen: v.lastUpdated.toISOString().slice(0, 19).replace('T', ' '),
+          last_updated: v.lastUpdated.toISOString().slice(0, 19).replace('T', ' '),
+        };
+      });
       
       logger.info(`Inserting ${values.length} records into ${tableName}...`);
       
+      // Step 3: Use INSERT with ReplacingMergeTree (it will replace old records automatically)
       await this.client.insert({
         table: tableName,
         values,
         format: 'JSONEachRow',
       });
 
-      logger.info(`✅ Successfully synchronized ${tableName} with ${validators.length} validators.`);
+      // Step 4: Optimize table to merge duplicates
+      logger.info(`Optimizing table to merge duplicates...`);
+      await this.client.command({
+        query: `OPTIMIZE TABLE ${tableName} FINAL`,
+        clickhouse_settings: {
+          wait_end_of_query: 1,
+        },
+      });
+
+      logger.info(`✅ Successfully synchronized ${tableName} with ${validators.length} validators (preserved ${keybaseMap.size} keybase mappings).`);
 
     } catch (error) {
       logger.error(`❌ Failed to synchronize ${tableName}.`, {
