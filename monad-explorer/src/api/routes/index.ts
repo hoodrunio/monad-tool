@@ -5,6 +5,7 @@ import { createBlockRoutes } from './blocks';
 import { createAddressRoutes } from './addresses';
 import { createTokenRoutes } from './tokens';
 import { createContractRoutes } from './contracts';
+import { createAnalyticsRoutes } from './analytics';
 
 /**
  * Create API routes for the logs-first architecture
@@ -49,6 +50,12 @@ export function createAPIRoutes(serviceContainer: ServiceContainer): Router {
           'GET /contracts': 'Get contracts with pagination and filtering',
           'POST /contracts/:address/enrich': 'Manually trigger contract enrichment',
         },
+        analytics: {
+          'GET /analytics/transactions/daily': 'Get daily transaction counts for chart visualization',
+          'GET /analytics/transactions/weekly': 'Get weekly transaction statistics',
+          'GET /analytics/gas/current': 'Get current gas price and fee recommendations',
+          'GET /analytics/gas/history': 'Get historical gas price data for charts',
+        },
       },
       features: [
         'Runtime token transfer parsing',
@@ -56,6 +63,9 @@ export function createAPIRoutes(serviceContainer: ServiceContainer): Router {
         'On-demand contract discovery',
         'Background contract enrichment',
         'Smart contract metadata analysis',
+        'Transaction analytics and statistics',
+        'Real-time gas price tracking',
+        'Historical data visualization',
         'Sub-100ms response times',
         'Comprehensive error handling',
         'Request validation',
@@ -70,6 +80,10 @@ export function createAPIRoutes(serviceContainer: ServiceContainer): Router {
         'block-transactions': '/api/blocks/12345/transactions?includeTokenTransfers=true',
         'contract-metadata': '/api/contracts/0x1234...?includeMetadata=true&includeBytecode=false',
         'contract-enrichment': 'POST /api/contracts/0x1234.../enrich',
+        'daily-transactions': '/api/analytics/transactions/daily?days=30',
+        'weekly-overview': '/api/analytics/transactions/weekly?weeks=12',
+        'current-gas-price': '/api/analytics/gas/current',
+        'gas-price-history': '/api/analytics/gas/history?days=7',
       },
     });
   });
@@ -80,6 +94,7 @@ export function createAPIRoutes(serviceContainer: ServiceContainer): Router {
   router.use('/addresses', createAddressRoutes(serviceContainer));
   router.use('/tokens', createTokenRoutes(serviceContainer));
   router.use('/contracts', createContractRoutes(serviceContainer));
+  router.use('/analytics', createAnalyticsRoutes(serviceContainer));
 
   return router;
 } 

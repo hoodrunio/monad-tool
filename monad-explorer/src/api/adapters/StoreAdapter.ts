@@ -1,5 +1,5 @@
 import { DataSource } from 'typeorm';
-import { Transaction, Log, Block, TokenBalance, Contract, Token } from '../../model/generated';
+import { Transaction, Log, Block, TokenBalance, Contract, Token, DailyStats } from '../../model/generated';
 import { serviceContainer } from '../../services/core/ServiceContainer';
 import { ITransactionService } from '../../interfaces/services/ITransactionService';
 import { IInternalTransactionService } from '../../interfaces/services/IInternalTransactionService';
@@ -33,6 +33,10 @@ export interface StoreAdapter {
     save(contract: Contract): Promise<Contract>;
     count(options?: any): Promise<number>;
   };
+  DailyStats: {
+    findOne(options: any): Promise<DailyStats | null>;
+    find(options: any): Promise<DailyStats[]>;
+  };
   
   // Service Resolution Methods
   getTransactionService(): Promise<ITransactionService>;
@@ -46,6 +50,7 @@ export function createStoreAdapter(dataSource: DataSource): StoreAdapter {
   const tokenBalanceRepo = dataSource.getRepository(TokenBalance);
   const tokenRepo = dataSource.getRepository(Token);
   const contractRepo = dataSource.getRepository(Contract);
+  const dailyStatsRepo = dataSource.getRepository(DailyStats);
 
   return {
     Transaction: {
@@ -423,6 +428,55 @@ export function createStoreAdapter(dataSource: DataSource): StoreAdapter {
           return result;
         } catch (error) {
           throw new Error(`Contract count failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+    },
+
+    DailyStats: {
+      async findOne(options: any): Promise<DailyStats | null> {
+        try {
+          const result = await dailyStatsRepo.findOne({
+            where: options.where,
+            relations: options.relations || []
+          });
+          return result;
+        } catch (error) {
+          throw new Error(`DailyStats findOne failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      },
+
+      async find(options: any): Promise<DailyStats[]> {
+        try {
+          const queryOptions: any = {};
+          
+          if (options.where) {
+            queryOptions.where = options.where;
+          }
+          
+          if (options.relations) {
+            queryOptions.relations = options.relations;
+          }
+          
+          if (options.order) {
+            queryOptions.order = options.order;
+          }
+          
+          if (options.skip !== undefined) {
+            queryOptions.skip = options.skip;
+          }
+          
+          if (options.take !== undefined) {
+            queryOptions.take = options.take;
+          }
+          
+          if (options.select) {
+            queryOptions.select = options.select;
+          }
+
+          const result = await dailyStatsRepo.find(queryOptions);
+          return result;
+        } catch (error) {
+          throw new Error(`DailyStats find failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
       }
     },
