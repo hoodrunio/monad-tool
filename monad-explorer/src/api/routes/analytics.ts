@@ -53,26 +53,26 @@ export function createAnalyticsRoutes(serviceContainer: ServiceContainer): Route
       endpoints: {
         'transactions': {
           'GET /analytics/transactions/daily': {
-            description: 'Get daily transaction counts for chart visualization',
+            description: 'Get daily transaction counts for chart visualization (newest to oldest)',
             parameters: {
               days: 'Number of days to include (1-365, default: 30)',
               startDate: 'Start date (YYYY-MM-DD format, optional)',
               endDate: 'End date (YYYY-MM-DD format, optional)'
             },
             response: {
-              data: 'Array of daily transaction data points',
+              data: 'Array of daily transaction data points (newest first)',
               summary: 'Statistical summary (total, average, min, max)'
             }
           },
           'GET /analytics/transactions/weekly': {
-            description: 'Get weekly transaction counts aggregated from daily data',
+            description: 'Get weekly transaction counts aggregated from daily data (newest to oldest)',
             parameters: {
               weeks: 'Number of weeks to include (1-52, default: 12)',
               startDate: 'Start date (YYYY-MM-DD format, optional)',
               endDate: 'End date (YYYY-MM-DD format, optional)'
             },
             response: {
-              data: 'Array of weekly transaction data points',
+              data: 'Array of weekly transaction data points (newest first)',
               summary: 'Statistical summary including weekly averages'
             }
           }
@@ -89,7 +89,7 @@ export function createAnalyticsRoutes(serviceContainer: ServiceContainer): Route
             }
           },
           'GET /analytics/gas/history': {
-            description: 'Get historical gas price data for trend analysis',
+            description: 'Get historical gas price data for trend analysis (newest to oldest)',
             parameters: {
               days: 'Number of days to include (1-365, default: 30)',
               startDate: 'Start date (YYYY-MM-DD format, optional)',
@@ -97,7 +97,7 @@ export function createAnalyticsRoutes(serviceContainer: ServiceContainer): Route
               granularity: 'Data granularity - "daily" (default)'
             },
             response: {
-              data: 'Array of historical gas price data points',
+              data: 'Array of historical gas price data points (newest first)',
               analysis: 'Trend analysis including volatility and direction',
               period: 'Time period information'
             }

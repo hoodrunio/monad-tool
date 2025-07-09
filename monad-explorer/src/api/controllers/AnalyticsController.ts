@@ -48,7 +48,7 @@ export class AnalyticsController {
       // Try DailyStats first
       const dailyStats = await store.DailyStats.find({
         where: { date: dateCondition },
-        order: { date: 'ASC' },
+        order: { date: 'DESC' },
         select: ['date', 'transactionCount', 'blockCount', 'totalGasUsed', 'averageGasPrice']
       });
 
@@ -116,7 +116,7 @@ export class AnalyticsController {
     const transactions = await store.Transaction.find({
       where: { timestamp: dateCondition },
       select: ['timestamp', 'gasPrice', 'gasUsed', 'effectiveGasPrice', 'status'],
-      order: { timestamp: 'ASC' }
+      order: { timestamp: 'DESC' }
     });
 
     if (transactions.length === 0) {
@@ -156,7 +156,7 @@ export class AnalyticsController {
         totalGasUsed: totalGasUsed.toString(),
         averageGasPrice: avgGasPrice.toString()
       };
-    }).sort((a, b) => a.date.localeCompare(b.date));
+    }).sort((a, b) => b.date.localeCompare(a.date));
 
     return chartData;
   }
@@ -200,7 +200,7 @@ export class AnalyticsController {
       // Try DailyStats first
       let dailyStats = await store.DailyStats.find({
         where: { date: dateCondition },
-        order: { date: 'ASC' },
+        order: { date: 'DESC' },
         select: ['date', 'transactionCount', 'blockCount', 'totalGasUsed', 'averageGasPrice']
       });
 
@@ -278,7 +278,7 @@ export class AnalyticsController {
             : '0',
           daysIncluded: data.dayCount
         }))
-        .sort((a, b) => a.weekStart.localeCompare(b.weekStart));
+        .sort((a, b) => b.weekStart.localeCompare(a.weekStart));
 
       // Calculate summary
       const totalTransactions = chartData.reduce((sum, week) => sum + week.transactionCount, 0);
@@ -435,7 +435,7 @@ export class AnalyticsController {
       // Try DailyStats first
       let dailyStats = await store.DailyStats.find({
         where: { date: dateCondition },
-        order: { date: 'ASC' },
+        order: { date: 'DESC' },
         select: ['date', 'averageGasPrice', 'totalGasUsed', 'transactionCount']
       });
 
