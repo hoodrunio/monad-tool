@@ -113,7 +113,8 @@ type TokenBalance @entity {
 type Contract @entity {
   id: ID! # contract address
   address: String! @unique @index
-  creator: String! @index
+  creator: String @index
+  owner: String @index
   creationTransaction: Transaction!
   createdAt: DateTime! @index
   bytecode: String

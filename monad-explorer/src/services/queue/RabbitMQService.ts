@@ -7,6 +7,7 @@ import {
   TokenEnrichmentMessage as ITokenEnrichmentMessage, 
   ContractEnrichmentMessage as IContractEnrichmentMessage,
   InternalTransactionMessage as IInternalTransactionMessage,
+  DailyStatsMessage as IDailyStatsMessage,
   PublishOptions,
   ConsumeOptions,
   MessageHandler,
@@ -15,7 +16,7 @@ import {
 
 // Legacy interfaces for backward compatibility
 export interface QueueMessage {
-  type: 'TOKEN_ENRICHMENT' | 'CONTRACT_ENRICHMENT' | 'INTERNAL_TRANSACTION';
+  type: 'TOKEN_ENRICHMENT' | 'CONTRACT_ENRICHMENT' | 'INTERNAL_TRANSACTION' | 'DAILY_STATS';
   data: any;
   priority?: number;
   retryCount?: number;
@@ -41,6 +42,7 @@ interface QueueConfig {
     tokenEnrichment: string;
     contractEnrichment: string;
     internalTransactions: string;
+    dailyStats: string;
     deadLetter: string;
   };
   maxRetries: number;
@@ -63,6 +65,7 @@ export class RabbitMQService implements IQueueService {
       tokenEnrichment: 'token-enrichment',
       contractEnrichment: 'contract-enrichment',
       internalTransactions: 'internal-transactions',
+      dailyStats: 'daily-stats',
       deadLetter: 'dead-letter',
     },
     maxRetries: 3,
@@ -136,11 +139,13 @@ export class RabbitMQService implements IQueueService {
     await this.channel.assertQueue(this.config.queues.tokenEnrichment, queueOptions);
     await this.channel.assertQueue(this.config.queues.contractEnrichment, queueOptions);
     await this.channel.assertQueue(this.config.queues.internalTransactions, queueOptions);
+    await this.channel.assertQueue(this.config.queues.dailyStats, queueOptions);
 
     // Bind queues to exchange
     await this.channel.bindQueue(this.config.queues.tokenEnrichment, this.config.exchange, 'token.*');
     await this.channel.bindQueue(this.config.queues.contractEnrichment, this.config.exchange, 'contract.*');
     await this.channel.bindQueue(this.config.queues.internalTransactions, this.config.exchange, 'transaction.*');
+    await this.channel.bindQueue(this.config.queues.dailyStats, this.config.exchange, 'stats.*');
 
     logger.info('RabbitMQ infrastructure setup completed');
   }
@@ -182,6 +187,19 @@ export class RabbitMQService implements IQueueService {
     };
 
     await this.publish('internal-transactions', queueMessage, options);
+  }
+
+  async publishDailyStats(message: IDailyStatsMessage, options?: PublishOptions): Promise<void> {
+    const queueMessage: IQueueMessage = {
+      type: 'DAILY_STATS',
+      data: message,
+      priority: options?.priority || 6,
+      retryCount: 0,
+      timestamp: Date.now(),
+      messageId: `DAILY_STATS-${message.date}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    };
+
+    await this.publish('daily-stats', queueMessage, options);
   }
 
   async publish<T>(queueName: string, message: IQueueMessage<T>, options?: PublishOptions): Promise<void> {
@@ -250,6 +268,15 @@ export class RabbitMQService implements IQueueService {
         throw new Error(`Invalid message type: ${message.type}`);
       }
       await handler(message.data as IInternalTransactionMessage);
+    }, options);
+  }
+
+  async consumeDailyStats(handler: MessageHandler<IDailyStatsMessage>, options?: ConsumeOptions): Promise<void> {
+    await this.consume(this.config.queues.dailyStats, async (message: IQueueMessage) => {
+      if (message.type !== 'DAILY_STATS') {
+        throw new Error(`Invalid message type: ${message.type}`);
+      }
+      await handler(message.data as IDailyStatsMessage);
     }, options);
   }
 
@@ -411,6 +438,9 @@ export class RabbitMQService implements IQueueService {
                 break;
               case 'INTERNAL_TRANSACTION':
                 routingKey = 'transaction.internal';
+                break;
+              case 'DAILY_STATS':
+                routingKey = 'stats.daily';
                 break;
               default:
                 routingKey = 'unknown';

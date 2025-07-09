@@ -3,6 +3,7 @@ import { ITokenDetectionService } from '../interfaces/services/ITokenDetectionSe
 import { IContractDiscoveryService } from '../interfaces/services/IContractDiscoveryService';
 import { ILogTokenTransferParser } from '../interfaces/processing/ILogTokenTransferParser';
 import { logger } from '../utils/logger';
+import { sanitizeString, sanitizeStringRequired } from '../utils/data-sanitizer';
 import { Account, Block, Transaction, Log, MethodSignature, Token, TokenType, TokenEnrichmentStatus, Contract } from '../model/generated';
 
 export interface ProcessingResult {
@@ -171,7 +172,7 @@ export class BlockProcessor {
       gas: BigInt(tx.gas || 0),
       gasPrice: gasPrice,
       gasUsed: BigInt(tx.gasUsed || 0),
-      input: tx.input,
+      input: sanitizeString(tx.input), // Sanitize input to remove null bytes
       status: tx.status,
       error: null, // Will be populated for failed transactions in post-processing
       revertReason: null, // Will be populated for failed transactions in post-processing
@@ -184,8 +185,8 @@ export class BlockProcessor {
       contractAddress: isContractCreation ? this.calculateContractAddress(tx.from, BigInt(tx.nonce || 0)) : null,
       cumulativeGasUsed: BigInt(tx.cumulativeGasUsed || 0),
       transactionFee: transactionFee,
-      methodName: methodInfo.name,
-      methodID: methodInfo.id,
+      methodName: sanitizeString(methodInfo.name), // Sanitize method name
+      methodID: sanitizeString(methodInfo.id), // Sanitize method ID
       inputDecoded: null,
       isContractInteraction: isContractInteraction,
       isContractCreation: isContractCreation,
@@ -201,8 +202,8 @@ export class BlockProcessor {
       transaction: transaction,
       logIndex: log.logIndex,
       address: log.address,
-      topics: log.topics,
-      data: log.data,
+      topics: log.topics?.map((topic: string) => sanitizeStringRequired(topic)) || [], // Sanitize topics
+      data: sanitizeStringRequired(log.data), // Sanitize data (required field)
       removed: false,
     });
   }
@@ -418,8 +419,8 @@ export class BlockProcessor {
           try {
             const errorInfo = await rpcClient.getTransactionErrorInfo(transaction.hash);
             if (errorInfo.error || errorInfo.revertReason) {
-              transaction.error = errorInfo.error;
-              transaction.revertReason = errorInfo.revertReason;
+              transaction.error = sanitizeString(errorInfo.error);
+              transaction.revertReason = sanitizeString(errorInfo.revertReason);
               
               logger.debug('Captured error info for failed transaction', {
                 hash: transaction.hash,

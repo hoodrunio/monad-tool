@@ -1,5 +1,6 @@
 import { ProcessingResult } from '../processing/BlockProcessor';
 import { logger } from '../utils/logger';
+import { sanitizeEntityInPlace } from '../utils/data-sanitizer';
 import { In } from 'typeorm';
 
 /**
@@ -133,6 +134,9 @@ export class EntityPersister {
     }
 
     try {
+      // Sanitize transaction data in place to handle null bytes while preserving entity structure
+      result.transactions.forEach(tx => sanitizeEntityInPlace(tx));
+      
       await store.insert(result.transactions);
       
       logger.debug('Transactions persisted successfully', { 
@@ -156,6 +160,9 @@ export class EntityPersister {
     }
 
     try {
+      // Sanitize log data in place to handle null bytes while preserving entity structure
+      result.logs.forEach(log => sanitizeEntityInPlace(log));
+      
       await store.insert(result.logs);
       
       logger.debug('Logs persisted successfully', { 

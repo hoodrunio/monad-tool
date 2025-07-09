@@ -31,6 +31,13 @@ export interface InternalTransactionMessage {
   value?: string;
 }
 
+export interface DailyStatsMessage {
+  date: string; // YYYY-MM-DD format
+  forceRecalculate?: boolean;
+  startDate?: string; // For batch processing
+  endDate?: string; // For batch processing
+}
+
 export interface QueueStats {
   messageCount: number;
   consumerCount: number;
@@ -96,6 +103,14 @@ export interface IQueueService {
   ): Promise<void>;
 
   /**
+   * Publish daily stats computation message
+   */
+  publishDailyStats(
+    message: DailyStatsMessage,
+    options?: PublishOptions
+  ): Promise<void>;
+
+  /**
    * Publish generic message
    */
   publish<T>(
@@ -125,6 +140,14 @@ export interface IQueueService {
    */
   consumeInternalTransactions(
     handler: MessageHandler<InternalTransactionMessage>,
+    options?: ConsumeOptions
+  ): Promise<void>;
+
+  /**
+   * Consume daily stats computation messages
+   */
+  consumeDailyStats(
+    handler: MessageHandler<DailyStatsMessage>,
     options?: ConsumeOptions
   ): Promise<void>;
 

@@ -13,21 +13,21 @@ export class DailyStats {
     @DateTimeColumn_({nullable: false})
     date!: Date
 
-    @IntColumn_({nullable: false})
+    @IntColumn_({nullable: false, name: 'block_count'})
     blockCount!: number
 
-    @IntColumn_({nullable: false})
+    @IntColumn_({nullable: false, name: 'transaction_count'})
     transactionCount!: number
 
-    @IntColumn_({nullable: false})
+    @IntColumn_({nullable: false, name: 'unique_addresses'})
     uniqueAddresses!: number
 
-    @BigIntColumn_({nullable: false})
+    @BigIntColumn_({nullable: false, name: 'total_gas_used'})
     totalGasUsed!: bigint
 
-    @BigIntColumn_({nullable: false})
+    @BigIntColumn_({nullable: false, name: 'average_gas_price'})
     averageGasPrice!: bigint
 
-    @BigIntColumn_({nullable: false})
+    @BigIntColumn_({nullable: false, name: 'total_value'})
     totalValue!: bigint
 }
