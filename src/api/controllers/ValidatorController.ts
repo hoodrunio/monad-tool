@@ -59,6 +59,9 @@ export class ValidatorController {
         return;
       }
 
+      // Force table optimization to ensure no duplicates exist
+      await this.ensureNoDuplicates();
+
       // Try cache first
       const cacheKey = `validator_rankings:${timeWindow}:${limit}:${page}:${sortBy}`;
       const cached = await this.redisClient['client'].get(cacheKey);
@@ -365,12 +368,14 @@ export class ValidatorController {
     const offset = (page - 1) * limit;
     
     // First, get the total count - ONLY counting validators that exist in validator_registry
+    // Use DISTINCT to prevent counting duplicates
     const countQuery = `
       WITH 
         active_validators AS (
-          SELECT validator_id 
+          SELECT DISTINCT validator_id 
           FROM validator_registry 
           WHERE is_active = 1
+          GROUP BY validator_id
         ),
         block_metrics AS (
           SELECT bp.validator_id
@@ -393,12 +398,21 @@ export class ValidatorController {
     `;
 
     // Main query with pagination and stake amounts - ONLY include validators in validator_registry
+    // Use DISTINCT and latest record per validator to prevent duplicates
     const query = `
       WITH 
         active_validators AS (
-          SELECT validator_id, validator_name, provider, location, stake, keybase_id, keybase_logo_url
+          SELECT DISTINCT
+            validator_id, 
+            argMax(validator_name, last_updated) as validator_name,
+            argMax(provider, last_updated) as provider,
+            argMax(location, last_updated) as location,
+            argMax(stake, last_updated) as stake,
+            argMax(keybase_id, last_updated) as keybase_id,
+            argMax(keybase_logo_url, last_updated) as keybase_logo_url
           FROM validator_registry 
           WHERE is_active = 1
+          GROUP BY validator_id
         ),
         block_metrics AS (
           SELECT 
@@ -499,12 +513,21 @@ export class ValidatorController {
     
     // Combined query to get both block proposal and QC participation metrics
     // IMPORTANT: Only include validators that exist in validator_registry with is_active = 1
+    // Use DISTINCT and argMax to handle potential duplicates gracefully
     const query = `
       WITH 
         active_validators AS (
-          SELECT validator_id, validator_name, provider, location, stake, keybase_id, keybase_logo_url
+          SELECT DISTINCT
+            validator_id,
+            argMax(validator_name, last_updated) as validator_name,
+            argMax(provider, last_updated) as provider,
+            argMax(location, last_updated) as location,
+            argMax(stake, last_updated) as stake,
+            argMax(keybase_id, last_updated) as keybase_id,
+            argMax(keybase_logo_url, last_updated) as keybase_logo_url
           FROM validator_registry 
           WHERE is_active = 1
+          GROUP BY validator_id
         ),
         block_metrics AS (
           SELECT 
@@ -778,6 +801,44 @@ export class ValidatorController {
       case 'uptime_score':
       default:
         return 'uptime_score DESC, block_proposal_ratio DESC';
+    }
+  }
+
+  // =============================================
+  // DUPLICATE PREVENTION HELPER
+  // =============================================
+
+  private async ensureNoDuplicates(): Promise<void> {
+    try {
+      // Check if we need to optimize the table (detect duplicates)
+      const duplicateCheckQuery = `
+        SELECT validator_id, COUNT(*) as count
+        FROM (
+          SELECT DISTINCT validator_id, epoch, last_updated
+          FROM validator_registry
+          WHERE is_active = 1
+        )
+        GROUP BY validator_id
+        HAVING count > 1
+        LIMIT 1
+      `;
+      
+      const duplicateResult = await this.clickhouseClient.executeRawQuery(duplicateCheckQuery);
+      
+      if (duplicateResult.length > 0) {
+        logger.warn('🔧 Detected duplicate validators, optimizing table...');
+        
+        // Force table optimization to merge duplicates
+        await this.clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
+        
+        // Clear related cache entries
+        await this.redisClient.invalidatePattern('validator_*');
+        
+        logger.info('✅ Table optimization and cache clearing completed');
+      }
+    } catch (error) {
+      logger.warn('Failed to check/fix duplicates:', error);
+      // Don't throw - this is a best effort optimization
     }
   }
 }

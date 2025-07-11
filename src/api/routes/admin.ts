@@ -9,6 +9,7 @@ export function createAdminRoutes(adminController: AdminController): Router {
   router.post('/api/cache/flush', adminController.flushCache.bind(adminController));
   router.get('/api/cache/stats', adminController.getCacheStats.bind(adminController));
   router.post('/api/cache/warmup', adminController.warmupCache.bind(adminController));
+  router.post('/api/cache/clear-validators', adminController.clearValidatorCaches.bind(adminController));
   
   // Log processing management
   router.post('/api/logs/process', adminController.processLogs.bind(adminController));

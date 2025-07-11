@@ -110,6 +110,9 @@ export class ApplicationInitializer {
         await clickhouseClient.updateValidatorRegistry(validators);
         logger.info('✅ Validator registry table synchronized with DB successfully.');
 
+        // 4. Ensure database integrity and clear caches
+        await this.ensureDatabaseIntegrity();
+
       } catch (error) {
         logger.error('🚨 CRITICAL: Failed to determine epoch or synchronize validator DB. Startup cannot continue.', {
           error: error instanceof Error ? error.message : String(error)
@@ -310,6 +313,45 @@ export class ApplicationInitializer {
     }
 
     logger.info('🔍 Final validation: All systems operational');
+  }
+
+  private async ensureDatabaseIntegrity(): Promise<void> {
+    logger.info('🔄 Ensuring database integrity and preventing duplicates...');
+    const clickhouseClient = this.serviceContainer.getClickHouseClient();
+
+    try {
+      // Force table optimization to merge any potential duplicates
+      logger.info('🔧 Optimizing validator_registry table to prevent duplicates...');
+      await clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
+      
+      // Verify table integrity
+      const duplicateCheckQuery = `
+        SELECT validator_id, COUNT(*) as count
+        FROM (
+          SELECT DISTINCT validator_id, epoch, last_updated
+          FROM validator_registry
+          WHERE is_active = 1
+        )
+        GROUP BY validator_id
+        HAVING count > 1
+        LIMIT 5
+      `;
+      
+      const duplicateResult = await clickhouseClient.executeRawQuery(duplicateCheckQuery);
+      
+      if (duplicateResult.length > 0) {
+        logger.warn(`⚠️ Found ${duplicateResult.length} validators with potential duplicates, re-optimizing...`);
+        await clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
+        logger.info('✅ Table re-optimization completed');
+      } else {
+        logger.info('✅ No duplicates detected in validator registry');
+      }
+      
+      logger.info('✅ Database integrity check completed');
+    } catch (error) {
+      logger.warn('Failed to ensure database integrity:', error);
+      // Don't throw - this is a best effort optimization
+    }
   }
 
   // ===============================

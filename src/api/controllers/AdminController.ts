@@ -24,26 +24,25 @@ export class AdminController {
 
   async flushCache(req: Request, res: Response): Promise<void> {
     try {
-      const pattern = req.query.pattern as string;
+      const pattern = req.body.pattern || '*';
+      let keysDeleted = 0;
       
-      if (pattern) {
-        // Flush specific pattern
-        await this.redisClient.invalidatePattern(pattern);
-        logger.info(`Cache pattern flushed: ${pattern}`);
-        
+      if (pattern === '*') {
+        // Flush all Redis data
+        await this.redisClient.flushAll();
         res.json({
           success: true,
-          message: `Cache pattern '${pattern}' flushed successfully`,
+          message: 'All cache data cleared',
+          pattern,
           timestamp: new Date().toISOString()
         });
       } else {
-        // Flush all cache
-        await this.redisClient.flushAll();
-        logger.info('All cache flushed');
-        
+        // Delete keys matching pattern
+        await this.redisClient.invalidatePattern(pattern);
         res.json({
           success: true,
-          message: 'All cache flushed successfully',
+          message: `Cache pattern '${pattern}' cleared`,
+          pattern,
           timestamp: new Date().toISOString()
         });
       }
@@ -51,6 +50,42 @@ export class AdminController {
       logger.error('Failed to flush cache:', error);
       res.status(500).json({
         error: 'Failed to flush cache',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async clearValidatorCaches(req: Request, res: Response): Promise<void> {
+    try {
+      // Clear all validator-related cache entries
+      const patterns = [
+        'validator_rankings:*',
+        'validator_details:*',
+        'validator_history:*',
+        'validator_*'
+      ];
+      
+             for (const pattern of patterns) {
+         await this.redisClient.invalidatePattern(pattern);
+         logger.info(`Cleared cache keys matching pattern: ${pattern}`);
+       }
+
+       // Also optimize the validator registry table to merge duplicates
+       logger.info('🔧 Optimizing validator_registry table...');
+       await this.clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
+       logger.info('✅ Validator registry table optimized');
+       
+       res.json({
+         success: true,
+         message: `Cleared validator cache entries and optimized database table`,
+         patternsCleared: patterns,
+         timestamp: new Date().toISOString()
+       });
+    } catch (error) {
+      logger.error('Failed to clear validator caches:', error);
+      res.status(500).json({
+        error: 'Failed to clear validator caches',
         message: error instanceof Error ? error.message : String(error),
         timestamp: new Date().toISOString()
       });
