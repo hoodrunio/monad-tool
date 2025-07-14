@@ -167,6 +167,7 @@ export class DailyStatsProcessor {
 
   /**
    * Compute statistics from Transaction and Block data
+   * Optimized to prevent memory overflow by using database aggregations
    */
   private async computeStatsFromTransactions(
     startOfDay: Date,
@@ -175,70 +176,202 @@ export class DailyStatsProcessor {
     const transactionRepo = this.dataSource.getRepository(Transaction);
     const blockRepo = this.dataSource.getRepository(Block);
 
-    // Get all transactions for the day
-    const transactions = await transactionRepo
+    // Use database-level aggregations to avoid loading all data into memory
+    const [transactionStats, blockCount, uniqueAddressCount, gasStats, totalValue] = await Promise.all([
+      // Get transaction count
+      transactionRepo
+        .createQueryBuilder('tx')
+        .where('tx.timestamp >= :startOfDay', { startOfDay })
+        .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
+        .getCount(),
+
+      // Get block count
+      blockRepo
+        .createQueryBuilder('block')
+        .where('block.timestamp >= :startOfDay', { startOfDay })
+        .andWhere('block.timestamp <= :endOfDay', { endOfDay })
+        .getCount(),
+
+      // Get unique address count using database aggregation
+      this.getUniqueAddressCount(startOfDay, endOfDay),
+
+      // Get gas statistics using database aggregation
+      this.getGasStatistics(startOfDay, endOfDay),
+
+      // Get total value transferred using database aggregation
+      transactionRepo
+        .createQueryBuilder('tx')
+        .select('COALESCE(SUM(tx.value), 0)', 'totalValue')
+        .where('tx.timestamp >= :startOfDay', { startOfDay })
+        .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
+        .getRawOne()
+        .then(result => BigInt(result?.totalValue || '0'))
+    ]);
+
+    return {
+      date: startOfDay,
+      blockCount,
+      transactionCount: transactionStats,
+      uniqueAddresses: uniqueAddressCount,
+      totalGasUsed: gasStats.totalGasUsed,
+      averageGasPrice: gasStats.averageGasPrice,
+      totalValue
+    };
+  }
+
+    /**
+   * Get unique address count using database aggregation
+   * Optimized to handle large datasets by processing in chunks
+   */
+   private async getUniqueAddressCount(startOfDay: Date, endOfDay: Date): Promise<number> {
+     const transactionRepo = this.dataSource.getRepository(Transaction);
+     const chunkSize = 10000; // Process 10k transactions at a time
+     
+     // Get total transaction count for the day
+     const totalTransactions = await transactionRepo
+       .createQueryBuilder('tx')
+       .where('tx.timestamp >= :startOfDay', { startOfDay })
+       .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
+       .getCount();
+     
+     if (totalTransactions === 0) {
+       return 0;
+     }
+     
+     // If we have a reasonable number of transactions, use the simple approach
+     if (totalTransactions <= 50000) {
+       return await this.getUniqueAddressCountSimple(startOfDay, endOfDay);
+     }
+     
+     // For large datasets, use chunked processing
+     return await this.getUniqueAddressCountChunked(startOfDay, endOfDay, chunkSize);
+   }
+   
+   /**
+    * Simple unique address counting for smaller datasets
+    */
+   private async getUniqueAddressCountSimple(startOfDay: Date, endOfDay: Date): Promise<number> {
+     const transactionRepo = this.dataSource.getRepository(Transaction);
+     
+     // Get unique addresses from both from and to addresses using separate queries
+     const [fromAddresses, toAddresses] = await Promise.all([
+       // Get unique from addresses
+       transactionRepo
+         .createQueryBuilder('tx')
+         .select('DISTINCT LOWER(tx.from_address)', 'address')
+         .where('tx.timestamp >= :startOfDay', { startOfDay })
+         .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
+         .andWhere('tx.from_address IS NOT NULL')
+         .getRawMany(),
+       
+       // Get unique to addresses
+       transactionRepo
+         .createQueryBuilder('tx')
+         .select('DISTINCT LOWER(tx.to_address)', 'address')
+         .where('tx.timestamp >= :startOfDay', { startOfDay })
+         .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
+         .andWhere('tx.to_address IS NOT NULL')
+         .getRawMany()
+     ]);
+
+     // Combine and count unique addresses
+     const uniqueAddresses = new Set<string>();
+     
+     fromAddresses.forEach(row => {
+       if (row.address) {
+         uniqueAddresses.add(row.address);
+       }
+     });
+     
+     toAddresses.forEach(row => {
+       if (row.address) {
+         uniqueAddresses.add(row.address);
+       }
+     });
+
+     return uniqueAddresses.size;
+   }
+   
+   /**
+    * Chunked unique address counting for large datasets
+    */
+   private async getUniqueAddressCountChunked(startOfDay: Date, endOfDay: Date, chunkSize: number): Promise<number> {
+     const transactionRepo = this.dataSource.getRepository(Transaction);
+     const uniqueAddresses = new Set<string>();
+     
+     // Get all transaction IDs for the day to process in chunks
+     const transactionIds = await transactionRepo
+       .createQueryBuilder('tx')
+       .select('tx.id')
+       .where('tx.timestamp >= :startOfDay', { startOfDay })
+       .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
+       .orderBy('tx.id')
+       .getMany();
+     
+     // Process in chunks
+     for (let i = 0; i < transactionIds.length; i += chunkSize) {
+       const chunk = transactionIds.slice(i, i + chunkSize);
+       const chunkIds = chunk.map(tx => tx.id);
+       
+       // Get addresses for this chunk
+       const chunkTransactions = await transactionRepo
+         .createQueryBuilder('tx')
+         .select(['tx.from_address', 'tx.to_address'])
+         .whereInIds(chunkIds)
+         .getMany();
+       
+       // Add addresses to set
+       chunkTransactions.forEach(tx => {
+         if (tx.fromAddress) {
+           uniqueAddresses.add(tx.fromAddress.toLowerCase());
+         }
+         if (tx.toAddress) {
+           uniqueAddresses.add(tx.toAddress.toLowerCase());
+         }
+       });
+       
+       // Force garbage collection every few chunks
+       if (i % (chunkSize * 5) === 0 && global.gc) {
+         global.gc();
+       }
+     }
+     
+     return uniqueAddresses.size;
+   }
+
+  /**
+   * Get gas statistics using database aggregation
+   */
+  private async getGasStatistics(startOfDay: Date, endOfDay: Date): Promise<{
+    totalGasUsed: bigint;
+    averageGasPrice: bigint;
+  }> {
+    const transactionRepo = this.dataSource.getRepository(Transaction);
+    
+    // Get gas statistics for successful transactions only
+    const result = await transactionRepo
       .createQueryBuilder('tx')
-      .leftJoinAndSelect('tx.block', 'block')
+      .select([
+        'COALESCE(SUM(tx.gas_used), 0) as totalGasUsed',
+        'COALESCE(SUM(CASE WHEN tx.effective_gas_price > 0 THEN tx.effective_gas_price ELSE tx.gas_price END), 0) as totalGasPrice',
+        'COUNT(CASE WHEN COALESCE(tx.effective_gas_price, tx.gas_price) > 0 THEN 1 END) as validGasPriceCount'
+      ])
       .where('tx.timestamp >= :startOfDay', { startOfDay })
       .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
-      .getMany();
+      .andWhere('tx.status = 1') // Only successful transactions
+      .getRawOne();
 
-    // Get all blocks for the day
-    const blocks = await blockRepo
-      .createQueryBuilder('block')
-      .where('block.timestamp >= :startOfDay', { startOfDay })
-      .andWhere('block.timestamp <= :endOfDay', { endOfDay })
-      .getMany();
-
-    // Compute aggregations
-    const transactionCount = transactions.length;
-    const blockCount = blocks.length;
-
-    // Calculate unique addresses (from + to addresses)
-    const uniqueAddresses = new Set<string>();
-    transactions.forEach(tx => {
-      uniqueAddresses.add(tx.fromAddress.toLowerCase());
-      if (tx.toAddress) {
-        uniqueAddresses.add(tx.toAddress.toLowerCase());
-      }
-    });
-
-    // Calculate gas statistics (only successful transactions)
-    const successfulTxs = transactions.filter(tx => tx.status === 1);
-    
-    let totalGasUsed = BigInt(0);
-    let totalGasPrice = BigInt(0);
-    let validGasPriceCount = 0;
-
-    successfulTxs.forEach(tx => {
-      if (tx.gasUsed) {
-        totalGasUsed += tx.gasUsed;
-      }
-      
-      const gasPrice = tx.effectiveGasPrice || tx.gasPrice;
-      if (gasPrice && gasPrice > 0) {
-        totalGasPrice += gasPrice;
-        validGasPriceCount++;
-      }
-    });
+    const totalGasUsed = BigInt(result?.totalGasUsed || '0');
+    const totalGasPrice = BigInt(result?.totalGasPrice || '0');
+    const validGasPriceCount = parseInt(result?.validGasPriceCount || '0', 10);
 
     const averageGasPrice = validGasPriceCount > 0 
       ? totalGasPrice / BigInt(validGasPriceCount)
       : BigInt(0);
 
-    // Calculate total value transferred
-    const totalValue = transactions.reduce((sum, tx) => {
-      return sum + (tx.value || BigInt(0));
-    }, BigInt(0));
-
     return {
-      date: startOfDay,
-      blockCount,
-      transactionCount,
-      uniqueAddresses: uniqueAddresses.size,
       totalGasUsed,
-      averageGasPrice,
-      totalValue
+      averageGasPrice
     };
   }
 

@@ -1,5 +1,13 @@
 #!/usr/bin/env tsx
 
+// Increase Node.js heap size to prevent memory issues
+// This script processes large datasets and may need more memory
+if (process.env.NODE_OPTIONS && !process.env.NODE_OPTIONS.includes('--max-old-space-size')) {
+  process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS} --max-old-space-size=8192`;
+} else if (!process.env.NODE_OPTIONS) {
+  process.env.NODE_OPTIONS = '--max-old-space-size=8192';
+}
+
 import { DataSource } from 'typeorm';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 import { Transaction, Block, DailyStats } from '../src/model/generated';
@@ -22,6 +30,7 @@ interface BackfillConfig {
   batchSize: number;
   forceRecalculate: boolean;
   skipExisting: boolean;
+  enableGc: boolean; // Enable garbage collection
   
   // Database connection
   databaseUrl: string;
@@ -33,10 +42,11 @@ interface BackfillConfig {
 const DEFAULT_CONFIG: BackfillConfig = {
   startDate: '2024-01-01',
   endDate: new Date().toISOString().split('T')[0], // Today
-  concurrency: 3,
-  batchSize: 7, // Process 7 days at a time
+  concurrency: 2, // Reduced concurrency for better memory management
+  batchSize: 3, // Process 3 days at a time to reduce memory pressure
   forceRecalculate: false,
   skipExisting: true,
+  enableGc: false, // Disable garbage collection by default
   databaseUrl: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/monad_explorer'
 };
 
@@ -67,6 +77,9 @@ function parseArgs(): Partial<BackfillConfig> {
       case '--force':
         config.forceRecalculate = true;
         config.skipExisting = false;
+        break;
+      case '--enable-gc':
+        config.enableGc = true;
         break;
       case '--database-url':
         config.databaseUrl = value;
@@ -182,6 +195,11 @@ async function processBatch(
     
     await Promise.all(promises);
     
+    // Force garbage collection after each batch to free memory
+    if (config.enableGc && global.gc) {
+      global.gc();
+    }
+    
     logger.info(`Completed batch ${Math.floor(i / config.concurrency) + 1}/${Math.ceil(chunks.length / config.concurrency)}`);
   }
 }
@@ -219,9 +237,10 @@ Usage:
 Options:
   --start-date YYYY-MM-DD    Start date for backfill (default: 2024-01-01)
   --end-date YYYY-MM-DD      End date for backfill (default: today)
-  --concurrency N            Number of concurrent batches (default: 3)
-  --batch-size N             Number of dates per batch (default: 7)
+  --concurrency N            Number of concurrent batches (default: 2)
+  --batch-size N             Number of dates per batch (default: 3)
   --force                    Force recalculation of existing stats
+  --enable-gc                Enable garbage collection for memory management
   --database-url URL         Database connection URL
   --help                     Display this help message
 
@@ -261,7 +280,8 @@ async function main(): Promise<void> {
       concurrency: config.concurrency,
       batchSize: config.batchSize,
       forceRecalculate: config.forceRecalculate,
-      skipExisting: config.skipExisting
+      skipExisting: config.skipExisting,
+      enableGc: config.enableGc
     });
     
     // Initialize database connection
