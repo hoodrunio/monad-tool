@@ -17,6 +17,7 @@ import { EventController } from './controllers/EventController';
 import { AdminController } from './controllers/AdminController';
 import { QueryPerformanceController } from './controllers/QueryPerformanceController';
 import { EpochController } from './controllers/EpochController';
+import { TransactionAnalyticsController } from './controllers/TransactionAnalyticsController';
 
 // Import Routes
 import { createHealthRoutes } from './routes/health';
@@ -27,6 +28,7 @@ import { createAdminRoutes } from './routes/admin';
 import { createQueryPerformanceRoutes } from './routes/query-performance';
 import { createDNSAnalyticsRoutes } from './routes/dns-analytics';
 import { createEpochRoutes } from './routes/epoch';
+import { createTransactionAnalyticsRoutes } from './routes/transaction-analytics';
 
 export interface APIServerConfig {
   port: number;
@@ -58,6 +60,7 @@ export class AnalyticsAPIServer {
   private adminController!: AdminController;
   private queryPerformanceController!: QueryPerformanceController;
   private epochController!: EpochController;
+  private transactionAnalyticsController!: TransactionAnalyticsController;
 
   constructor(config: APIServerConfig, ingestionService: DataIngestionService) {
     this.config = config;
@@ -136,6 +139,11 @@ export class AnalyticsAPIServer {
     this.epochController = new EpochController(
       this.redisClient
     );
+
+    this.transactionAnalyticsController = new TransactionAnalyticsController(
+      this.clickhouseClient,
+      this.redisClient
+    );
   }
 
   // =============================================
@@ -206,6 +214,7 @@ export class AnalyticsAPIServer {
     this.app.use('/', createQueryPerformanceRoutes(this.queryPerformanceController));
     this.app.use('/', createDNSAnalyticsRoutes(this.clickhouseClient, this.redisClient));
     this.app.use('/', createEpochRoutes(this.epochController));
+    this.app.use('/api/transaction-analytics', createTransactionAnalyticsRoutes(this.transactionAnalyticsController));
 
     // API documentation endpoint
     this.app.get('/api/docs', this.handleApiDocs.bind(this));
@@ -296,6 +305,15 @@ export class AnalyticsAPIServer {
           'GET /api/epoch/block/:blockNumber': 'Get epoch information for specific block',
           'GET /api/epoch/:epochNumber/blocks': 'Get block range for specific epoch',
           'GET /api/epoch/config': 'Epoch configuration settings'
+        },
+        transactionAnalytics: {
+          'GET /api/transaction-analytics/validator/:id': 'Comprehensive transaction metrics for specific validator',
+          'GET /api/transaction-analytics/validator/:id/trends': 'Validator transaction trends over time',
+          'GET /api/transaction-analytics/network/summary': 'Network-wide transaction summary',
+          'GET /api/transaction-analytics/network/trends': 'Network transaction trends over time',
+          'GET /api/transaction-analytics/rankings': 'Validator rankings by transaction processing performance',
+          'GET /api/transaction-analytics/geographic': 'Transaction processing analytics by geographic location',
+          'GET /api/transaction-analytics/providers': 'Transaction processing analytics by infrastructure provider'
         }
       },
       timestamp: new Date().toISOString()
