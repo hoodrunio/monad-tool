@@ -91,8 +91,19 @@ export class TransactionAnalyticsController {
 
       const intervalClause = this.getIntervalClause(timeWindow);
       
-      // Get validator transaction metrics
+      // Get validator transaction metrics with latest registry data
       const metricsQuery = `
+        WITH latest_validator_info AS (
+          SELECT 
+            validator_id,
+            argMax(validator_name, last_updated) as validator_name,
+            argMax(provider, last_updated) as provider,
+            argMax(location, last_updated) as location,
+            argMax(stake, last_updated) as stake
+          FROM validator_registry 
+          WHERE validator_id = '${validatorId}' AND is_active = 1
+          GROUP BY validator_id
+        )
         SELECT 
           bp.validator_id,
           COUNT(*) as total_proposals,
@@ -110,7 +121,7 @@ export class TransactionAnalyticsController {
           COALESCE(vr.location, 'unknown') as location,
           COALESCE(vr.stake, 0) as stake
         FROM block_proposals bp
-        LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
+        LEFT JOIN latest_validator_info vr ON bp.validator_id = vr.validator_id
         WHERE bp.validator_id = '${validatorId}'
           AND bp.timestamp >= now() - INTERVAL ${intervalClause}
         GROUP BY bp.validator_id, vr.validator_name, vr.provider, vr.location, vr.stake
@@ -341,7 +352,7 @@ export class TransactionAnalyticsController {
 
       const intervalClause = this.getIntervalClause(timeWindow);
       
-      // Network transaction summary
+      // Network transaction summary - NO JOIN to avoid duplicates
       const summaryQuery = `
         SELECT 
           COUNT(*) as total_proposals,
@@ -353,11 +364,15 @@ export class TransactionAnalyticsController {
           COUNT(DISTINCT validator_id) as active_validators,
           (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate
         FROM block_proposals bp
-        INNER JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          AND bp.validator_id IN (
+            SELECT DISTINCT validator_id 
+            FROM validator_registry 
+            WHERE is_active = 1
+          )
       `;
 
-      // Peak transaction rate (max transactions in any hour)
+      // Peak transaction rate (max transactions in any hour) - NO JOIN to avoid duplicates
       const peakQuery = `
         SELECT 
           MAX(hourly_tx) as peak_transaction_rate
@@ -366,8 +381,12 @@ export class TransactionAnalyticsController {
             toStartOfHour(timestamp) as hour,
             SUM(num_tx) as hourly_tx
           FROM block_proposals bp
-          INNER JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
           WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+            AND bp.validator_id IN (
+              SELECT DISTINCT validator_id 
+              FROM validator_registry 
+              WHERE is_active = 1
+            )
           GROUP BY hour
         )
       `;
@@ -481,8 +500,12 @@ export class TransactionAnalyticsController {
           COUNT(CASE WHEN num_tx > 0 THEN 1 END) as blocks_with_transactions,
           (COUNT(CASE WHEN num_tx > 0 THEN 1 END) * 100.0 / COUNT(CASE WHEN status = 'proposed' THEN 1 END)) as network_utilization_rate
         FROM block_proposals bp
-        INNER JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          AND bp.validator_id IN (
+            SELECT DISTINCT validator_id 
+            FROM validator_registry 
+            WHERE is_active = 1
+          )
         GROUP BY time_bucket
         ORDER BY time_bucket
       `;
@@ -610,16 +633,31 @@ export class TransactionAnalyticsController {
       const offset = (page - 1) * limit;
       const timeWindowHours = this.getTimeWindowHours(timeWindow);
       
-      // Get total count for pagination
+      // Get total count for pagination - use subquery to avoid JOIN duplication
       const countQuery = `
         SELECT COUNT(DISTINCT bp.validator_id) as total_count
         FROM block_proposals bp
-        INNER JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          AND bp.validator_id IN (
+            SELECT DISTINCT validator_id 
+            FROM validator_registry 
+            WHERE is_active = 1
+          )
       `;
 
-      // Main ranking query
+      // Main ranking query with latest validator data - no JOIN duplication
       const rankingQuery = `
+        WITH latest_validator_info AS (
+          SELECT 
+            validator_id,
+            argMax(validator_name, last_updated) as validator_name,
+            argMax(provider, last_updated) as provider,
+            argMax(location, last_updated) as location,
+            argMax(stake, last_updated) as stake
+          FROM validator_registry 
+          WHERE is_active = 1
+          GROUP BY validator_id
+        )
         SELECT 
           bp.validator_id,
           COUNT(*) as total_proposals,
@@ -636,8 +674,13 @@ export class TransactionAnalyticsController {
           COALESCE(vr.location, 'unknown') as location,
           COALESCE(vr.stake, 0) as stake
         FROM block_proposals bp
-        INNER JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
+        LEFT JOIN latest_validator_info vr ON bp.validator_id = vr.validator_id
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          AND bp.validator_id IN (
+            SELECT DISTINCT validator_id 
+            FROM validator_registry 
+            WHERE is_active = 1
+          )
         GROUP BY bp.validator_id, vr.validator_name, vr.provider, vr.location, vr.stake
         ORDER BY ${this.getTransactionSortClause(sortBy)} DESC
         LIMIT ${limit} OFFSET ${offset}
@@ -754,6 +797,16 @@ export class TransactionAnalyticsController {
       const intervalClause = this.getIntervalClause(timeWindow);
       
       const geographicQuery = `
+        WITH latest_validator_info AS (
+          SELECT 
+            validator_id,
+            argMax(location, last_updated) as location
+          FROM validator_registry 
+          WHERE is_active = 1
+            AND location != 'unknown' 
+            AND location IS NOT NULL
+          GROUP BY validator_id
+        )
         SELECT 
           vr.location,
           COUNT(DISTINCT bp.validator_id) as validator_count,
@@ -766,10 +819,8 @@ export class TransactionAnalyticsController {
           (COUNT(CASE WHEN bp.num_tx > 0 THEN 1 END) * 100.0 / COUNT(*)) as block_utilization_rate,
           (SUM(bp.num_tx) / COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END)) as transaction_efficiency
         FROM block_proposals bp
-        INNER JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
+        INNER JOIN latest_validator_info vr ON bp.validator_id = vr.validator_id
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
-          AND vr.location != 'unknown' 
-          AND vr.location IS NOT NULL
         GROUP BY vr.location
         HAVING COUNT(DISTINCT bp.validator_id) > 0
         ORDER BY total_transactions DESC
@@ -859,6 +910,17 @@ export class TransactionAnalyticsController {
       const intervalClause = this.getIntervalClause(timeWindow);
       
       const providerQuery = `
+        WITH latest_validator_info AS (
+          SELECT 
+            validator_id,
+            argMax(provider, last_updated) as provider,
+            argMax(location, last_updated) as location
+          FROM validator_registry 
+          WHERE is_active = 1
+            AND provider != 'unknown' 
+            AND provider IS NOT NULL
+          GROUP BY validator_id
+        )
         SELECT 
           vr.provider,
           COUNT(DISTINCT bp.validator_id) as validator_count,
@@ -872,10 +934,8 @@ export class TransactionAnalyticsController {
           (SUM(bp.num_tx) / COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END)) as transaction_efficiency,
           arrayDistinct(groupArray(vr.location)) as locations
         FROM block_proposals bp
-        INNER JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
+        INNER JOIN latest_validator_info vr ON bp.validator_id = vr.validator_id
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
-          AND vr.provider != 'unknown' 
-          AND vr.provider IS NOT NULL
         GROUP BY vr.provider
         HAVING COUNT(DISTINCT bp.validator_id) > 0
         ORDER BY total_transactions DESC
