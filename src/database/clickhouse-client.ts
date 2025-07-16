@@ -577,7 +577,8 @@ export class MonadClickHouseClient {
   
   /**
    * Updates the validator_registry table with the latest validator data.
-   * This method preserves existing keybase data while updating other fields.
+   * This method only creates new entries when validator metadata has actually changed,
+   * preventing unnecessary duplicates while preserving existing keybase data.
    * @param validators The list of complete validator objects to insert.
    */
   async updateValidatorRegistry(validators: CompleteValidator[]): Promise<void> {
@@ -587,7 +588,7 @@ export class MonadClickHouseClient {
     }
 
     const tableName = 'validator_registry';
-    logger.info(`🚀 Starting sync for ${tableName} with ${validators.length} validators...`);
+    logger.info(`🚀 Starting smart sync for ${tableName} with ${validators.length} validators...`);
 
     try {
       // Step 1: Get existing keybase mappings to preserve them
@@ -608,10 +609,44 @@ export class MonadClickHouseClient {
       });
       logger.info(`✅ Preserved ${keybaseMap.size} keybase mappings`);
 
-      // Step 2: Prepare and insert the new data with preserved keybase info
-      const values = validators.map(v => {
+      // Step 2: Get latest existing data for each validator to compare against
+      logger.info(`Fetching latest validator data for comparison...`);
+      const latestDataQuery = `
+        SELECT 
+          validator_id,
+          stake,
+          position,
+          is_active,
+          dns_address,
+          dns_host,
+          dns_port,
+          validator_name,
+          provider,
+          location,
+          country,
+          datacenter
+        FROM (
+          SELECT *,
+                 ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) as rn
+          FROM ${tableName}
+        )
+        WHERE rn = 1
+      `;
+      const existingData = await this.executeRawQuery(latestDataQuery);
+      const existingMap = new Map<string, any>();
+      
+      existingData.forEach(row => {
+        existingMap.set(row.validator_id, row);
+      });
+      logger.info(`✅ Retrieved latest data for ${existingData.length} existing validators`);
+
+      // Step 3: Compare new data against existing and identify changes
+      const validatorsToUpdate: any[] = [];
+      let unchangedCount = 0;
+      
+      for (const v of validators) {
         const existingKeybase = keybaseMap.get(v.nodeId);
-        return {
+        const newRecord = {
           validator_id: v.nodeId,
           node_id: v.nodeId,
           epoch: v.epoch,
@@ -625,39 +660,88 @@ export class MonadClickHouseClient {
           provider: v.location?.organization || 'unknown',
           location: v.location?.city ? `${v.location.city}, ${v.location.country}` : v.location?.country || 'unknown',
           country: v.location?.country || 'unknown',
-          datacenter: v.location?.isp || 'unknown', // Using ISP as a proxy for datacenter
+          datacenter: v.location?.isp || 'unknown',
           keybase_id: existingKeybase?.keybase_id || '',
           keybase_logo_url: existingKeybase?.keybase_logo_url || '',
           first_seen: v.lastUpdated.toISOString().slice(0, 19).replace('T', ' '),
           last_updated: v.lastUpdated.toISOString().slice(0, 19).replace('T', ' '),
         };
-      });
-      
-      logger.info(`Inserting ${values.length} records into ${tableName}...`);
-      
-      // Step 3: Use INSERT with ReplacingMergeTree (it will replace old records automatically)
-      await this.client.insert({
-        table: tableName,
-        values,
-        format: 'JSONEachRow',
-      });
 
-      // Step 4: Optimize table to merge duplicates
-      logger.info(`Optimizing table to merge duplicates...`);
-      await this.client.command({
-        query: `OPTIMIZE TABLE ${tableName} FINAL`,
-        clickhouse_settings: {
-          wait_end_of_query: 1,
-        },
-      });
+        const existing = existingMap.get(v.nodeId);
+        
+        // Check if this is a new validator or if metadata has changed
+        if (!existing || this.hasValidatorDataChanged(existing, newRecord)) {
+          validatorsToUpdate.push(newRecord);
+        } else {
+          unchangedCount++;
+        }
+      }
 
-      logger.info(`✅ Successfully synchronized ${tableName} with ${validators.length} validators (preserved ${keybaseMap.size} keybase mappings).`);
+      logger.info(`📊 Analysis complete: ${validatorsToUpdate.length} validators need updates, ${unchangedCount} unchanged`);
+
+      // Step 4: Only insert validators that have actually changed
+      if (validatorsToUpdate.length > 0) {
+        logger.info(`Inserting ${validatorsToUpdate.length} changed validators into ${tableName}...`);
+        
+        await this.client.insert({
+          table: tableName,
+          values: validatorsToUpdate,
+          format: 'JSONEachRow',
+        });
+
+        // Step 5: Optimize table to merge duplicates
+        logger.info(`Optimizing table to merge duplicates...`);
+        await this.client.command({
+          query: `OPTIMIZE TABLE ${tableName} FINAL`,
+          clickhouse_settings: {
+            wait_end_of_query: 1,
+          },
+        });
+
+        logger.info(`✅ Successfully updated ${validatorsToUpdate.length} validators in ${tableName} (preserved ${keybaseMap.size} keybase mappings, skipped ${unchangedCount} unchanged).`);
+      } else {
+        logger.info(`✅ No validator updates needed - all ${validators.length} validators are up to date (preserved ${keybaseMap.size} keybase mappings).`);
+      }
 
     } catch (error) {
-      logger.error(`❌ Failed to synchronize ${tableName}.`, {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      logger.error(`❌ Failed to sync ${tableName}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Determines if validator data has meaningfully changed
+   * @param existing The existing validator record from database
+   * @param newRecord The new validator record to be inserted
+   * @returns true if the data has changed and requires an update
+   */
+  private hasValidatorDataChanged(existing: any, newRecord: any): boolean {
+    // Compare all meaningful fields (excluding epoch, timestamps, and keybase which is preserved separately)
+    const fieldsToCompare = [
+      'stake', 'position', 'is_active', 'dns_address', 'dns_host', 'dns_port',
+      'validator_name', 'provider', 'location', 'country', 'datacenter'
+    ];
+
+    for (const field of fieldsToCompare) {
+      // Handle null/undefined/empty string normalization
+      const existingValue = this.normalizeValue(existing[field]);
+      const newValue = this.normalizeValue(newRecord[field]);
+      
+      if (existingValue !== newValue) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Normalizes values for comparison (handles null, undefined, empty strings)
+   */
+  private normalizeValue(value: any): string {
+    if (value === null || value === undefined || value === '') {
+      return 'unknown';
+    }
+    return String(value).trim();
   }
 } 
