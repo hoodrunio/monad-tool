@@ -36,10 +36,10 @@ const config = {
 };
 
 interface DuplicateStats {
-  validatorId: string;
-  totalEntries: number;
+  validator_id: string;
+  entry_count: number;
   epochs: number[];
-  updateTimes: string[];
+  update_times: string[];
 }
 
 async function cleanupValidatorDuplicates(): Promise<void> {
@@ -76,11 +76,11 @@ async function cleanupValidatorDuplicates(): Promise<void> {
     // Show top duplicates
     console.log('\n📋 Top validators with most duplicates:');
     duplicates.slice(0, 5).forEach(dup => {
-      console.log(`  ${dup.validatorId.substring(0, 16)}... : ${dup.totalEntries} entries, epochs: [${dup.epochs.slice(-3).join(', ')}]`);
+      console.log(`  ${dup.validator_id.substring(0, 16)}... : ${dup.entry_count} entries, epochs: [${dup.epochs.slice(-3).join(', ')}]`);
     });
 
     // Step 2: Calculate cleanup impact
-    const totalDuplicateEntries = duplicates.reduce((sum, dup) => sum + (dup.totalEntries - 1), 0);
+    const totalDuplicateEntries = duplicates.reduce((sum, dup) => sum + (dup.entry_count - 1), 0);
     console.log(`\n💾 Cleanup impact: ${totalDuplicateEntries} duplicate entries will be removed`);
 
     // Step 3: Create cleanup strategy
@@ -102,7 +102,7 @@ async function cleanupValidatorDuplicates(): Promise<void> {
       console.log(`📦 Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(duplicates.length / batchSize)} (${batch.length} validators)...`);
 
       for (const duplicate of batch) {
-        const cleaned = await cleanupValidatorDuplicate(clickhouseClient, duplicate.validatorId);
+        const cleaned = await cleanupValidatorDuplicate(clickhouseClient, duplicate.validator_id);
         totalCleaned += cleaned;
       }
 
