@@ -18,17 +18,18 @@ interface TransactionMetrics {
 
 interface NetworkTransactionSummary {
   totalTransactions: number;
-  totalBlocks: number;
+  successfulBlocks: number;
   avgTransactionsPerBlock: number;
   peakTransactionRate: number;
   activeValidators: number;
   networkThroughput: number;
+  blockSuccessRate: number;
 }
 
 interface TransactionTrend {
   timestamp: string;
   totalTransactions: number;
-  blockCount: number;
+  successfulBlocks: number;
   avgTransactionsPerBlock: number;
   validatorCount: number;
 }
@@ -343,14 +344,14 @@ export class TransactionAnalyticsController {
       // Network transaction summary
       const summaryQuery = `
         SELECT 
-          COUNT(*) as total_blocks,
+          COUNT(*) as total_proposals,
           COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_blocks,
           SUM(num_tx) as total_transactions,
           AVG(num_tx) as avg_transactions_per_block,
           MAX(num_tx) as max_transactions_in_block,
           COUNT(CASE WHEN num_tx > 0 THEN 1 END) as blocks_with_transactions,
           COUNT(DISTINCT validator_id) as active_validators,
-          (COUNT(CASE WHEN num_tx > 0 THEN 1 END) * 100.0 / COUNT(*)) as network_utilization_rate
+          (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate
         FROM block_proposals bp
         INNER JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
@@ -393,11 +394,12 @@ export class TransactionAnalyticsController {
 
       const responseData: NetworkTransactionSummary = {
         totalTransactions: parseInt(summary.total_transactions),
-        totalBlocks: parseInt(summary.total_blocks),
+        successfulBlocks: parseInt(summary.successful_blocks),
         avgTransactionsPerBlock: parseFloat(summary.avg_transactions_per_block || 0),
         peakTransactionRate: parseInt(peak.peak_transaction_rate || 0),
         activeValidators: parseInt(summary.active_validators),
-        networkThroughput: networkThroughput
+        networkThroughput: networkThroughput,
+        blockSuccessRate: parseFloat(summary.block_success_rate || 0)
       };
 
       const cacheDuration = this.getCacheDuration(timeWindow);
@@ -472,13 +474,12 @@ export class TransactionAnalyticsController {
       const trendsQuery = `
         SELECT 
           ${timeGrouping} as time_bucket,
-          COUNT(*) as total_blocks,
           COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_blocks,
           SUM(num_tx) as total_transactions,
           AVG(num_tx) as avg_transactions_per_block,
           COUNT(DISTINCT validator_id) as active_validators,
           COUNT(CASE WHEN num_tx > 0 THEN 1 END) as blocks_with_transactions,
-          (COUNT(CASE WHEN num_tx > 0 THEN 1 END) * 100.0 / COUNT(*)) as network_utilization_rate
+          (COUNT(CASE WHEN num_tx > 0 THEN 1 END) * 100.0 / COUNT(CASE WHEN status = 'proposed' THEN 1 END)) as network_utilization_rate
         FROM block_proposals bp
         INNER JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
@@ -491,7 +492,7 @@ export class TransactionAnalyticsController {
       const trends: TransactionTrend[] = result.map(row => ({
         timestamp: row.time_bucket,
         totalTransactions: parseInt(row.total_transactions),
-        blockCount: parseInt(row.total_blocks),
+        successfulBlocks: parseInt(row.successful_blocks),
         avgTransactionsPerBlock: parseFloat(row.avg_transactions_per_block || 0),
         validatorCount: parseInt(row.active_validators)
       }));
@@ -503,7 +504,7 @@ export class TransactionAnalyticsController {
           timeWindow,
           granularity,
           totalTransactions: trends.reduce((sum, t) => sum + t.totalTransactions, 0),
-          totalBlocks: trends.reduce((sum, t) => sum + t.blockCount, 0)
+          successfulBlocks: trends.reduce((sum, t) => sum + t.successfulBlocks, 0)
         }
       };
 
