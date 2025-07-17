@@ -33,6 +33,16 @@ export function createTransactionAnalyticsRoutes(controller: TransactionAnalytic
   router.get('/rankings', (req, res) => controller.getValidatorTransactionRankings(req, res));
 
   // =============================================
+  // TPS (TRANSACTIONS PER SECOND) ANALYTICS
+  // =============================================
+
+  // Get TPS analytics with time series data
+  router.get('/tps', (req, res) => controller.getTpsAnalytics(req, res));
+  
+  // Get current real-time TPS
+  router.get('/tps/current', (req, res) => controller.getCurrentTps(req, res));
+
+  // =============================================
   // GEOGRAPHIC & PROVIDER ANALYTICS
   // =============================================
 

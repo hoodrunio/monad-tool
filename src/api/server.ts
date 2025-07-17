@@ -312,6 +312,8 @@ export class AnalyticsAPIServer {
           'GET /api/transaction-analytics/network/summary': 'Network-wide transaction summary',
           'GET /api/transaction-analytics/network/trends': 'Network transaction trends over time',
           'GET /api/transaction-analytics/rankings': 'Validator rankings by transaction processing performance',
+          'GET /api/transaction-analytics/tps': 'TPS analytics with time series data (hourly/daily/minute granularity)',
+          'GET /api/transaction-analytics/tps/current': 'Real-time current TPS calculation',
           'GET /api/transaction-analytics/geographic': 'Transaction processing analytics by geographic location',
           'GET /api/transaction-analytics/providers': 'Transaction processing analytics by infrastructure provider'
         }

@@ -759,6 +759,285 @@ export class TransactionAnalyticsController {
   }
 
   // =============================================
+  // TPS (TRANSACTIONS PER SECOND) ANALYTICS
+  // =============================================
+
+  /**
+   * Get TPS (Transactions Per Second) analytics with different time granularities
+   * GET /api/transaction-analytics/tps
+   */
+  async getTpsAnalytics(req: Request, res: Response): Promise<void> {
+    try {
+      const timeWindow = (req.query.window as string) || '24h';
+      const granularity = (req.query.granularity as string) || 'hour';
+      const validatorId = req.query.validatorId as string; // Optional: specific validator
+      
+      // Validate parameters
+      if (!['1h', '6h', '24h', '7d', '30d'].includes(timeWindow)) {
+        res.status(400).json({
+          error: 'Invalid time window',
+          message: 'Must be 1h, 6h, 24h, 7d, or 30d',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      if (!['minute', 'hour', 'day'].includes(granularity)) {
+        res.status(400).json({
+          error: 'Invalid granularity',
+          message: 'Must be minute, hour, or day',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const cacheKey = `tps_analytics:${timeWindow}:${granularity}:${validatorId || 'network'}`;
+      const cached = await this.redisClient['client'].get(cacheKey);
+      
+      if (cached) {
+        res.json({
+          data: JSON.parse(cached),
+          metadata: {
+            timeWindow,
+            granularity,
+            validatorId: validatorId || null,
+            source: 'cache'
+          },
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const intervalClause = this.getIntervalClause(timeWindow);
+      const timeGrouping = this.getTimeGrouping(granularity);
+      
+      // Calculate seconds per time bucket based on granularity
+      const secondsPerBucket = this.getSecondsPerTimeBucket(granularity);
+      
+      // Build query based on whether we want specific validator or network-wide
+      let tpsQuery: string;
+      
+      if (validatorId) {
+        // Validator-specific TPS
+        tpsQuery = `
+          SELECT 
+            ${timeGrouping} as time_bucket,
+            SUM(bp.num_tx) as total_transactions,
+            COUNT(*) as total_blocks,
+            AVG(bp.num_tx) as avg_transactions_per_block,
+            MAX(bp.num_tx) as peak_transactions_in_bucket,
+            (SUM(bp.num_tx) / ${secondsPerBucket}) as tps,
+            COUNT(CASE WHEN bp.num_tx > 0 THEN 1 END) as active_blocks,
+            (COUNT(CASE WHEN bp.num_tx > 0 THEN 1 END) * 100.0 / COUNT(*)) as block_utilization_rate
+          FROM block_proposals bp
+          INNER JOIN (
+            SELECT DISTINCT validator_id 
+            FROM validator_registry 
+            WHERE is_active = 1
+          ) vr ON bp.validator_id = vr.validator_id
+          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+            AND bp.validator_id = '${validatorId}'
+          GROUP BY time_bucket
+          ORDER BY time_bucket
+        `;
+      } else {
+        // Network-wide TPS
+        tpsQuery = `
+          SELECT 
+            ${timeGrouping} as time_bucket,
+            SUM(bp.num_tx) as total_transactions,
+            COUNT(*) as total_blocks,
+            COUNT(DISTINCT bp.validator_id) as active_validators,
+            AVG(bp.num_tx) as avg_transactions_per_block,
+            MAX(bp.num_tx) as peak_transactions_in_bucket,
+            (SUM(bp.num_tx) / ${secondsPerBucket}) as tps,
+            COUNT(CASE WHEN bp.num_tx > 0 THEN 1 END) as active_blocks,
+            (COUNT(CASE WHEN bp.num_tx > 0 THEN 1 END) * 100.0 / COUNT(*)) as network_utilization_rate
+          FROM block_proposals bp
+          INNER JOIN (
+            SELECT DISTINCT validator_id 
+            FROM validator_registry 
+            WHERE is_active = 1
+          ) vr ON bp.validator_id = vr.validator_id
+          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY time_bucket
+          ORDER BY time_bucket
+        `;
+      }
+
+      const result = await this.clickhouseClient.executeRawQuery(tpsQuery);
+      
+      const tpsData = result.map(row => ({
+        timestamp: row.time_bucket,
+        tps: parseFloat(row.tps || 0),
+        totalTransactions: parseInt(row.total_transactions || 0),
+        totalBlocks: parseInt(row.total_blocks || 0),
+        activeValidators: validatorId ? 1 : parseInt(row.active_validators || 0),
+        avgTransactionsPerBlock: parseFloat(row.avg_transactions_per_block || 0),
+        peakTransactionsInBucket: parseInt(row.peak_transactions_in_bucket || 0),
+        utilizationRate: parseFloat(validatorId ? row.block_utilization_rate : row.network_utilization_rate || 0)
+      }));
+
+      // Calculate summary statistics
+      const totalTransactions = tpsData.reduce((sum, item) => sum + item.totalTransactions, 0);
+      const totalTimeBuckets = tpsData.length;
+      const totalTimeInSeconds = totalTimeBuckets * secondsPerBucket;
+      const averageTps = totalTimeBuckets > 0 ? totalTransactions / totalTimeInSeconds : 0;
+      const peakTps = Math.max(...tpsData.map(item => item.tps), 0);
+      const minTps = totalTimeBuckets > 0 ? Math.min(...tpsData.map(item => item.tps)) : 0;
+
+      const responseData = {
+        timeSeries: tpsData,
+        summary: {
+          averageTps: parseFloat(averageTps.toFixed(3)),
+          peakTps: parseFloat(peakTps.toFixed(3)),
+          minTps: parseFloat(minTps.toFixed(3)),
+          totalTransactions,
+          totalBlocks: tpsData.reduce((sum, item) => sum + item.totalBlocks, 0),
+          activeValidators: validatorId ? 1 : Math.max(...tpsData.map(item => item.activeValidators), 0),
+          timeWindow,
+          granularity,
+          totalDataPoints: totalTimeBuckets,
+          totalTimeSeconds: totalTimeInSeconds
+        },
+        validatorId: validatorId || null
+      };
+
+      const cacheDuration = this.getCacheDuration(timeWindow);
+      await this.redisClient['client'].setex(cacheKey, cacheDuration, JSON.stringify(responseData));
+      
+      res.json({
+        data: responseData,
+        metadata: {
+          timeWindow,
+          granularity,
+          validatorId: validatorId || null,
+          source: 'database'
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      logger.error('Failed to get TPS analytics:', error);
+      res.status(500).json({
+        error: 'Failed to get TPS analytics',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  /**
+   * Get current network TPS (real-time calculation)
+   * GET /api/transaction-analytics/tps/current
+   */
+  async getCurrentTps(req: Request, res: Response): Promise<void> {
+    try {
+      const sampleWindow = (req.query.sampleWindow as string) || '5m'; // 1m, 5m, 15m, 30m
+      
+      // Validate sample window
+      const validWindows = ['1m', '5m', '15m', '30m'];
+      if (!validWindows.includes(sampleWindow)) {
+        res.status(400).json({
+          error: 'Invalid sample window',
+          message: 'Must be 1m, 5m, 15m, or 30m',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const cacheKey = `current_tps:${sampleWindow}`;
+      const cached = await this.redisClient['client'].get(cacheKey);
+      
+      // Use shorter cache for real-time data
+      if (cached) {
+        res.json({
+          data: JSON.parse(cached),
+          metadata: {
+            sampleWindow,
+            source: 'cache'
+          },
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Get interval in minutes
+      const minutes = parseInt(sampleWindow.replace('m', ''));
+      const totalSeconds = minutes * 60;
+
+      const currentTpsQuery = `
+        SELECT 
+          SUM(bp.num_tx) as total_transactions,
+          COUNT(*) as total_blocks,
+          COUNT(DISTINCT bp.validator_id) as active_validators,
+          MIN(bp.timestamp) as earliest_timestamp,
+          MAX(bp.timestamp) as latest_timestamp,
+          (SUM(bp.num_tx) / ${totalSeconds}) as current_tps,
+          MAX(bp.num_tx) as max_transactions_in_block,
+          AVG(bp.num_tx) as avg_transactions_per_block,
+          COUNT(CASE WHEN bp.num_tx > 0 THEN 1 END) as active_blocks
+        FROM block_proposals bp
+        INNER JOIN (
+          SELECT DISTINCT validator_id 
+          FROM validator_registry 
+          WHERE is_active = 1
+        ) vr ON bp.validator_id = vr.validator_id
+        WHERE bp.timestamp >= now() - INTERVAL ${minutes} MINUTE
+      `;
+
+      const result = await this.clickhouseClient.executeRawQuery(currentTpsQuery);
+      
+      if (result.length === 0) {
+        res.status(404).json({
+          error: 'No recent data found',
+          message: `No transaction data found in the last ${sampleWindow}`,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const data = result[0];
+      const responseData = {
+        currentTps: parseFloat(data.current_tps || 0),
+        totalTransactions: parseInt(data.total_transactions || 0),
+        totalBlocks: parseInt(data.total_blocks || 0),
+        activeValidators: parseInt(data.active_validators || 0),
+        avgTransactionsPerBlock: parseFloat(data.avg_transactions_per_block || 0),
+        maxTransactionsInBlock: parseInt(data.max_transactions_in_block || 0),
+        activeBlocks: parseInt(data.active_blocks || 0),
+        sampleWindow,
+        sampleWindowSeconds: totalSeconds,
+        dataRange: {
+          earliestTimestamp: data.earliest_timestamp,
+          latestTimestamp: data.latest_timestamp
+        }
+      };
+
+      // Cache for shorter duration for real-time data
+      const shortCacheDuration = Math.min(30, Math.floor(totalSeconds / 4)); // Max 30 seconds
+      await this.redisClient['client'].setex(cacheKey, shortCacheDuration, JSON.stringify(responseData));
+      
+      res.json({
+        data: responseData,
+        metadata: {
+          sampleWindow,
+          source: 'database'
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      logger.error('Failed to get current TPS:', error);
+      res.status(500).json({
+        error: 'Failed to get current TPS',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  // =============================================
   // GEOGRAPHIC & PROVIDER TRANSACTION ANALYTICS
   // =============================================
 
@@ -1025,6 +1304,15 @@ export class TransactionAnalyticsController {
       case 'hour': return 'toStartOfHour(timestamp)';
       case 'day': return 'toStartOfDay(timestamp)';
       default: return 'toStartOfHour(timestamp)';
+    }
+  }
+
+  private getSecondsPerTimeBucket(granularity: string): number {
+    switch (granularity) {
+      case 'minute': return 60;
+      case 'hour': return 3600; // 60 * 60
+      case 'day': return 86400; // 24 * 60 * 60
+      default: return 3600;
     }
   }
 
