@@ -114,16 +114,19 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
       
       if (blockIds.length > 0) {
         try {
-          // Get all transaction counts in a single query
+          // Get all transaction counts in a single query with proper relations
           const txCountsQuery = await store.Transaction.find({
             where: { block: { id: In(blockIds) } },
+            relations: ['block'],
             select: ['id', 'block']
           });
           
           // Count transactions per block
           for (const tx of txCountsQuery) {
-            const blockId = typeof tx.block === 'string' ? tx.block : tx.block.id;
-            transactionCounts.set(blockId, (transactionCounts.get(blockId) || 0) + 1);
+            if (tx.block && tx.block.id) {
+              const blockId = tx.block.id;
+              transactionCounts.set(blockId, (transactionCounts.get(blockId) || 0) + 1);
+            }
           }
         } catch (error) {
           logger.warn('Failed to get transaction counts - using zero counts', {
