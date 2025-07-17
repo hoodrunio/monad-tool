@@ -803,8 +803,6 @@ export class TransactionAnalyticsController {
             argMax(location, last_updated) as location
           FROM validator_registry 
           WHERE is_active = 1
-            AND location != 'unknown' 
-            AND location IS NOT NULL
           GROUP BY validator_id
         )
         SELECT 
@@ -821,6 +819,9 @@ export class TransactionAnalyticsController {
         FROM block_proposals bp
         INNER JOIN latest_validator_info vr ON bp.validator_id = vr.validator_id
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          AND vr.location != 'unknown' 
+          AND vr.location IS NOT NULL
+          AND vr.location != ''
         GROUP BY vr.location
         HAVING COUNT(DISTINCT bp.validator_id) > 0
         ORDER BY total_transactions DESC
@@ -917,8 +918,6 @@ export class TransactionAnalyticsController {
             argMax(location, last_updated) as location
           FROM validator_registry 
           WHERE is_active = 1
-            AND provider != 'unknown' 
-            AND provider IS NOT NULL
           GROUP BY validator_id
         )
         SELECT 
@@ -936,6 +935,9 @@ export class TransactionAnalyticsController {
         FROM block_proposals bp
         INNER JOIN latest_validator_info vr ON bp.validator_id = vr.validator_id
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          AND vr.provider != 'unknown' 
+          AND vr.provider IS NOT NULL
+          AND vr.provider != ''
         GROUP BY vr.provider
         HAVING COUNT(DISTINCT bp.validator_id) > 0
         ORDER BY total_transactions DESC
