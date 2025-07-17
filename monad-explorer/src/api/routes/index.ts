@@ -6,6 +6,8 @@ import { createAddressRoutes } from './addresses';
 import { createTokenRoutes } from './tokens';
 import { createContractRoutes } from './contracts';
 import { createAnalyticsRoutes } from './analytics';
+import { createOptimizedBlockRoutes } from './optimized-blocks';
+import { createOptimizedTransactionRoutes } from './optimized-transactions';
 
 /**
  * Create API routes for the logs-first architecture
@@ -88,8 +90,10 @@ export function createAPIRoutes(serviceContainer: ServiceContainer): Router {
     });
   });
 
-  // Mount route modules
+  // Mount route modules - optimized routes first to avoid parameter conflicts
+  router.use('/transactions', createOptimizedTransactionRoutes(serviceContainer));
   router.use('/transactions', createTransactionRoutes(serviceContainer));
+  router.use('/blocks', createOptimizedBlockRoutes(serviceContainer));
   router.use('/blocks', createBlockRoutes(serviceContainer));
   router.use('/addresses', createAddressRoutes(serviceContainer));
   router.use('/tokens', createTokenRoutes(serviceContainer));

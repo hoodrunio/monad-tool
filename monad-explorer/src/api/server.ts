@@ -119,8 +119,9 @@ export class RestApiServer {
       // Create store adapter compatible with TransactionService
       const storeAdapter = createStoreAdapter(this.dataSource);
       
-      // Register store adapter in container
+      // Register store adapter and dataSource in container
       this.serviceContainer.registerInstance('store', storeAdapter);
+      this.serviceContainer.registerInstance('dataSource', this.dataSource);
 
       // Register services (if not already registered)
       if (!this.serviceContainer.hasService('appConfig')) {
