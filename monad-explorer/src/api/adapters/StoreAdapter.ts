@@ -196,10 +196,32 @@ export function createStoreAdapter(dataSource: DataSource): StoreAdapter {
     Block: {
       async findOne(options: any): Promise<Block | null> {
         try {
-          const result = await blockRepo.findOne({
-            where: options.where,
-            relations: options.relations || []
-          });
+          const queryOptions: any = {};
+          
+          if (options.where) {
+            queryOptions.where = options.where;
+          }
+          
+          if (options.relations) {
+            queryOptions.relations = options.relations;
+          }
+          
+          if (options.order) {
+            queryOptions.order = options.order;
+          }
+          
+          if (options.select) {
+            queryOptions.select = options.select;
+          }
+          
+          // If no where condition but order is specified, use find with take: 1
+          if (!options.where && options.order) {
+            queryOptions.take = 1;
+            const results = await blockRepo.find(queryOptions);
+            return results.length > 0 ? results[0] : null;
+          }
+          
+          const result = await blockRepo.findOne(queryOptions);
           return result;
         } catch (error) {
           throw new Error(`Block findOne failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -228,6 +250,10 @@ export function createStoreAdapter(dataSource: DataSource): StoreAdapter {
           
           if (options.take !== undefined) {
             queryOptions.take = options.take;
+          }
+          
+          if (options.select) {
+            queryOptions.select = options.select;
           }
 
           const result = await blockRepo.find(queryOptions);

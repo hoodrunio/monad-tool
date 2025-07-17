@@ -129,15 +129,32 @@ export class RestApiServer {
         registration.registerServices();
       }
 
-      // Initialize services in container
-      await this.serviceContainer.initialize();
+      // Initialize services in container with better error handling
+      try {
+        await this.serviceContainer.initialize();
+        logger.info('All services initialized successfully');
+      } catch (error) {
+        logger.error('Service container initialization failed', {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+        
+        // Don't fail completely - some services might still work
+        logger.warn('Continuing with partial service initialization');
+      }
 
-      // Create and register TransactionService with store
-      const transactionServiceFactory = await this.serviceContainer.resolve<any>('transactionServiceFactory');
-      const transactionService = await transactionServiceFactory.create(storeAdapter);
-      this.serviceContainer.registerInstance('transactionService', transactionService);
+      // Create and register TransactionService with store (if possible)
+      try {
+        const transactionServiceFactory = await this.serviceContainer.resolve<any>('transactionServiceFactory');
+        const transactionService = await transactionServiceFactory.create(storeAdapter);
+        this.serviceContainer.registerInstance('transactionService', transactionService);
+        logger.info('Transaction service initialized successfully');
+      } catch (error) {
+        logger.warn('Failed to initialize transaction service - some features may be limited', {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
 
-      logger.info('REST API services initialized');
+      logger.info('REST API services initialization completed');
     } catch (error) {
       logger.error('Failed to initialize services for REST API', {
         error: error instanceof Error ? error.message : 'Unknown error',

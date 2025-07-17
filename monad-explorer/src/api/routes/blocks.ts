@@ -9,6 +9,7 @@ import { validateBlockNumber, validatePaginationParams, validateBoolean } from '
 import { prepareForApiResponse } from '../../utils/bigint-serializer';
 import { In } from 'typeorm';
 import { ICacheService } from '../../interfaces/cache/ICacheService';
+import { logger } from '../../utils/logger';
 
 /**
  * Create block routes using logs-first architecture with optimized queries
@@ -23,25 +24,46 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
   router.get('/', asyncHandler(async (req: Request, res: Response) => {
     const { limit, offset } = validatePaginationParams(req.query);
 
-    // Get services
-    const store = await serviceContainer.resolve<StoreAdapter>('store');
-    const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
+    // Get services with error handling
+    let store: StoreAdapter;
+    let cacheService: ICacheService | null = null;
+    
+    try {
+      store = await serviceContainer.resolve<StoreAdapter>('store');
+    } catch (error) {
+      logger.error('Failed to resolve store service', {
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+      throw new ApiErrorResponse('Database service unavailable', 503, 'SERVICE_UNAVAILABLE');
+    }
+    
+    try {
+      cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
+    } catch (error) {
+      logger.warn('Cache service unavailable - continuing without cache', {
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
     
     // Cache key for this specific request
     const cacheKey = `blocks:list:${limit}:${offset}`;
     
-    // Try cache first
-    try {
-      const cached = await cacheService.get<any>(cacheKey);
-      if (cached) {
-        return successResponse(res, cached, 'Latest blocks retrieved from cache', 200, {
-          source: 'cache',
-          limit,
-          offset
+    // Try cache first (if available)
+    if (cacheService) {
+      try {
+        const cached = await cacheService.get<any>(cacheKey);
+        if (cached) {
+          return successResponse(res, cached, 'Latest blocks retrieved from cache', 200, {
+            source: 'cache',
+            limit,
+            offset
+          });
+        }
+      } catch (error) {
+        logger.warn('Cache read failed - continuing with database query', {
+          error: error instanceof Error ? error.message : 'Unknown error'
         });
       }
-    } catch (error) {
-      // Cache miss or error, continue with database query
     }
 
     try {
@@ -56,20 +78,34 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
       const totalCountCacheKey = 'blocks:total_count';
       let totalCount;
       
-      try {
-        totalCount = await cacheService.get<number>(totalCountCacheKey);
-        if (!totalCount) {
+      if (cacheService) {
+        try {
+          totalCount = await cacheService.get<number>(totalCountCacheKey);
+        } catch (error) {
+          logger.warn('Failed to get total count from cache', { error });
+        }
+      }
+      
+      if (!totalCount) {
+        try {
           // Use latest block number as approximation (much faster than COUNT(*))
           const latestBlock = await store.Block.findOne({
             order: { number: 'DESC' },
             select: ['number']
           });
           totalCount = latestBlock?.number || 0;
-          // Cache for 1 minute
-          await cacheService.set(totalCountCacheKey, totalCount, 60000);
+          
+          // Cache for 1 minute (if cache available)
+          if (cacheService) {
+            try {
+              await cacheService.set(totalCountCacheKey, totalCount, 60000);
+            } catch (error) {
+              logger.warn('Failed to cache total count', { error });
+            }
+          }
+        } catch (error) {
+          totalCount = blocks.length > 0 ? blocks[0].number : 0;
         }
-      } catch (error) {
-        totalCount = blocks.length > 0 ? blocks[0].number : 0;
       }
 
       // OPTIMIZED: Batch query for transaction counts to avoid N+1
@@ -77,16 +113,22 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
       let transactionCounts: Map<string, number> = new Map();
       
       if (blockIds.length > 0) {
-        // Get all transaction counts in a single query
-        const txCountsQuery = await store.Transaction.find({
-          where: { block: { id: In(blockIds) } },
-          select: ['id', 'block']
-        });
-        
-        // Count transactions per block
-        for (const tx of txCountsQuery) {
-          const blockId = typeof tx.block === 'string' ? tx.block : tx.block.id;
-          transactionCounts.set(blockId, (transactionCounts.get(blockId) || 0) + 1);
+        try {
+          // Get all transaction counts in a single query
+          const txCountsQuery = await store.Transaction.find({
+            where: { block: { id: In(blockIds) } },
+            select: ['id', 'block']
+          });
+          
+          // Count transactions per block
+          for (const tx of txCountsQuery) {
+            const blockId = typeof tx.block === 'string' ? tx.block : tx.block.id;
+            transactionCounts.set(blockId, (transactionCounts.get(blockId) || 0) + 1);
+          }
+        } catch (error) {
+          logger.warn('Failed to get transaction counts - using zero counts', {
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
         }
       }
 
@@ -114,11 +156,13 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         }
       });
 
-      // Cache the result for 30 seconds
-      try {
-        await cacheService.set(cacheKey, apiResponse, 30000);
-      } catch (error) {
-        // Cache error, but don't fail the request
+      // Cache the result for 30 seconds (if cache available)
+      if (cacheService) {
+        try {
+          await cacheService.set(cacheKey, apiResponse, 30000);
+        } catch (error) {
+          logger.warn('Failed to cache response', { error });
+        }
       }
       
       successResponse(res, apiResponse, 'Latest blocks retrieved successfully', 200, {
@@ -130,6 +174,10 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         source: 'database'
       });
     } catch (error) {
+      logger.error('Database query failed in blocks route', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : 'No stack trace'
+      });
       throw new ApiErrorResponse('Failed to fetch blocks', 500, 'DATABASE_ERROR');
     }
   }));
@@ -139,21 +187,43 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
    * Get latest block information - OPTIMIZED
    */
   router.get('/latest', asyncHandler(async (req: Request, res: Response) => {
-    const store = await serviceContainer.resolve<StoreAdapter>('store');
-    const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
+    // Get services with error handling
+    let store: StoreAdapter;
+    let cacheService: ICacheService | null = null;
+    
+    try {
+      store = await serviceContainer.resolve<StoreAdapter>('store');
+    } catch (error) {
+      logger.error('Failed to resolve store service', {
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+      throw new ApiErrorResponse('Database service unavailable', 503, 'SERVICE_UNAVAILABLE');
+    }
+    
+    try {
+      cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
+    } catch (error) {
+      logger.warn('Cache service unavailable - continuing without cache', {
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
     
     const cacheKey = 'blocks:latest';
     
-    // Try cache first (very short TTL for latest block)
-    try {
-      const cached = await cacheService.get<any>(cacheKey);
-      if (cached) {
-        return successResponse(res, cached, 'Latest block retrieved from cache', 200, {
-          source: 'cache'
+    // Try cache first (very short TTL for latest block) - if available
+    if (cacheService) {
+      try {
+        const cached = await cacheService.get<any>(cacheKey);
+        if (cached) {
+          return successResponse(res, cached, 'Latest block retrieved from cache', 200, {
+            source: 'cache'
+          });
+        }
+      } catch (error) {
+        logger.warn('Cache read failed - continuing with database query', {
+          error: error instanceof Error ? error.message : 'Unknown error'
         });
       }
-    } catch (error) {
-      // Continue with database query
     }
 
     const latestBlock = await store.Block.findOne({
@@ -184,11 +254,13 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
       }
     });
 
-    // Cache for 10 seconds (latest block changes frequently)
-    try {
-      await cacheService.set(cacheKey, response, 10000);
-    } catch (error) {
-      // Cache error, but don't fail the request
+    // Cache for 10 seconds (latest block changes frequently) - if available
+    if (cacheService) {
+      try {
+        await cacheService.set(cacheKey, response, 10000);
+      } catch (error) {
+        logger.warn('Failed to cache response', { error });
+      }
     }
 
     return successResponse(res, response, 'Latest block retrieved successfully', 200, {
@@ -207,22 +279,44 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
       throw new ApiErrorResponse('Invalid block number format', 400, 'INVALID_BLOCK_NUMBER');
     }
 
-    const store = await serviceContainer.resolve<StoreAdapter>('store');
-    const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
+    // Get services with error handling
+    let store: StoreAdapter;
+    let cacheService: ICacheService | null = null;
+    
+    try {
+      store = await serviceContainer.resolve<StoreAdapter>('store');
+    } catch (error) {
+      logger.error('Failed to resolve store service', {
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+      throw new ApiErrorResponse('Database service unavailable', 503, 'SERVICE_UNAVAILABLE');
+    }
+    
+    try {
+      cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
+    } catch (error) {
+      logger.warn('Cache service unavailable - continuing without cache', {
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
     
     const cacheKey = `blocks:${blockNumber}`;
     
-    // Try cache first (longer TTL for specific blocks)
-    try {
-      const cached = await cacheService.get<any>(cacheKey);
-      if (cached) {
-        return successResponse(res, cached, 'Block details retrieved from cache', 200, {
-          source: 'cache',
-          queryTime: Date.now()
+    // Try cache first (longer TTL for specific blocks) - if available
+    if (cacheService) {
+      try {
+        const cached = await cacheService.get<any>(cacheKey);
+        if (cached) {
+          return successResponse(res, cached, 'Block details retrieved from cache', 200, {
+            source: 'cache',
+            queryTime: Date.now()
+          });
+        }
+      } catch (error) {
+        logger.warn('Cache read failed - continuing with database query', {
+          error: error instanceof Error ? error.message : 'Unknown error'
         });
       }
-    } catch (error) {
-      // Continue with database query
     }
 
     const block = await store.Block.findOne({
@@ -253,11 +347,13 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
       }
     });
 
-    // Cache for 5 minutes (specific blocks rarely change)
-    try {
-      await cacheService.set(cacheKey, response, 300000);
-    } catch (error) {
-      // Cache error, but don't fail the request
+    // Cache for 5 minutes (specific blocks rarely change) - if available
+    if (cacheService) {
+      try {
+        await cacheService.set(cacheKey, response, 300000);
+      } catch (error) {
+        logger.warn('Failed to cache response', { error });
+      }
     }
 
     return successResponse(res, response, 'Block details retrieved successfully', 200, {
