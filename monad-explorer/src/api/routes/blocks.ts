@@ -8,83 +8,154 @@ import { asyncHandler, ApiErrorResponse, successResponse } from '../middleware/e
 import { validateBlockNumber, validatePaginationParams, validateBoolean } from '../validators/common';
 import { prepareForApiResponse } from '../../utils/bigint-serializer';
 import { In } from 'typeorm';
+import { ICacheService } from '../../interfaces/cache/ICacheService';
 
 /**
- * Create block routes using logs-first architecture
+ * Create block routes using logs-first architecture with optimized queries
  */
 export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
   const router = Router();
 
   /**
    * GET /blocks
-   * Get latest blocks with basic data (for preview)
+   * Get latest blocks with basic data (for preview) - OPTIMIZED
    */
   router.get('/', asyncHandler(async (req: Request, res: Response) => {
     const { limit, offset } = validatePaginationParams(req.query);
 
-    // Get store from container
+    // Get services
     const store = await serviceContainer.resolve<StoreAdapter>('store');
+    const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
+    
+    // Cache key for this specific request
+    const cacheKey = `blocks:list:${limit}:${offset}`;
+    
+    // Try cache first
+    try {
+      const cached = await cacheService.get<any>(cacheKey);
+      if (cached) {
+        return successResponse(res, cached, 'Latest blocks retrieved from cache', 200, {
+          source: 'cache',
+          limit,
+          offset
+        });
+      }
+    } catch (error) {
+      // Cache miss or error, continue with database query
+    }
 
-    // Get latest blocks with basic data
-    const blocks = await store.Block.find({
-      order: { number: 'DESC' },
-      skip: offset,
-      take: limit,
-    });
+    try {
+      // Get latest blocks with basic data
+      const blocks = await store.Block.find({
+        order: { number: 'DESC' },
+        skip: offset,
+        take: limit,
+      });
 
-    // For total count, we'll use a reasonable approximation since Block interface doesn't have findAndCount
-    const totalCount = blocks.length > 0 ? (blocks[0].number || 0) : 0;
+      // Get total count efficiently (cache this separately as it's expensive)
+      const totalCountCacheKey = 'blocks:total_count';
+      let totalCount;
+      
+      try {
+        totalCount = await cacheService.get<number>(totalCountCacheKey);
+        if (!totalCount) {
+          // Use latest block number as approximation (much faster than COUNT(*))
+          const latestBlock = await store.Block.findOne({
+            order: { number: 'DESC' },
+            select: ['number']
+          });
+          totalCount = latestBlock?.number || 0;
+          // Cache for 1 minute
+          await cacheService.set(totalCountCacheKey, totalCount, 60000);
+        }
+      } catch (error) {
+        totalCount = blocks.length > 0 ? blocks[0].number : 0;
+      }
 
-    // Get transaction counts for each block
-    const blocksWithTxCount = await Promise.all(
-      blocks.map(async (block: Block) => {
-        const txCount = await store.Transaction.find({
-          where: { block: { number: block.number } },
-          select: ['id']
-        }).then(txs => txs.length);
+      // OPTIMIZED: Batch query for transaction counts to avoid N+1
+      const blockIds = blocks.map(block => block.id);
+      let transactionCounts: Map<string, number> = new Map();
+      
+      if (blockIds.length > 0) {
+        // Get all transaction counts in a single query
+        const txCountsQuery = await store.Transaction.find({
+          where: { block: { id: In(blockIds) } },
+          select: ['id', 'block']
+        });
+        
+        // Count transactions per block
+        for (const tx of txCountsQuery) {
+          const blockId = typeof tx.block === 'string' ? tx.block : tx.block.id;
+          transactionCounts.set(blockId, (transactionCounts.get(blockId) || 0) + 1);
+        }
+      }
 
-        return {
-          number: block.number,
-          hash: block.hash,
-          parentHash: block.parentHash,
-          timestamp: block.timestamp,
-          gasUsed: block.gasUsed,
-          gasLimit: block.gasLimit,
-          baseFeePerGas: block.baseFeePerGas,
-          size: block.size,
-          transactionCount: txCount
-        };
-      })
-    );
+      // Format response to match existing API structure
+      const blocksWithTxCount = blocks.map((block: Block) => ({
+        number: block.number,
+        hash: block.hash,
+        parentHash: block.parentHash,
+        timestamp: block.timestamp,
+        gasUsed: block.gasUsed,
+        gasLimit: block.gasLimit,
+        baseFeePerGas: block.baseFeePerGas,
+        size: block.size,
+        transactionCount: transactionCounts.get(block.id) || 0
+      }));
 
-    // Convert BigInt fields to strings for JSON response
-    const apiResponse = prepareForApiResponse({
-      blocks: blocksWithTxCount,
-      pagination: {
+      // Convert BigInt fields to strings for JSON response
+      const apiResponse = prepareForApiResponse({
+        blocks: blocksWithTxCount,
+        pagination: {
+          limit,
+          offset,
+          total: totalCount,
+          hasMore: offset + limit < totalCount
+        }
+      });
+
+      // Cache the result for 30 seconds
+      try {
+        await cacheService.set(cacheKey, apiResponse, 30000);
+      } catch (error) {
+        // Cache error, but don't fail the request
+      }
+      
+      successResponse(res, apiResponse, 'Latest blocks retrieved successfully', 200, {
+        totalCount,
         limit,
         offset,
-        total: totalCount,
-        hasMore: offset + limit < totalCount
-      }
-    });
-    
-    successResponse(res, apiResponse, 'Latest blocks retrieved successfully', 200, {
-      totalCount,
-      limit,
-      offset,
-      hasMore: offset + limit < totalCount,
-      dataType: 'preview'
-    });
+        hasMore: offset + limit < totalCount,
+        dataType: 'preview',
+        source: 'database'
+      });
+    } catch (error) {
+      throw new ApiErrorResponse('Failed to fetch blocks', 500, 'DATABASE_ERROR');
+    }
   }));
 
-
-   /**
+  /**
    * GET /blocks/latest
-   * Get latest block information
+   * Get latest block information - OPTIMIZED
    */
-   router.get('/latest', asyncHandler(async (req: Request, res: Response) => {
+  router.get('/latest', asyncHandler(async (req: Request, res: Response) => {
     const store = await serviceContainer.resolve<StoreAdapter>('store');
+    const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
     
+    const cacheKey = 'blocks:latest';
+    
+    // Try cache first (very short TTL for latest block)
+    try {
+      const cached = await cacheService.get<any>(cacheKey);
+      if (cached) {
+        return successResponse(res, cached, 'Latest block retrieved from cache', 200, {
+          source: 'cache'
+        });
+      }
+    } catch (error) {
+      // Continue with database query
+    }
+
     const latestBlock = await store.Block.findOne({
       order: { number: 'DESC' },
     });
@@ -93,13 +164,13 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
       throw new ApiErrorResponse('No blocks found', 404, 'NO_BLOCKS_FOUND');
     }
 
-    // Get transaction count for latest block
+    // OPTIMIZED: Get transaction count for latest block efficiently
     const transactionCount = await store.Transaction.find({
-      where: { block: { number: latestBlock.number } },
+      where: { block: { id: latestBlock.id } },
       select: ['id']
     }).then(txs => txs.length);
 
-    return successResponse(res, prepareForApiResponse({
+    const response = prepareForApiResponse({
       block: {
         number: latestBlock.number,
         hash: latestBlock.hash,
@@ -111,12 +182,23 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         size: latestBlock.size,
         transactionCount: transactionCount
       }
-    }));
+    });
+
+    // Cache for 10 seconds (latest block changes frequently)
+    try {
+      await cacheService.set(cacheKey, response, 10000);
+    } catch (error) {
+      // Cache error, but don't fail the request
+    }
+
+    return successResponse(res, response, 'Latest block retrieved successfully', 200, {
+      source: 'database'
+    });
   }));
 
   /**
    * GET /blocks/:number
-   * Get block details
+   * Get block details - OPTIMIZED
    */
   router.get('/:number', asyncHandler(async (req: Request, res: Response) => {
     const blockNumber = req.params.number;
@@ -126,7 +208,23 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
     }
 
     const store = await serviceContainer.resolve<StoreAdapter>('store');
+    const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
     
+    const cacheKey = `blocks:${blockNumber}`;
+    
+    // Try cache first (longer TTL for specific blocks)
+    try {
+      const cached = await cacheService.get<any>(cacheKey);
+      if (cached) {
+        return successResponse(res, cached, 'Block details retrieved from cache', 200, {
+          source: 'cache',
+          queryTime: Date.now()
+        });
+      }
+    } catch (error) {
+      // Continue with database query
+    }
+
     const block = await store.Block.findOne({
       where: { number: parseInt(blockNumber) },
     });
@@ -135,13 +233,13 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
       throw new ApiErrorResponse('Block not found', 404, 'BLOCK_NOT_FOUND');
     }
 
-    // Get transaction count for this block
-    const [transactions, transactionCount] = await store.Transaction.findAndCount({
-      where: { block: { number: parseInt(blockNumber) } },
-      select: ['id'] // Only count, don't fetch full data
-    });
+    // OPTIMIZED: Get transaction count efficiently using block id
+    const transactionCount = await store.Transaction.find({
+      where: { block: { id: block.id } },
+      select: ['id']
+    }).then(txs => txs.length);
 
-    return successResponse(res, prepareForApiResponse({
+    const response = prepareForApiResponse({
       block: {
         number: block.number,
         hash: block.hash,
@@ -153,8 +251,18 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         size: block.size,
         transactionCount: transactionCount
       }
-    }), 'Block details retrieved successfully', 200, {
-      queryTime: Date.now()
+    });
+
+    // Cache for 5 minutes (specific blocks rarely change)
+    try {
+      await cacheService.set(cacheKey, response, 300000);
+    } catch (error) {
+      // Cache error, but don't fail the request
+    }
+
+    return successResponse(res, response, 'Block details retrieved successfully', 200, {
+      queryTime: Date.now(),
+      source: 'database'
     });
   }));
 
@@ -172,7 +280,27 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
     }
 
     const store = await serviceContainer.resolve<StoreAdapter>('store');
+    const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
     
+    const cacheKey = `blocks:${blockNumber}:transactions:${limit}:${offset}:${includeTokenTransfers}`;
+    
+    // Try cache first
+    try {
+      const cached = await cacheService.get<any>(cacheKey);
+      if (cached && cached.pagination) {
+        return successResponse(res, cached, 'Block transactions retrieved from cache', 200, {
+          source: 'cache',
+          totalCount: cached.pagination.total,
+          limit,
+          offset,
+          hasMore: cached.pagination.hasMore,
+          queryTime: Date.now()
+        });
+      }
+    } catch (error) {
+      // Continue with database query
+    }
+
     // First check if block exists
     const block = await store.Block.findOne({
       where: { number: parseInt(blockNumber) },
@@ -193,7 +321,7 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
     });
 
     if (transactions.length === 0) {
-      return successResponse(res, prepareForApiResponse({
+      const response = prepareForApiResponse({
         block: {
           number: block.number,
           hash: block.hash,
@@ -201,11 +329,21 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         },
         transactions: [],
         tokenTransfers: includeTokenTransfers ? [] : undefined
-      }), 'No transactions found in block', 200, {
+      });
+
+      // Cache for 1 minute (no transactions means no change)
+      try {
+        await cacheService.set(cacheKey, response, 60000);
+      } catch (error) {
+        // Cache error, but don't fail the request
+      }
+
+      return successResponse(res, response, 'No transactions found in block', 200, {
         totalCount: 0,
         limit,
         offset,
-        hasMore: false
+        hasMore: false,
+        source: 'database'
       });
     }
 
@@ -274,7 +412,7 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
 
       const enrichmentTime = Date.now() - startTime;
 
-      return successResponse(res, prepareForApiResponse({
+      const response = prepareForApiResponse({
         block: {
           number: block.number,
           hash: block.hash,
@@ -288,11 +426,21 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
           transactionCount: transactions.length,
           tokenTransferCount: allTokenTransfers.length
         }
-      }), 'Block transactions with token transfers retrieved successfully', 200, {
+      });
+
+      // Cache for 1 minute (transactions with token transfers change frequently)
+      try {
+        await cacheService.set(cacheKey, response, 60000);
+      } catch (error) {
+        // Cache error, but don't fail the request
+      }
+
+      return successResponse(res, response, 'Block transactions with token transfers retrieved successfully', 200, {
         totalCount,
         limit,
         offset,
-        hasMore: offset + limit < totalCount
+        hasMore: offset + limit < totalCount,
+        source: 'database'
       });
     } else {
       // Return basic transaction data without enrichment
@@ -310,18 +458,28 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         revertReason: tx.revertReason
       }));
 
-      return successResponse(res, prepareForApiResponse({
+      const response = prepareForApiResponse({
         block: {
           number: block.number,
           hash: block.hash,
           timestamp: block.timestamp
         },
         transactions: basicTransactions
-      }), 'Block transactions retrieved successfully', 200, {
+      });
+
+      // Cache for 1 minute (basic transactions change frequently)
+      try {
+        await cacheService.set(cacheKey, response, 60000);
+      } catch (error) {
+        // Cache error, but don't fail the request
+      }
+
+      return successResponse(res, response, 'Block transactions retrieved successfully', 200, {
         totalCount,
         limit,
         offset,
-        hasMore: offset + limit < totalCount
+        hasMore: offset + limit < totalCount,
+        source: 'database'
       });
     }
   }));
@@ -339,7 +497,27 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
     }
 
     const store = await serviceContainer.resolve<StoreAdapter>('store');
+    const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
     
+    const cacheKey = `blocks:${blockNumber}:logs:${limit}:${offset}`;
+    
+    // Try cache first
+    try {
+      const cached = await cacheService.get<any>(cacheKey);
+      if (cached && typeof cached.totalCount !== 'undefined') {
+        return successResponse(res, cached, 'Block logs retrieved from cache', 200, {
+          source: 'cache',
+          totalCount: cached.totalCount,
+          limit,
+          offset,
+          hasMore: cached.hasMore,
+          queryTime: Date.now()
+        });
+      }
+    } catch (error) {
+      // Continue with database query
+    }
+
     // First get transactions for this block
     const blockTransactions = await store.Transaction.find({
       where: { block: { number: parseInt(blockNumber) } },
@@ -347,14 +525,26 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
     });
     
     if (blockTransactions.length === 0) {
-      return successResponse(res, prepareForApiResponse({
+      const response = prepareForApiResponse({
         blockNumber: parseInt(blockNumber),
-        logs: []
-      }), 'No logs found for block', 200, {
+        logs: [],
+        totalCount: 0,
+        hasMore: false
+      });
+
+      // Cache for 1 minute (no logs means no change)
+      try {
+        await cacheService.set(cacheKey, response, 60000);
+      } catch (error) {
+        // Cache error, but don't fail the request
+      }
+
+      return successResponse(res, response, 'No logs found for block', 200, {
         totalCount: 0,
         limit,
         offset,
-        hasMore: false
+        hasMore: false,
+        source: 'database'
       });
     }
 
@@ -370,7 +560,7 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
       take: limit,
     });
 
-    return successResponse(res, prepareForApiResponse({
+    const response = prepareForApiResponse({
       blockNumber: parseInt(blockNumber),
       logs: logs.map(log => ({
         id: log.id,
@@ -379,12 +569,24 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         topics: log.topics,
         data: log.data,
         logIndex: log.logIndex
-      }))
-    }), 'Block logs retrieved successfully', 200, {
+      })),
+      totalCount,
+      hasMore: offset + limit < totalCount
+    });
+
+    // Cache for 1 minute (logs change frequently)
+    try {
+      await cacheService.set(cacheKey, response, 60000);
+    } catch (error) {
+      // Cache error, but don't fail the request
+    }
+
+    return successResponse(res, response, 'Block logs retrieved successfully', 200, {
       totalCount,
       limit,
       offset,
-      hasMore: offset + limit < totalCount
+      hasMore: offset + limit < totalCount,
+      source: 'database'
     });
   }));
 
