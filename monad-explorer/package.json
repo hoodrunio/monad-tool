@@ -14,6 +14,8 @@
     "worker:dev": "npm run build && npx ts-node src/scripts/start-token-enrichment-worker.ts",
     "worker:transaction:start": "node -r dotenv/config lib/scripts/start-transaction-enrichment-worker.js",
     "worker:transaction:dev": "npm run build && npx ts-node src/scripts/start-transaction-enrichment-worker.ts",
+    "worker:contract:start": "node -r dotenv/config lib/scripts/start-contract-enrichment-worker.js",
+    "worker:contract:dev": "npm run build && npx ts-node src/scripts/start-contract-enrichment-worker.ts",
     "query-node:start": "squid-graphql-server --dumb-cache in-memory --dumb-cache-ttl 1000 --dumb-cache-size 100 --dumb-cache-max-age 1000",
     "api:start": "node -r dotenv/config lib/api/server.js",
     "api:dev": "npx ts-node -r dotenv/config src/api/server.ts"
