@@ -148,7 +148,7 @@ export class EntityPersister {
     }
 
     try {
-      const CHUNK_SIZE = 1000; // Process 1000 transactions per chunk
+      const CHUNK_SIZE = 5000; // Process 5000 transactions per chunk
       const chunks = this.chunkArray(result.transactions, CHUNK_SIZE);
       
       // Bulk sanitize all transactions first
@@ -191,7 +191,7 @@ export class EntityPersister {
     }
 
     try {
-      const CHUNK_SIZE = 2000; // Process 2000 logs per chunk
+      const CHUNK_SIZE = 5000; // Process 5000 logs per chunk
       const chunks = this.chunkArray(result.logs, CHUNK_SIZE);
       
       // Bulk sanitize all logs first
