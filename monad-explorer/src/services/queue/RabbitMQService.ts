@@ -57,7 +57,7 @@ interface QueueConfig {
   queues: {
     tokenEnrichment: string;
     contractEnrichment: string;
-    internalTransactions: string;
+    //internalTransactions: string;
     transactionEnrichment: string;
     dailyStats: string;
     deadLetter: string;
@@ -81,7 +81,7 @@ export class RabbitMQService implements IQueueService {
     queues: {
       tokenEnrichment: 'token-enrichment',
       contractEnrichment: 'contract-enrichment',
-      internalTransactions: 'internal-transactions',
+      //internalTransactions: 'internal-transactions',
       transactionEnrichment: 'transaction-enrichment',
       dailyStats: 'daily-stats',
       deadLetter: 'dead-letter',
@@ -156,14 +156,14 @@ export class RabbitMQService implements IQueueService {
 
     await this.channel.assertQueue(this.config.queues.tokenEnrichment, queueOptions);
     await this.channel.assertQueue(this.config.queues.contractEnrichment, queueOptions);
-    await this.channel.assertQueue(this.config.queues.internalTransactions, queueOptions);
+    //await this.channel.assertQueue(this.config.queues.internalTransactions, queueOptions);
     await this.channel.assertQueue(this.config.queues.transactionEnrichment, queueOptions);
     await this.channel.assertQueue(this.config.queues.dailyStats, queueOptions);
 
     // Bind queues to exchange
     await this.channel.bindQueue(this.config.queues.tokenEnrichment, this.config.exchange, 'token.*');
     await this.channel.bindQueue(this.config.queues.contractEnrichment, this.config.exchange, 'contract.*');
-    await this.channel.bindQueue(this.config.queues.internalTransactions, this.config.exchange, 'transaction.*');
+    //await this.channel.bindQueue(this.config.queues.internalTransactions, this.config.exchange, 'transaction.*');
     await this.channel.bindQueue(this.config.queues.transactionEnrichment, this.config.exchange, 'transaction.*');
     await this.channel.bindQueue(this.config.queues.dailyStats, this.config.exchange, 'stats.*');
 
@@ -314,14 +314,14 @@ export class RabbitMQService implements IQueueService {
     }, options);
   }
 
-  async consumeInternalTransactions(handler: MessageHandler<IInternalTransactionMessage>, options?: ConsumeOptions): Promise<void> {
-    await this.consume(this.config.queues.internalTransactions, async (message: IQueueMessage) => {
+  /* async consumeInternalTransactions(handler: MessageHandler<IInternalTransactionMessage>, options?: ConsumeOptions): Promise<void> {
+      await this.consume(this.config.queues.internalTransactions, async (message: IQueueMessage) => {
       if (message.type !== 'INTERNAL_TRANSACTION') {
         throw new Error(`Invalid message type: ${message.type}`);
       }
       await handler(message.data as IInternalTransactionMessage);
     }, options);
-  }
+  } */
 
   async consumeDailyStats(handler: MessageHandler<IDailyStatsMessage>, options?: ConsumeOptions): Promise<void> {
     await this.consume(this.config.queues.dailyStats, async (message: IQueueMessage) => {

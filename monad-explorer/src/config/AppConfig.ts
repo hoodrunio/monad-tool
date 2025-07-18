@@ -25,7 +25,7 @@ export interface QueueConfig {
   exchange: string;
   queues: {
     tokenEnrichment: string;
-    internalTransactions: string;
+    //internalTransactions: string;
     deadLetter: string;
   };
   maxRetries: number;
@@ -124,7 +124,7 @@ class ConfigManager {
         exchange: this.getStringEnv('QUEUE_EXCHANGE', 'monad-explorer'),
         queues: {
           tokenEnrichment: this.getStringEnv('QUEUE_TOKEN_ENRICHMENT', 'token-enrichment'),
-          internalTransactions: this.getStringEnv('QUEUE_INTERNAL_TRANSACTIONS', 'internal-transactions'),
+          //internalTransactions: this.getStringEnv('QUEUE_INTERNAL_TRANSACTIONS', 'internal-transactions'),
           deadLetter: this.getStringEnv('QUEUE_DEAD_LETTER', 'dead-letter'),
         },
         maxRetries: this.getNumberEnv('QUEUE_MAX_RETRIES', 3),

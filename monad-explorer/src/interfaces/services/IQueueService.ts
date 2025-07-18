@@ -138,10 +138,10 @@ export interface IQueueService {
   /**
    * Consume internal transaction messages
    */
-  consumeInternalTransactions(
+  /* consumeInternalTransactions(
     handler: MessageHandler<InternalTransactionMessage>,
     options?: ConsumeOptions
-  ): Promise<void>;
+  ): Promise<void>; */
 
   /**
    * Consume daily stats computation messages
