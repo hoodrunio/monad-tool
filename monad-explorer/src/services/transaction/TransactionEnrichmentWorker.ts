@@ -22,6 +22,12 @@ export class TransactionEnrichmentWorker {
   private isProcessing = false;
   private dataSource: DataSource | null = null;
   private rpcClient: any;
+  
+  // Performance tracking
+  private processedCount = 0;
+  private errorCount = 0;
+  private lastSummaryTime = Date.now();
+  private readonly SUMMARY_INTERVAL = 1000; // Log summary every 1000 transactions
 
   constructor() {
     // Initialize will be called from start() method
@@ -150,10 +156,8 @@ export class TransactionEnrichmentWorker {
         nonce,
       } = message;
 
-      logger.debug('Processing transaction enrichment', {
-        transactionHash,
-        blockNumber,
-      });
+      // Removed excessive debug logging for performance optimization
+      // Only log errors and periodic summaries
 
       // ⚡ HEAVY COMPUTATIONS: Now done async
       const enrichmentData = await this.computeTransactionEnrichment({
@@ -176,14 +180,23 @@ export class TransactionEnrichmentWorker {
       await this.updateTransactionEnrichment(transactionHash, enrichmentData);
 
       const duration = Date.now() - startTime;
-      logger.debug('Transaction enrichment completed', {
-        transactionHash,
-        duration,
-        enrichedFields: Object.keys(enrichmentData).length,
-      });
+      // Removed excessive debug logging for performance optimization
+      // Only log slow transactions or errors
+      if (duration > 5000) { // Log only if transaction took more than 5 seconds
+        logger.warn('Slow transaction enrichment detected', {
+          transactionHash,
+          duration,
+          enrichedFields: Object.keys(enrichmentData).length,
+        });
+      }
+
+      // Track progress and log periodic summary
+      this.processedCount++;
+      this.logPeriodicSummary();
 
     } catch (error) {
       const duration = Date.now() - startTime;
+      this.errorCount++;
       logger.error('Failed to process transaction enrichment', {
         transactionHash: message.transactionHash,
         duration,
@@ -288,10 +301,8 @@ export class TransactionEnrichmentWorker {
         updateData
       );
 
-      logger.debug('Transaction enrichment data updated', {
-        transactionHash,
-        updatedFields: Object.keys(updateData),
-      });
+      // Removed excessive debug logging for performance optimization
+      // Database update success is already tracked by error handling
 
     } catch (error) {
       logger.error('Failed to update transaction enrichment', {
@@ -376,5 +387,26 @@ export class TransactionEnrichmentWorker {
     // Create a deterministic address based on sender + nonce
     const addressSuffix = (normalized + nonceHex).slice(-40);
     return `0x${addressSuffix}`;
+  }
+
+  /**
+   * Log periodic summary to track progress without excessive logging
+   */
+  private logPeriodicSummary(): void {
+    if (this.processedCount % this.SUMMARY_INTERVAL === 0) {
+      const currentTime = Date.now();
+      const timeSinceLastSummary = currentTime - this.lastSummaryTime;
+      const transactionsPerSecond = this.SUMMARY_INTERVAL / (timeSinceLastSummary / 1000);
+      
+      logger.info('Transaction enrichment progress', {
+        processedCount: this.processedCount,
+        errorCount: this.errorCount,
+        successRate: ((this.processedCount - this.errorCount) / this.processedCount * 100).toFixed(2) + '%',
+        transactionsPerSecond: transactionsPerSecond.toFixed(2),
+        intervalMs: timeSinceLastSummary,
+      });
+      
+      this.lastSummaryTime = currentTime;
+    }
   }
 }

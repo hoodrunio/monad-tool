@@ -306,11 +306,7 @@ export class RabbitMQService implements IQueueService {
                 } else {
                  // Message was acked by broker
                  this.outstandingConfirms = Math.max(0, this.outstandingConfirms - 1);
-                 logger.debug('Message confirmed by broker', { 
-                   queueName, 
-                   type: message.type,
-                   messageId: message.messageId
-                 });
+                 // Removed excessive debug logging for performance optimization
                  resolve();
                }
             }
@@ -348,11 +344,8 @@ export class RabbitMQService implements IQueueService {
 
       await attemptPublish(retryCount);
 
-      logger.debug('Message publish initiated', { 
-        queueName, 
-        type: message.type,
-        messageId: message.messageId
-      });
+      // Removed excessive debug logging for performance optimization
+      // Only log important events like errors or periodic summaries
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
       this.errorCount++;
