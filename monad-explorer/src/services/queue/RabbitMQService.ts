@@ -196,7 +196,7 @@ export class RabbitMQService implements IQueueService {
     await this.publish('contract-enrichment', queueMessage, options);
   }
 
-  async publishInternalTransaction(message: IInternalTransactionMessage, options?: PublishOptions): Promise<void> {
+  /* async publishInternalTransaction(message: IInternalTransactionMessage, options?: PublishOptions): Promise<void> {
     const queueMessage: IQueueMessage = {
       type: 'INTERNAL_TRANSACTION',
       data: message,
@@ -208,7 +208,7 @@ export class RabbitMQService implements IQueueService {
 
     await this.publish('internal-transactions', queueMessage, options);
   }
-
+ */
   async publishDailyStats(message: IDailyStatsMessage, options?: PublishOptions): Promise<void> {
     const queueMessage: IQueueMessage = {
       type: 'DAILY_STATS',

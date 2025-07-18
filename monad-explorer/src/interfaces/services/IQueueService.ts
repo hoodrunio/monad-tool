@@ -97,10 +97,10 @@ export interface IQueueService {
   /**
    * Publish internal transaction message
    */
-  publishInternalTransaction(
+  /* publishInternalTransaction(
     message: InternalTransactionMessage,
     options?: PublishOptions
-  ): Promise<void>;
+  ): Promise<void>; */
 
   /**
    * Publish daily stats computation message
