@@ -32,23 +32,94 @@ interface BackfillConfig {
   skipExisting: boolean;
   enableGc: boolean; // Enable garbage collection
   
+  // Memory management
+  memoryThresholdMB: number; // Memory threshold for dynamic batch size adjustment
+  minBatchSize: number; // Minimum batch size
+  maxBatchSize: number; // Maximum batch size
+  gcFrequency: number; // Force GC every N processed items
+  
   // Database connection
   databaseUrl: string;
 }
 
 /**
- * Default configuration
+ * Default configuration - Optimized for memory efficiency
  */
 const DEFAULT_CONFIG: BackfillConfig = {
   startDate: '2024-01-01',
   endDate: new Date().toISOString().split('T')[0], // Today
-  concurrency: 2, // Reduced concurrency for better memory management
-  batchSize: 3, // Process 3 days at a time to reduce memory pressure
+  concurrency: 1, // Reduced to 1 for maximum memory efficiency
+  batchSize: 1, // Process 1 day at a time to minimize memory pressure
   forceRecalculate: false,
   skipExisting: true,
-  enableGc: false, // Disable garbage collection by default
+  enableGc: true, // Enable garbage collection by default
+  
+  // Memory management settings
+  memoryThresholdMB: 2048, // 2GB threshold for memory monitoring
+  minBatchSize: 1, // Minimum 1 day
+  maxBatchSize: 2, // Maximum 2 days in memory
+  gcFrequency: 1, // Force GC after every processed item
+  
   databaseUrl: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/monad_explorer'
 };
+
+/**
+ * Get current memory usage in MB
+ */
+function getMemoryUsageMB(): number {
+  const memUsage = process.memoryUsage();
+  return Math.round(memUsage.heapUsed / 1024 / 1024);
+}
+
+/**
+ * Force garbage collection and log memory stats
+ */
+function forceGarbageCollection(): void {
+  if (global.gc) {
+    const beforeMB = getMemoryUsageMB();
+    global.gc();
+    const afterMB = getMemoryUsageMB();
+    logger.debug('Forced garbage collection', {
+      memoryBeforeMB: beforeMB,
+      memoryAfterMB: afterMB,
+      freedMB: beforeMB - afterMB
+    });
+  }
+}
+
+/**
+ * Monitor memory usage and adjust batch size dynamically
+ */
+function adjustBatchSizeBasedOnMemory(
+  currentBatchSize: number, 
+  config: BackfillConfig
+): number {
+  const memoryUsageMB = getMemoryUsageMB();
+  
+  if (memoryUsageMB > config.memoryThresholdMB) {
+    // Memory usage is high, reduce batch size
+    const newBatchSize = Math.max(config.minBatchSize, Math.floor(currentBatchSize * 0.5));
+    logger.warn('High memory usage detected, reducing batch size', {
+      memoryUsageMB,
+      threshold: config.memoryThresholdMB,
+      oldBatchSize: currentBatchSize,
+      newBatchSize
+    });
+    return newBatchSize;
+  } else if (memoryUsageMB < config.memoryThresholdMB * 0.5 && currentBatchSize < config.maxBatchSize) {
+    // Memory usage is low, we can increase batch size slightly
+    const newBatchSize = Math.min(config.maxBatchSize, currentBatchSize + 1);
+    logger.info('Low memory usage, increasing batch size', {
+      memoryUsageMB,
+      threshold: config.memoryThresholdMB,
+      oldBatchSize: currentBatchSize,
+      newBatchSize
+    });
+    return newBatchSize;
+  }
+  
+  return currentBatchSize;
+}
 
 /**
  * Parse command line arguments
@@ -81,6 +152,9 @@ function parseArgs(): Partial<BackfillConfig> {
       case '--enable-gc':
         config.enableGc = true;
         break;
+      case '--memory-threshold':
+        config.memoryThresholdMB = parseInt(value);
+        break;
       case '--database-url':
         config.databaseUrl = value;
         break;
@@ -93,7 +167,7 @@ function parseArgs(): Partial<BackfillConfig> {
 }
 
 /**
- * Initialize database connection
+ * Initialize database connection with optimized settings
  */
 async function createDataSource(databaseUrl: string): Promise<DataSource> {
   const dataSource = new DataSource({
@@ -102,11 +176,21 @@ async function createDataSource(databaseUrl: string): Promise<DataSource> {
     entities: [Transaction, Block, DailyStats],
     logging: false,
     synchronize: false,
-    namingStrategy: new SnakeNamingStrategy()
+    namingStrategy: new SnakeNamingStrategy(),
+    // Optimize connection pool for memory efficiency
+    poolErrorHandler: (err) => logger.error('Database pool error', { error: err.message }),
+    extra: {
+      // Reduce connection pool size to save memory
+      max: 3,
+      min: 1,
+      idle_timeout: 30000,
+      // Optimize query performance
+      statement_timeout: 300000, // 5 minutes
+    }
   });
   
   await dataSource.initialize();
-  logger.info('Database connection established');
+  logger.info('Database connection established with optimized settings');
   
   return dataSource;
 }
@@ -145,62 +229,86 @@ async function checkExistingStats(
 }
 
 /**
- * Process dates in batches with concurrency control
+ * Process dates in batches with memory-aware concurrency control
  */
 async function processBatch(
   dates: Date[],
   processor: DailyStatsProcessor,
   config: BackfillConfig
 ): Promise<void> {
-  const chunks: Date[][] = [];
+  let currentBatchSize = config.batchSize;
+  let processedCount = 0;
   
-  // Split dates into chunks
-  for (let i = 0; i < dates.length; i += config.batchSize) {
-    chunks.push(dates.slice(i, i + config.batchSize));
-  }
-  
-  logger.info(`Processing ${dates.length} dates in ${chunks.length} batches`, {
-    batchSize: config.batchSize,
-    concurrency: config.concurrency
+  logger.info(`Processing ${dates.length} dates with memory-aware batching`, {
+    initialBatchSize: currentBatchSize,
+    concurrency: config.concurrency,
+    memoryThresholdMB: config.memoryThresholdMB
   });
   
-  // Process chunks with limited concurrency
-  for (let i = 0; i < chunks.length; i += config.concurrency) {
-    const concurrentChunks = chunks.slice(i, i + config.concurrency);
+  for (let i = 0; i < dates.length; i += currentBatchSize) {
+    // Adjust batch size based on current memory usage
+    currentBatchSize = adjustBatchSizeBasedOnMemory(currentBatchSize, config);
     
-    const promises = concurrentChunks.map(async (chunk) => {
-      for (const date of chunk) {
-        try {
-          const dateStr = date.toISOString().split('T')[0];
-          
-          logger.info(`Processing daily stats for ${dateStr}`);
-          
-          const result = await processor.computeDailyStats(date, config.forceRecalculate);
-          
-          logger.info(`✅ Completed daily stats for ${dateStr}`, {
-            transactionCount: result.transactionCount,
-            blockCount: result.blockCount,
-            uniqueAddresses: result.uniqueAddresses,
-            totalGasUsed: result.totalGasUsed.toString(),
-            averageGasPrice: result.averageGasPrice.toString()
-          });
-          
-        } catch (error) {
-          logger.error(`❌ Failed to process daily stats for ${date.toISOString().split('T')[0]}`, {
-            error: error instanceof Error ? error.message : 'Unknown error'
-          });
-        }
-      }
+    const batch = dates.slice(i, i + currentBatchSize);
+    const batchNumber = Math.floor(i / currentBatchSize) + 1;
+    const totalBatches = Math.ceil(dates.length / currentBatchSize);
+    
+    logger.info(`Processing batch ${batchNumber}/${totalBatches}`, {
+      batchSize: batch.length,
+      memoryUsageMB: getMemoryUsageMB(),
+      dates: batch.map(d => d.toISOString().split('T')[0])
     });
     
-    await Promise.all(promises);
-    
-    // Force garbage collection after each batch to free memory
-    if (config.enableGc && global.gc) {
-      global.gc();
+    // Process dates in the current batch sequentially to control memory usage
+    for (const date of batch) {
+      try {
+        const dateStr = date.toISOString().split('T')[0];
+        
+        logger.info(`Processing daily stats for ${dateStr}`, {
+          memoryUsageMB: getMemoryUsageMB()
+        });
+        
+        const result = await processor.computeDailyStats(date, config.forceRecalculate);
+        
+        logger.info(`✅ Completed daily stats for ${dateStr}`, {
+          transactionCount: result.transactionCount,
+          blockCount: result.blockCount,
+          uniqueAddresses: result.uniqueAddresses,
+          totalGasUsed: result.totalGasUsed.toString(),
+          averageGasPrice: result.averageGasPrice.toString(),
+          memoryUsageMB: getMemoryUsageMB()
+        });
+        
+        processedCount++;
+        
+        // Force garbage collection after each date if enabled
+        if (config.enableGc && processedCount % config.gcFrequency === 0) {
+          forceGarbageCollection();
+        }
+        
+      } catch (error) {
+        logger.error(`❌ Failed to process daily stats for ${date.toISOString().split('T')[0]}`, {
+          error: error instanceof Error ? error.message : 'Unknown error',
+          memoryUsageMB: getMemoryUsageMB()
+        });
+        
+        // Force garbage collection after errors to clean up partial data
+        if (config.enableGc) {
+          forceGarbageCollection();
+        }
+      }
     }
     
-    logger.info(`Completed batch ${Math.floor(i / config.concurrency) + 1}/${Math.ceil(chunks.length / config.concurrency)}`);
+    // Force garbage collection after each batch
+    if (config.enableGc) {
+      forceGarbageCollection();
+    }
+    
+    logger.info(`Completed batch ${batchNumber}/${totalBatches}`, {
+      processedInBatch: batch.length,
+      totalProcessed: processedCount,
+      memoryUsageMB: getMemoryUsageMB()
+    });
   }
 }
 
@@ -222,6 +330,14 @@ function validateConfig(config: BackfillConfig): void {
   if (config.concurrency < 1 || config.batchSize < 1) {
     throw new Error('Concurrency and batch size must be positive integers.');
   }
+  
+  if (config.minBatchSize < 1 || config.maxBatchSize < config.minBatchSize) {
+    throw new Error('Invalid batch size configuration.');
+  }
+  
+  if (config.memoryThresholdMB < 512) {
+    throw new Error('Memory threshold must be at least 512MB.');
+  }
 }
 
 /**
@@ -229,30 +345,38 @@ function validateConfig(config: BackfillConfig): void {
  */
 function displayHelp(): void {
   console.log(`
-Daily Stats Backfill Script
+Daily Stats Backfill Script (Memory Optimized)
 
 Usage:
   npm run backfill-daily-stats [options]
 
 Options:
-  --start-date YYYY-MM-DD    Start date for backfill (default: 2024-01-01)
-  --end-date YYYY-MM-DD      End date for backfill (default: today)
-  --concurrency N            Number of concurrent batches (default: 2)
-  --batch-size N             Number of dates per batch (default: 3)
-  --force                    Force recalculation of existing stats
-  --enable-gc                Enable garbage collection for memory management
-  --database-url URL         Database connection URL
-  --help                     Display this help message
+  --start-date YYYY-MM-DD      Start date for backfill (default: 2024-01-01)
+  --end-date YYYY-MM-DD        End date for backfill (default: today)
+  --concurrency N              Number of concurrent batches (default: 1, max recommended: 2)
+  --batch-size N               Number of dates per batch (default: 1)
+  --force                      Force recalculation of existing stats
+  --enable-gc                  Enable aggressive garbage collection (default: true)
+  --memory-threshold N         Memory threshold in MB for batch size adjustment (default: 2048)
+  --database-url URL           Database connection URL
+  --help                       Display this help message
+
+Memory Optimization Features:
+  - Dynamic batch size adjustment based on memory usage
+  - Aggressive garbage collection between processing
+  - Memory monitoring and logging
+  - Optimized database connection pool
+  - Sequential processing to control memory growth
 
 Examples:
-  # Backfill last 30 days
+  # Memory-efficient backfill for last 30 days
   npm run backfill-daily-stats --start-date 2024-12-01 --end-date 2024-12-31
 
-  # Force recalculate all stats
-  npm run backfill-daily-stats --force
+  # Force recalculate with custom memory threshold
+  npm run backfill-daily-stats --force --memory-threshold 1024
 
-  # Use custom database URL
-  npm run backfill-daily-stats --database-url postgresql://user:pass@host:5432/db
+  # Large dataset processing with minimal memory footprint
+  npm run backfill-daily-stats --batch-size 1 --concurrency 1 --enable-gc
   `);
 }
 
@@ -274,14 +398,16 @@ async function main(): Promise<void> {
     // Validate configuration
     validateConfig(config);
     
-    logger.info('Starting daily stats backfill', {
+    logger.info('Starting memory-optimized daily stats backfill', {
       startDate: config.startDate,
       endDate: config.endDate,
       concurrency: config.concurrency,
       batchSize: config.batchSize,
       forceRecalculate: config.forceRecalculate,
       skipExisting: config.skipExisting,
-      enableGc: config.enableGc
+      enableGc: config.enableGc,
+      memoryThresholdMB: config.memoryThresholdMB,
+      initialMemoryUsageMB: getMemoryUsageMB()
     });
     
     // Initialize database connection
@@ -324,17 +450,23 @@ async function main(): Promise<void> {
         return;
       }
       
-      logger.info(`Processing ${datesToProcess.length} dates`);
+      logger.info(`Processing ${datesToProcess.length} dates with memory optimization`);
       
       // Process the dates
       const startTime = Date.now();
       await processBatch(datesToProcess, processor, config);
       const duration = Date.now() - startTime;
       
-      logger.info('✅ Daily stats backfill completed successfully', {
+      // Final garbage collection
+      if (config.enableGc) {
+        forceGarbageCollection();
+      }
+      
+      logger.info('✅ Memory-optimized daily stats backfill completed successfully', {
         processedDates: datesToProcess.length,
         totalDuration: `${Math.round(duration / 1000)}s`,
-        averagePerDate: `${Math.round(duration / datesToProcess.length)}ms`
+        averagePerDate: `${Math.round(duration / datesToProcess.length)}ms`,
+        finalMemoryUsageMB: getMemoryUsageMB()
       });
       
     } finally {
@@ -343,9 +475,10 @@ async function main(): Promise<void> {
     }
     
   } catch (error) {
-    logger.error('❌ Daily stats backfill failed', {
+    logger.error('❌ Memory-optimized daily stats backfill failed', {
       error: error instanceof Error ? error.message : 'Unknown error',
-      stack: error instanceof Error ? error.stack : undefined
+      stack: error instanceof Error ? error.stack : undefined,
+      memoryUsageMB: getMemoryUsageMB()
     });
     process.exit(1);
   }
@@ -354,5 +487,6 @@ async function main(): Promise<void> {
 // Execute main function
 main().catch((error) => {
   console.error('Unhandled error:', error);
+  console.error('Memory usage:', getMemoryUsageMB(), 'MB');
   process.exit(1);
 }); 

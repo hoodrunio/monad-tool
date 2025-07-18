@@ -56,7 +56,8 @@ export class DailyStatsProcessor {
     
     logger.info('Starting daily stats computation', {
       date: dateStr,
-      forceRecalculate
+      forceRecalculate,
+      memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
     });
 
     try {
@@ -76,30 +77,48 @@ export class DailyStatsProcessor {
       const endOfDay = new Date(date);
       endOfDay.setUTCHours(23, 59, 59, 999);
 
-      // Compute stats from raw data
+      // Compute stats from raw data with memory monitoring
       const result = await this.computeStatsFromTransactions(startOfDay, endOfDay);
       
       // Save to database
       await this.saveDailyStats(result);
       
+      // Explicit cleanup to help garbage collection
+      // Clear any large variables that might still be in scope
+      if (global.gc) {
+        global.gc();
+      }
+      
       const duration = Date.now() - startTime;
+      const finalMemoryMB = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+      
       logger.info('Daily stats computation completed', {
         date: dateStr,
         duration: `${duration}ms`,
         transactionCount: result.transactionCount,
         blockCount: result.blockCount,
-        uniqueAddresses: result.uniqueAddresses
+        uniqueAddresses: result.uniqueAddresses,
+        memoryUsageMB: finalMemoryMB
       });
 
       return result;
 
     } catch (error) {
       const duration = Date.now() - startTime;
+      const errorMemoryMB = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+      
       logger.error('Daily stats computation failed', {
         date: dateStr,
         duration: `${duration}ms`,
+        memoryUsageMB: errorMemoryMB,
         error: error instanceof Error ? error.message : 'Unknown error'
       });
+      
+      // Force garbage collection after error to clean up any partial data
+      if (global.gc) {
+        global.gc();
+      }
+      
       throw error;
     }
   }
@@ -176,168 +195,248 @@ export class DailyStatsProcessor {
     const transactionRepo = this.dataSource.getRepository(Transaction);
     const blockRepo = this.dataSource.getRepository(Block);
 
-    // Use database-level aggregations to avoid loading all data into memory
-    const [transactionStats, blockCount, uniqueAddressCount, gasStats, totalValue] = await Promise.all([
+    logger.debug('Computing stats from database aggregations', {
+      startOfDay: startOfDay.toISOString(),
+      endOfDay: endOfDay.toISOString(),
+      memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
+    });
+
+    try {
+      // Use database-level aggregations to avoid loading all data into memory
+      // Execute queries sequentially to control memory usage instead of parallel execution
+      
       // Get transaction count
-      transactionRepo
+      const transactionStats = await transactionRepo
         .createQueryBuilder('tx')
         .where('tx.timestamp >= :startOfDay', { startOfDay })
         .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
-        .getCount(),
+        .getCount();
+
+      logger.debug('Transaction count completed', { 
+        count: transactionStats,
+        memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
+      });
 
       // Get block count
-      blockRepo
+      const blockCount = await blockRepo
         .createQueryBuilder('block')
         .where('block.timestamp >= :startOfDay', { startOfDay })
         .andWhere('block.timestamp <= :endOfDay', { endOfDay })
-        .getCount(),
+        .getCount();
 
-      // Get unique address count using database aggregation
-      this.getUniqueAddressCount(startOfDay, endOfDay),
+      logger.debug('Block count completed', { 
+        count: blockCount,
+        memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
+      });
+
+      // Get unique address count using optimized method
+      const uniqueAddressCount = await this.getUniqueAddressCount(startOfDay, endOfDay);
+
+      logger.debug('Unique address count completed', { 
+        count: uniqueAddressCount,
+        memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
+      });
 
       // Get gas statistics using database aggregation
-      this.getGasStatistics(startOfDay, endOfDay),
+      const gasStats = await this.getGasStatistics(startOfDay, endOfDay);
+
+      logger.debug('Gas statistics completed', { 
+        totalGasUsed: gasStats.totalGasUsed.toString(),
+        averageGasPrice: gasStats.averageGasPrice.toString(),
+        memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
+      });
 
       // Get total value transferred using database aggregation
-      transactionRepo
+      const totalValueResult = await transactionRepo
         .createQueryBuilder('tx')
         .select('COALESCE(SUM(tx.value), 0)', 'totalValue')
         .where('tx.timestamp >= :startOfDay', { startOfDay })
         .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
-        .getRawOne()
-        .then(result => BigInt(result?.totalValue || '0'))
-    ]);
+        .getRawOne();
+      
+      const totalValue = BigInt(totalValueResult?.totalValue || '0');
 
-    return {
-      date: startOfDay,
-      blockCount,
-      transactionCount: transactionStats,
-      uniqueAddresses: uniqueAddressCount,
-      totalGasUsed: gasStats.totalGasUsed,
-      averageGasPrice: gasStats.averageGasPrice,
-      totalValue
-    };
+      logger.debug('Total value computation completed', { 
+        totalValue: totalValue.toString(),
+        memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
+      });
+
+      // Create result object
+      const result: DailyStatsComputationResult = {
+        date: startOfDay,
+        blockCount,
+        transactionCount: transactionStats,
+        uniqueAddresses: uniqueAddressCount,
+        totalGasUsed: gasStats.totalGasUsed,
+        averageGasPrice: gasStats.averageGasPrice,
+        totalValue
+      };
+
+      logger.debug('Stats computation result prepared', {
+        date: startOfDay.toISOString().split('T')[0],
+        memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
+      });
+
+      return result;
+
+    } catch (error) {
+      logger.error('Error in computeStatsFromTransactions', {
+        startOfDay: startOfDay.toISOString(),
+        endOfDay: endOfDay.toISOString(),
+        memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+      throw error;
+    }
   }
 
-    /**
+  /**
    * Get unique address count using database aggregation
-   * Optimized to handle large datasets by processing in chunks
+   * Optimized to handle large datasets by using COUNT(DISTINCT) instead of loading all data into memory
    */
-   private async getUniqueAddressCount(startOfDay: Date, endOfDay: Date): Promise<number> {
-     const transactionRepo = this.dataSource.getRepository(Transaction);
-     const chunkSize = 10000; // Process 10k transactions at a time
-     
-     // Get total transaction count for the day
-     const totalTransactions = await transactionRepo
-       .createQueryBuilder('tx')
-       .where('tx.timestamp >= :startOfDay', { startOfDay })
-       .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
-       .getCount();
-     
-     if (totalTransactions === 0) {
-       return 0;
-     }
-     
-     // If we have a reasonable number of transactions, use the simple approach
-     if (totalTransactions <= 50000) {
-       return await this.getUniqueAddressCountSimple(startOfDay, endOfDay);
-     }
-     
-     // For large datasets, use chunked processing
-     return await this.getUniqueAddressCountChunked(startOfDay, endOfDay, chunkSize);
-   }
-   
-   /**
-    * Simple unique address counting for smaller datasets
-    */
-   private async getUniqueAddressCountSimple(startOfDay: Date, endOfDay: Date): Promise<number> {
-     const transactionRepo = this.dataSource.getRepository(Transaction);
-     
-     // Get unique addresses from both from and to addresses using separate queries
-     const [fromAddresses, toAddresses] = await Promise.all([
-       // Get unique from addresses
-       transactionRepo
-         .createQueryBuilder('tx')
-         .select('DISTINCT LOWER(tx.from_address)', 'address')
-         .where('tx.timestamp >= :startOfDay', { startOfDay })
-         .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
-         .andWhere('tx.from_address IS NOT NULL')
-         .getRawMany(),
-       
-       // Get unique to addresses
-       transactionRepo
-         .createQueryBuilder('tx')
-         .select('DISTINCT LOWER(tx.to_address)', 'address')
-         .where('tx.timestamp >= :startOfDay', { startOfDay })
-         .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
-         .andWhere('tx.to_address IS NOT NULL')
-         .getRawMany()
-     ]);
+  private async getUniqueAddressCount(startOfDay: Date, endOfDay: Date): Promise<number> {
+    const transactionRepo = this.dataSource.getRepository(Transaction);
+    
+    // Get transaction count first to decide on strategy
+    const totalTransactions = await transactionRepo
+      .createQueryBuilder('tx')
+      .where('tx.timestamp >= :startOfDay', { startOfDay })
+      .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
+      .getCount();
+    
+    if (totalTransactions === 0) {
+      return 0;
+    }
+    
+    // For very large datasets, use pure SQL with COUNT(DISTINCT) for maximum memory efficiency
+    if (totalTransactions > 100000) {
+      return await this.getUniqueAddressCountPureSQL(startOfDay, endOfDay);
+    }
+    
+    // For medium datasets, use database-level DISTINCT counting
+    if (totalTransactions > 10000) {
+      return await this.getUniqueAddressCountOptimized(startOfDay, endOfDay);
+    }
+    
+    // For small datasets, use the simple approach
+    return await this.getUniqueAddressCountSimple(startOfDay, endOfDay);
+  }
+  
+  /**
+   * Pure SQL approach for maximum memory efficiency (for very large datasets)
+   */
+  private async getUniqueAddressCountPureSQL(startOfDay: Date, endOfDay: Date): Promise<number> {
+    const result = await this.dataSource.query(`
+      WITH unique_addresses AS (
+        SELECT DISTINCT LOWER(from_address) as address
+        FROM transaction 
+        WHERE timestamp >= $1 AND timestamp <= $2 
+          AND from_address IS NOT NULL
+        UNION
+        SELECT DISTINCT LOWER(to_address) as address
+        FROM transaction 
+        WHERE timestamp >= $3 AND timestamp <= $4 
+          AND to_address IS NOT NULL
+      )
+      SELECT COUNT(*) as count FROM unique_addresses
+    `, [startOfDay, endOfDay, startOfDay, endOfDay]);
+    
+    return parseInt(result[0]?.count || '0', 10);
+  }
+  
+  /**
+   * Optimized unique address counting using database aggregations (for medium datasets)
+   */
+  private async getUniqueAddressCountOptimized(startOfDay: Date, endOfDay: Date): Promise<number> {
+    const transactionRepo = this.dataSource.getRepository(Transaction);
+    
+    // Use separate COUNT(DISTINCT) queries for from and to addresses, then combine
+    const [fromCount, toCount, bothCount] = await Promise.all([
+      // Count unique from addresses
+      transactionRepo
+        .createQueryBuilder('tx')
+        .select('COUNT(DISTINCT LOWER(tx.from_address))', 'count')
+        .where('tx.timestamp >= :startOfDay', { startOfDay })
+        .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
+        .andWhere('tx.from_address IS NOT NULL')
+        .getRawOne()
+        .then(result => parseInt(result?.count || '0', 10)),
+      
+      // Count unique to addresses
+      transactionRepo
+        .createQueryBuilder('tx')
+        .select('COUNT(DISTINCT LOWER(tx.to_address))', 'count')
+        .where('tx.timestamp >= :startOfDay', { startOfDay })
+        .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
+        .andWhere('tx.to_address IS NOT NULL')
+        .getRawOne()
+        .then(result => parseInt(result?.count || '0', 10)),
+      
+      // Count addresses that appear in both from and to (to avoid double counting)
+      this.dataSource.query(`
+        SELECT COUNT(DISTINCT addr) as count FROM (
+          SELECT DISTINCT LOWER(from_address) as addr
+          FROM transaction 
+          WHERE timestamp >= $1 AND timestamp <= $2 
+            AND from_address IS NOT NULL
+          INTERSECT
+          SELECT DISTINCT LOWER(to_address) as addr
+          FROM transaction 
+          WHERE timestamp >= $3 AND timestamp <= $4 
+            AND to_address IS NOT NULL
+        ) intersection
+      `, [startOfDay, endOfDay, startOfDay, endOfDay])
+        .then(result => parseInt(result[0]?.count || '0', 10))
+    ]);
+    
+    // Total unique = from_unique + to_unique - intersection
+    return fromCount + toCount - bothCount;
+  }
+  
+  /**
+   * Simple unique address counting for smaller datasets
+   */
+  private async getUniqueAddressCountSimple(startOfDay: Date, endOfDay: Date): Promise<number> {
+    const transactionRepo = this.dataSource.getRepository(Transaction);
+    
+    // For small datasets, we can safely load distinct addresses
+    const [fromAddresses, toAddresses] = await Promise.all([
+      // Get unique from addresses
+      transactionRepo
+        .createQueryBuilder('tx')
+        .select('DISTINCT LOWER(tx.from_address)', 'address')
+        .where('tx.timestamp >= :startOfDay', { startOfDay })
+        .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
+        .andWhere('tx.from_address IS NOT NULL')
+        .getRawMany(),
+      
+      // Get unique to addresses
+      transactionRepo
+        .createQueryBuilder('tx')
+        .select('DISTINCT LOWER(tx.to_address)', 'address')
+        .where('tx.timestamp >= :startOfDay', { startOfDay })
+        .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
+        .andWhere('tx.to_address IS NOT NULL')
+        .getRawMany()
+    ]);
 
-     // Combine and count unique addresses
-     const uniqueAddresses = new Set<string>();
-     
-     fromAddresses.forEach(row => {
-       if (row.address) {
-         uniqueAddresses.add(row.address);
-       }
-     });
-     
-     toAddresses.forEach(row => {
-       if (row.address) {
-         uniqueAddresses.add(row.address);
-       }
-     });
+    // Combine and count unique addresses
+    const uniqueAddresses = new Set<string>();
+    
+    fromAddresses.forEach(row => {
+      if (row.address) {
+        uniqueAddresses.add(row.address);
+      }
+    });
+    
+    toAddresses.forEach(row => {
+      if (row.address) {
+        uniqueAddresses.add(row.address);
+      }
+    });
 
-     return uniqueAddresses.size;
-   }
-   
-   /**
-    * Chunked unique address counting for large datasets
-    */
-   private async getUniqueAddressCountChunked(startOfDay: Date, endOfDay: Date, chunkSize: number): Promise<number> {
-     const transactionRepo = this.dataSource.getRepository(Transaction);
-     const uniqueAddresses = new Set<string>();
-     
-     // Get all transaction IDs for the day to process in chunks
-     const transactionIds = await transactionRepo
-       .createQueryBuilder('tx')
-       .select('tx.id')
-       .where('tx.timestamp >= :startOfDay', { startOfDay })
-       .andWhere('tx.timestamp <= :endOfDay', { endOfDay })
-       .orderBy('tx.id')
-       .getMany();
-     
-     // Process in chunks
-     for (let i = 0; i < transactionIds.length; i += chunkSize) {
-       const chunk = transactionIds.slice(i, i + chunkSize);
-       const chunkIds = chunk.map(tx => tx.id);
-       
-       // Get addresses for this chunk
-       const chunkTransactions = await transactionRepo
-         .createQueryBuilder('tx')
-         .select(['tx.from_address', 'tx.to_address'])
-         .whereInIds(chunkIds)
-         .getMany();
-       
-       // Add addresses to set
-       chunkTransactions.forEach(tx => {
-         if (tx.fromAddress) {
-           uniqueAddresses.add(tx.fromAddress.toLowerCase());
-         }
-         if (tx.toAddress) {
-           uniqueAddresses.add(tx.toAddress.toLowerCase());
-         }
-       });
-       
-       // Force garbage collection every few chunks
-       if (i % (chunkSize * 5) === 0 && global.gc) {
-         global.gc();
-       }
-     }
-     
-     return uniqueAddresses.size;
-   }
+    return uniqueAddresses.size;
+  }
 
   /**
    * Get gas statistics using database aggregation
@@ -380,10 +479,16 @@ export class DailyStatsProcessor {
    */
   private async saveDailyStats(result: DailyStatsComputationResult): Promise<void> {
     const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
-
+    
     try {
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+
+      logger.debug('Saving daily stats to database', {
+        date: result.date.toISOString().split('T')[0],
+        memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
+      });
+
       const dailyStatsRepo = queryRunner.manager.getRepository(DailyStats);
       
       // Create DailyStats entity
@@ -403,7 +508,7 @@ export class DailyStatsProcessor {
       
       await queryRunner.commitTransaction();
       
-      logger.debug('Daily stats saved to database', {
+      logger.debug('Daily stats saved to database successfully', {
         date: result.date.toISOString().split('T')[0],
         stats: {
           blockCount: result.blockCount,
@@ -412,18 +517,32 @@ export class DailyStatsProcessor {
           totalGasUsed: result.totalGasUsed.toString(),
           averageGasPrice: result.averageGasPrice.toString(),
           totalValue: result.totalValue.toString()
-        }
+        },
+        memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
       });
 
     } catch (error) {
-      await queryRunner.rollbackTransaction();
+      // Ensure transaction is rolled back on error
+      if (queryRunner.isTransactionActive) {
+        await queryRunner.rollbackTransaction();
+      }
+      
       logger.error('Failed to save daily stats to database', {
         date: result.date.toISOString().split('T')[0],
+        memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
         error: error instanceof Error ? error.message : 'Unknown error'
       });
       throw error;
     } finally {
-      await queryRunner.release();
+      // Always ensure the query runner is released to prevent connection leaks
+      if (queryRunner && !queryRunner.isReleased) {
+        await queryRunner.release();
+      }
+      
+      // Force garbage collection to clean up any large objects
+      if (global.gc) {
+        global.gc();
+      }
     }
   }
 
