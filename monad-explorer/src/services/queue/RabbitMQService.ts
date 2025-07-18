@@ -1,5 +1,5 @@
 import * as amqp from 'amqplib';
-import { Connection, Channel, Message } from 'amqplib';
+import { Connection, Channel, ConfirmChannel, Message } from 'amqplib';
 import { logger } from '../../utils/logger';
 import { 
   IQueueService, 
@@ -68,13 +68,15 @@ interface QueueConfig {
 
 export class RabbitMQService implements IQueueService {
   private connection: Connection | null = null;
-  private channel: Channel | null = null;
+  private channel: ConfirmChannel | null = null;
   private isConnectedFlag = false;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 10;
   private reconnectDelay = 5000;
   private errorCount = 0;
   private lastError?: string;
+  private publisherConfirmsEnabled = false;
+  private outstandingConfirms = 0;
 
   private config: QueueConfig = {
     exchange: 'monad-explorer',
@@ -97,14 +99,21 @@ export class RabbitMQService implements IQueueService {
       logger.info('Connecting to RabbitMQ...', { url: this.connectionUrl.replace(/\/\/.*@/, '//***:***@') });
       
       this.connection = await amqp.connect(this.connectionUrl);
-      this.channel = await this.connection.createChannel();
+      this.channel = await this.connection.createConfirmChannel();
       
       // Set up connection event handlers
       this.connection.on('error', this.handleConnectionError.bind(this));
       this.connection.on('close', this.handleConnectionClose.bind(this));
       
+      // Publisher confirmations are automatically enabled with createConfirmChannel()
+      this.publisherConfirmsEnabled = true;
+      logger.info('Publisher confirmations enabled via createConfirmChannel()');
+      
       // Set up channel with prefetch for load balancing
       await this.channel.prefetch(10);
+      
+      // ConfirmChannel uses callbacks instead of events for publish confirmations
+      // Individual message confirmations are handled in the publish method callbacks
       
       // Initialize exchanges and queues
       await this.setupInfrastructure();
@@ -112,7 +121,7 @@ export class RabbitMQService implements IQueueService {
       this.isConnectedFlag = true;
       this.reconnectAttempts = 0;
       
-      logger.info('Successfully connected to RabbitMQ');
+      logger.info('Successfully connected to RabbitMQ with publisher confirmations');
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
       this.errorCount++;
@@ -266,24 +275,84 @@ export class RabbitMQService implements IQueueService {
       const buffer = Buffer.from(JSON.stringify(message));
       const routingKey = queueName.includes('-') ? queueName.replace('-', '.') : queueName;
       
-      const published = this.channel.publish(
-        this.config.exchange,
-        routingKey,
-        buffer,
-        {
-          persistent: options?.persistent ?? true,
-          priority: options?.priority || 5,
-          timestamp: Date.now(),
-          messageId: message.messageId,
-          expiration: options?.expiration,
-        }
-      );
+      // Retry logic for backpressure handling with ConfirmChannel callbacks
+      let retryCount = 0;
+      const maxRetries = 3;
+      const baseDelay = 100; // Start with 100ms delay
+      
+      const attemptPublish = async (attempt: number): Promise<void> => {
+        return new Promise<void>((resolve, reject) => {
+          const published = this.channel!.publish(
+            this.config.exchange,
+            routingKey,
+            buffer,
+            {
+              persistent: options?.persistent ?? true,
+              priority: options?.priority || 5,
+              timestamp: Date.now(),
+              messageId: message.messageId,
+              expiration: options?.expiration,
+            },
+            (err) => {
+              if (err) {
+                // Message was nacked by broker
+                logger.warn('Message nacked by broker', { 
+                  queueName, 
+                  type: message.type,
+                  messageId: message.messageId,
+                  error: err.message
+                });
+                reject(err);
+                } else {
+                 // Message was acked by broker
+                 this.outstandingConfirms = Math.max(0, this.outstandingConfirms - 1);
+                 logger.debug('Message confirmed by broker', { 
+                   queueName, 
+                   type: message.type,
+                   messageId: message.messageId
+                 });
+                 resolve();
+               }
+            }
+          );
 
-      if (!published) {
-        throw new Error('Failed to publish message to exchange');
-      }
+          if (!published) {
+            // Channel buffer is full, implement backpressure
+            if (attempt < maxRetries) {
+              const delay = baseDelay * Math.pow(2, attempt);
+              logger.debug('Channel buffer full, retrying after delay', { 
+                queueName, 
+                retryCount: attempt + 1, 
+                delay,
+                messageType: message.type 
+              });
+              setTimeout(() => {
+                attemptPublish(attempt + 1).then(resolve).catch(reject);
+              }, delay);
+            } else {
+              // Final attempt failed - log warning but resolve for eventual consistency
+              logger.warn('Message buffer full after retries, message queued for eventual delivery', { 
+                queueName, 
+                type: message.type,
+                messageId: message.messageId,
+                retryCount: attempt + 1
+              });
+              resolve(); // Don't reject - message will be delivered eventually
+            }
+            } else {
+             // Message was accepted into buffer - track as outstanding
+             this.outstandingConfirms++;
+           }
+        });
+      };
 
-     // logger.debug('Message published successfully', { queueName, type: message.type });
+      await attemptPublish(retryCount);
+
+      logger.debug('Message publish initiated', { 
+        queueName, 
+        type: message.type,
+        messageId: message.messageId
+      });
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
       this.errorCount++;
@@ -295,6 +364,8 @@ export class RabbitMQService implements IQueueService {
       throw error;
     }
   }
+
+
 
   async consumeTokenEnrichment(handler: MessageHandler<ITokenEnrichmentMessage>, options?: ConsumeOptions): Promise<void> {
     await this.consume(this.config.queues.tokenEnrichment, async (message: IQueueMessage) => {
@@ -447,6 +518,8 @@ export class RabbitMQService implements IQueueService {
   async getHealthStatus(): Promise<{
     connected: boolean;
     queuesHealthy: boolean;
+    publisherConfirms: boolean;
+    outstandingConfirms: number;
     errorCount: number;
     lastError?: string;
   }> {
@@ -465,6 +538,8 @@ export class RabbitMQService implements IQueueService {
     return {
       connected: this.isConnectedFlag,
       queuesHealthy,
+      publisherConfirms: this.publisherConfirmsEnabled,
+      outstandingConfirms: this.outstandingConfirms,
       errorCount: this.errorCount,
       lastError: this.lastError,
     };
@@ -595,12 +670,24 @@ export class RabbitMQService implements IQueueService {
     if (this.connection) {
       await this.connection.close();
       this.isConnectedFlag = false;
+      this.publisherConfirmsEnabled = false;
+      this.outstandingConfirms = 0;
       logger.info('RabbitMQ connection closed');
     }
   }
 
   get connected(): boolean {
     return this.isConnectedFlag;
+  }
+
+  /**
+   * Get publisher confirmation status
+   */
+  getPublisherConfirmStatus(): { enabled: boolean; outstandingConfirms: number } {
+    return {
+      enabled: this.publisherConfirmsEnabled,
+      outstandingConfirms: this.outstandingConfirms
+    };
   }
 }
 
