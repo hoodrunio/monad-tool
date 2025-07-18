@@ -16,7 +16,7 @@ import {
 
 // Legacy interfaces for backward compatibility
 export interface QueueMessage {
-  type: 'TOKEN_ENRICHMENT' | 'CONTRACT_ENRICHMENT' | 'INTERNAL_TRANSACTION' | 'DAILY_STATS';
+  type: 'TOKEN_ENRICHMENT' | 'CONTRACT_ENRICHMENT' | 'INTERNAL_TRANSACTION' | 'TRANSACTION_ENRICHMENT' | 'DAILY_STATS';
   data: any;
   priority?: number;
   retryCount?: number;
@@ -36,12 +36,29 @@ export interface InternalTransactionMessage {
   toAddress: string;
 }
 
+export interface TransactionEnrichmentMessage {
+  transactionHash: string;
+  blockNumber: number;
+  blockBaseFeePerGas: string;
+  transactionType: number;
+  gasPrice: string;
+  gasUsed: string;
+  maxFeePerGas: string;
+  maxPriorityFeePerGas: string;
+  input: string | null;
+  status: number;
+  isContractCreation: boolean;
+  fromAddress: string;
+  nonce: string;
+}
+
 interface QueueConfig {
   exchange: string;
   queues: {
     tokenEnrichment: string;
     contractEnrichment: string;
     internalTransactions: string;
+    transactionEnrichment: string;
     dailyStats: string;
     deadLetter: string;
   };
@@ -65,6 +82,7 @@ export class RabbitMQService implements IQueueService {
       tokenEnrichment: 'token-enrichment',
       contractEnrichment: 'contract-enrichment',
       internalTransactions: 'internal-transactions',
+      transactionEnrichment: 'transaction-enrichment',
       dailyStats: 'daily-stats',
       deadLetter: 'dead-letter',
     },
@@ -139,12 +157,14 @@ export class RabbitMQService implements IQueueService {
     await this.channel.assertQueue(this.config.queues.tokenEnrichment, queueOptions);
     await this.channel.assertQueue(this.config.queues.contractEnrichment, queueOptions);
     await this.channel.assertQueue(this.config.queues.internalTransactions, queueOptions);
+    await this.channel.assertQueue(this.config.queues.transactionEnrichment, queueOptions);
     await this.channel.assertQueue(this.config.queues.dailyStats, queueOptions);
 
     // Bind queues to exchange
     await this.channel.bindQueue(this.config.queues.tokenEnrichment, this.config.exchange, 'token.*');
     await this.channel.bindQueue(this.config.queues.contractEnrichment, this.config.exchange, 'contract.*');
     await this.channel.bindQueue(this.config.queues.internalTransactions, this.config.exchange, 'transaction.*');
+    await this.channel.bindQueue(this.config.queues.transactionEnrichment, this.config.exchange, 'transaction.*');
     await this.channel.bindQueue(this.config.queues.dailyStats, this.config.exchange, 'stats.*');
 
     logger.info('RabbitMQ infrastructure setup completed');
@@ -200,6 +220,38 @@ export class RabbitMQService implements IQueueService {
     };
 
     await this.publish('daily-stats', queueMessage, options);
+  }
+
+  async publishTransactionEnrichment(message: TransactionEnrichmentMessage, options?: PublishOptions): Promise<void> {
+    const queueMessage: IQueueMessage = {
+      type: 'TRANSACTION_ENRICHMENT',
+      data: message,
+      priority: options?.priority || 8,
+      retryCount: 0,
+      timestamp: Date.now(),
+      messageId: `TRANSACTION_ENRICHMENT-${message.transactionHash}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    };
+
+    await this.publish('transaction-enrichment', queueMessage, options);
+  }
+
+  // Legacy method for backward compatibility
+  async publishMessage(routingKey: string, message: any, options?: PublishOptions): Promise<void> {
+    if (routingKey === 'transaction.enrichment') {
+      await this.publishTransactionEnrichment(message, options);
+    } else {
+      // Generic publish for other message types
+      const queueMessage: IQueueMessage = {
+        type: 'GENERIC',
+        data: message,
+        priority: options?.priority || 5,
+        retryCount: 0,
+        timestamp: Date.now(),
+        messageId: `GENERIC-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      };
+
+      await this.publish(routingKey.replace('.', '-'), queueMessage, options);
+    }
   }
 
   async publish<T>(queueName: string, message: IQueueMessage<T>, options?: PublishOptions): Promise<void> {
@@ -277,6 +329,15 @@ export class RabbitMQService implements IQueueService {
         throw new Error(`Invalid message type: ${message.type}`);
       }
       await handler(message.data as IDailyStatsMessage);
+    }, options);
+  }
+
+  async consumeTransactionEnrichment(handler: MessageHandler<TransactionEnrichmentMessage>, options?: ConsumeOptions): Promise<void> {
+    await this.consume(this.config.queues.transactionEnrichment, async (message: IQueueMessage) => {
+      if (message.type !== 'TRANSACTION_ENRICHMENT') {
+        throw new Error(`Invalid message type: ${message.type}`);
+      }
+      await handler(message.data as TransactionEnrichmentMessage);
     }, options);
   }
 
@@ -438,6 +499,9 @@ export class RabbitMQService implements IQueueService {
                 break;
               case 'INTERNAL_TRANSACTION':
                 routingKey = 'transaction.internal';
+                break;
+              case 'TRANSACTION_ENRICHMENT':
+                routingKey = 'transaction.enrichment';
                 break;
               case 'DAILY_STATS':
                 routingKey = 'stats.daily';

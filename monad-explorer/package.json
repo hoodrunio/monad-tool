@@ -6,11 +6,14 @@
   },
   "scripts": {
     "build": "rm -rf lib && tsc",
+    "start": "sqd process",
     "db:migrate": "sqd migration:apply",
     "db:create-migration": "sqd migration:generate",
     "processor:start": "node -r dotenv/config lib/main.js",
     "worker:start": "node -r dotenv/config lib/scripts/start-token-enrichment-worker.js",
     "worker:dev": "npm run build && npx ts-node src/scripts/start-token-enrichment-worker.ts",
+    "worker:transaction:start": "node -r dotenv/config lib/scripts/start-transaction-enrichment-worker.js",
+    "worker:transaction:dev": "npm run build && npx ts-node src/scripts/start-transaction-enrichment-worker.ts",
     "query-node:start": "squid-graphql-server --dumb-cache in-memory --dumb-cache-ttl 1000 --dumb-cache-size 100 --dumb-cache-max-age 1000",
     "api:start": "node -r dotenv/config lib/api/server.js",
     "api:dev": "npx ts-node -r dotenv/config src/api/server.ts"

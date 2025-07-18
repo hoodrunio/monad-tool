@@ -292,7 +292,7 @@ export class TransactionService implements ITransactionService {
 
       // Get logs and filter by signatures in application layer
       // This is more reliable than complex TypeORM array queries
-      const [allLogs, totalAllLogs] = await this.store.Log.findAndCount({
+      const [allLogs] = await this.store.Log.findAndCount({
         where: whereConditions,
         order: { id: 'DESC' },
         take: limit * 5, // Get more logs to account for filtering
@@ -371,6 +371,9 @@ export class TransactionService implements ITransactionService {
     options: TransactionQueryOptions
   ): Promise<EnrichedTransaction | null> {
     try {
+      // ⚡ ASYNC ENRICHMENT FALLBACK: Compute missing fields if not enriched yet
+      const enrichedData = await this.computeFallbackEnrichment(transaction);
+      
       const enrichedTx: EnrichedTransaction = {
         // Base transaction data
         id: transaction.id,
@@ -384,18 +387,19 @@ export class TransactionService implements ITransactionService {
         gasPrice: transaction.gasPrice,
         gasUsed: transaction.gasUsed,
         status: transaction.status,
-        error: transaction.error,
-        revertReason: transaction.revertReason,
+        error: transaction.error || enrichedData.error,
+        revertReason: transaction.revertReason || enrichedData.revertReason,
         timestamp: transaction.timestamp,
         input: transaction.input,
 
-        // Metadata
-        methodName: transaction.methodName,
-        methodID: transaction.methodID,
+        // Metadata (with fallback computation)
+        methodName: transaction.methodName || enrichedData.methodName,
+        methodID: transaction.methodID || enrichedData.methodID,
         isContractInteraction: transaction.isContractInteraction,
         isContractCreation: transaction.isContractCreation,
-        effectiveGasPrice: transaction.effectiveGasPrice,
-        transactionFee: transaction.transactionFee,
+        effectiveGasPrice: transaction.effectiveGasPrice || enrichedData.effectiveGasPrice,
+        transactionFee: transaction.transactionFee || enrichedData.transactionFee,
+        contractAddress: transaction.contractAddress || enrichedData.contractAddress,
 
         // Enriched data (computed at runtime)
         tokenTransfers: [],
@@ -496,6 +500,107 @@ export class TransactionService implements ITransactionService {
       });
       return null;
     }
+  }
+
+  /**
+   * Compute fallback enrichment for transactions not yet processed by worker
+   * ⚡ FALLBACK COMPUTATION: Ensures UI always has enriched data
+   */
+  private async computeFallbackEnrichment(transaction: any): Promise<any> {
+    const fallbackData = {
+      effectiveGasPrice: null as bigint | null,
+      transactionFee: null as bigint | null,
+      methodName: null as string | null,
+      methodID: null as string | null,
+      contractAddress: null as string | null,
+      error: null as string | null,
+      revertReason: null as string | null,
+    };
+
+    try {
+      // Only compute if not already enriched
+      if (!transaction.effectiveGasPrice || transaction.effectiveGasPrice === 0n) {
+        // Calculate effective gas price
+        const baseFeePerGas = BigInt(transaction.block.baseFeePerGas || 0);
+        const maxPriorityFeePerGas = BigInt(transaction.maxPriorityFeePerGas || 0);
+        const maxFeePerGas = BigInt(transaction.maxFeePerGas || 0);
+        const gasPrice = BigInt(transaction.gasPrice || 0);
+        
+        let effectiveGasPrice: bigint;
+        if (transaction.type === 2) {
+          effectiveGasPrice = baseFeePerGas + maxPriorityFeePerGas;
+          if (effectiveGasPrice > maxFeePerGas) {
+            effectiveGasPrice = maxFeePerGas;
+          }
+        } else {
+          effectiveGasPrice = gasPrice;
+        }
+        
+        fallbackData.effectiveGasPrice = effectiveGasPrice;
+        fallbackData.transactionFee = BigInt(transaction.gasUsed || 0) * effectiveGasPrice;
+      }
+
+      // Extract method info if not present
+      if (!transaction.methodName && transaction.input) {
+        const methodInfo = this.extractMethodInfo(transaction.input);
+        fallbackData.methodName = methodInfo.name;
+        fallbackData.methodID = methodInfo.id;
+      }
+
+      // Calculate contract address if needed
+      if (!transaction.contractAddress && transaction.isContractCreation) {
+        fallbackData.contractAddress = this.calculateContractAddress(
+          transaction.fromAddress, 
+          BigInt(transaction.nonce || 0)
+        );
+      }
+
+      return fallbackData;
+
+    } catch (error) {
+      logger.debug('Failed to compute fallback enrichment', {
+        transactionHash: transaction.hash,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      return fallbackData;
+    }
+  }
+
+  /**
+   * Extract method information from transaction input
+   */
+  private extractMethodInfo(input: string | null): { id: string | null; name: string | null } {
+    if (!input || input.length < 10) {
+      return { id: null, name: null };
+    }
+    
+    const methodId = input.slice(0, 10);
+    const knownMethods = new Map([
+      ['0xa9059cbb', 'transfer'],
+      ['0x095ea7b3', 'approve'],
+      ['0x23b872dd', 'transferFrom'],
+      ['0x70a08231', 'balanceOf'],
+      ['0xdd62ed3e', 'allowance'],
+      ['0x18160ddd', 'totalSupply'],
+      ['0x06fdde03', 'name'],
+      ['0x95d89b41', 'symbol'],
+      ['0x313ce567', 'decimals'],
+    ]);
+    
+    return {
+      id: methodId,
+      name: knownMethods.get(methodId) || null,
+    };
+  }
+
+  /**
+   * Calculate contract address for contract creation transactions
+   */
+  private calculateContractAddress(from: string, nonce: bigint): string {
+    const normalized = from.toLowerCase().replace('0x', '');
+    const nonceHex = nonce.toString(16).padStart(16, '0');
+    const addressSuffix = (normalized + nonceHex).slice(-40);
+    return `0x${addressSuffix}`;
   }
 
   private groupLogsByTransaction(logs: any[]): Map<string, any[]> {

@@ -112,6 +112,9 @@ export class BlockProcessor {
 
       // Process method signatures
       this.processMethodSignature(tx.input, result.methodSignatures);
+      
+      // ⚡ Queue transaction for async enrichment
+      await this.queueTransactionForEnrichment(processedTx, block);
     }
   }
 
@@ -136,59 +139,52 @@ export class BlockProcessor {
   }
 
   /**
-   * Create transaction entity with enhanced fields
+   * Create transaction entity with LIGHTWEIGHT processing (Phase 1)
+   * Heavy computations moved to async worker for performance
    */
   private createTransactionEntity(tx: any, block: Block): Transaction {
-    // Calculate effective gas price
-    const baseFeePerGas = BigInt(block.baseFeePerGas || 0);
-    const maxPriorityFeePerGas = BigInt(tx.maxPriorityFeePerGas || 0);
-    const maxFeePerGas = BigInt(tx.maxFeePerGas || 0);
-    const gasPrice = BigInt(tx.gasPrice || 0);
-    
-    let effectiveGasPrice: bigint;
-    if (tx.type === 2) {
-      effectiveGasPrice = baseFeePerGas + maxPriorityFeePerGas;
-      if (effectiveGasPrice > maxFeePerGas) {
-        effectiveGasPrice = maxFeePerGas;
-      }
-    } else {
-      effectiveGasPrice = gasPrice;
-    }
-
-    const transactionFee = BigInt(tx.gasUsed || 0) * effectiveGasPrice;
-    const methodInfo = this.extractMethodInfo(tx.input);
+    // ✅ LIGHTWEIGHT PROCESSING: Only essential fields for critical path
     const isContractCreation = !tx.to;
     const isContractInteraction = Boolean(tx.to && tx.input && tx.input.length > 2);
 
     return new Transaction({
+      // Core identification fields
       id: tx.hash,
       hash: tx.hash,
       block: block,
       transactionIndex: tx.transactionIndex,
+      
+      // Basic transaction data
       fromAddress: tx.from,
       toAddress: tx.to,
       value: tx.value,
       gas: BigInt(tx.gas || 0),
-      gasPrice: gasPrice,
+      gasPrice: BigInt(tx.gasPrice || 0),
       gasUsed: BigInt(tx.gasUsed || 0),
       input: sanitizeString(tx.input), // Sanitize input to remove null bytes
       status: tx.status,
-      error: null, // Will be populated for failed transactions in post-processing
-      revertReason: null, // Will be populated for failed transactions in post-processing
       timestamp: block.timestamp,
       nonce: BigInt(tx.nonce || 0),
       type: tx.type || 0,
-      effectiveGasPrice: effectiveGasPrice,
-      maxFeePerGas: maxFeePerGas,
-      maxPriorityFeePerGas: maxPriorityFeePerGas,
-      contractAddress: isContractCreation ? this.calculateContractAddress(tx.from, BigInt(tx.nonce || 0)) : null,
+      
+      // EIP-1559 fields (raw values)
+      maxFeePerGas: BigInt(tx.maxFeePerGas || 0),
+      maxPriorityFeePerGas: BigInt(tx.maxPriorityFeePerGas || 0),
       cumulativeGasUsed: BigInt(tx.cumulativeGasUsed || 0),
-      transactionFee: transactionFee,
-      methodName: sanitizeString(methodInfo.name), // Sanitize method name
-      methodID: sanitizeString(methodInfo.id), // Sanitize method ID
-      inputDecoded: null,
-      isContractInteraction: isContractInteraction,
+      
+      // Contract detection flags
       isContractCreation: isContractCreation,
+      isContractInteraction: isContractInteraction,
+      
+      // ⚡ ASYNC FIELDS: Will be populated by TransactionEnrichmentWorker
+      effectiveGasPrice: 0n, // Will be calculated async
+      transactionFee: 0n, // Will be calculated async
+      methodName: null, // Will be parsed async
+      methodID: null, // Will be parsed async
+      contractAddress: null, // Will be calculated async
+      inputDecoded: null,
+      error: null, // Will be populated for failed transactions async
+      revertReason: null, // Will be populated for failed transactions async
     });
   }
 
@@ -668,6 +664,61 @@ export class BlockProcessor {
     } catch (error) {
       logger.warn('Failed to queue discovered contract for enrichment', {
         contractAddress: contract.address,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      // Don't throw - continue processing even if queueing fails
+    }
+  }
+
+  /**
+   * Queue transaction for background enrichment
+   * ⚡ NEW: Async processing of heavy transaction computations
+   */
+  private async queueTransactionForEnrichment(transaction: Transaction, block: Block): Promise<void> {
+    try {
+      const config = await this.container.resolve<any>('appConfig');
+      
+      if (!config.processor.enableAsyncProcessing) {
+        // Skip async processing if disabled
+        return;
+      }
+
+      const queueService = await this.container.resolve<any>('queueService');
+      
+      if (!queueService.isConnected()) {
+        // Skip if queue service not available
+        return;
+      }
+
+      const enrichmentMessage = {
+        transactionHash: transaction.hash,
+        blockNumber: block.number,
+        blockBaseFeePerGas: block.baseFeePerGas?.toString() || '0',
+        transactionType: transaction.type,
+        gasPrice: transaction.gasPrice.toString(),
+        gasUsed: transaction.gasUsed?.toString() || '0',
+        maxFeePerGas: transaction.maxFeePerGas?.toString() || '0',
+        maxPriorityFeePerGas: transaction.maxPriorityFeePerGas?.toString() || '0',
+        input: transaction.input,
+        status: transaction.status,
+        isContractCreation: transaction.isContractCreation,
+        fromAddress: transaction.fromAddress,
+        nonce: transaction.nonce?.toString() || '0',
+      };
+
+      await queueService.publishMessage('transaction.enrichment', enrichmentMessage, {
+        priority: 8, // High priority for transaction enrichment
+        persistent: true,
+      });
+
+      /* logger.debug('Transaction queued for enrichment', {
+        transactionHash: transaction.hash,
+        blockNumber: block.number,
+      }); */
+
+    } catch (error) {
+      logger.warn('Failed to queue transaction for enrichment', {
+        transactionHash: transaction.hash,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       // Don't throw - continue processing even if queueing fails

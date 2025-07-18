@@ -36,6 +36,7 @@ export interface EnrichedTransaction {
   isContractCreation: boolean;
   effectiveGasPrice: bigint;
   transactionFee: bigint;
+  contractAddress?: string | null;
 }
 
 export interface TransactionQueryOptions {
