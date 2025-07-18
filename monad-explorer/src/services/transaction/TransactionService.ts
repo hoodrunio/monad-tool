@@ -5,6 +5,7 @@ import {
 } from '../../interfaces/services/ITransactionService';
 import { ILogTokenTransferParser, ParsedTokenTransfer } from '../../interfaces/processing/ILogTokenTransferParser';
 import { ICacheService } from '../../interfaces/cache/ICacheService';
+import { IRpcClient } from '../../interfaces/blockchain/IRpcClient';
 import { logger } from '../../utils/logger';
 import { In } from 'typeorm';
 import { IInternalTransactionService } from '../../interfaces/services/IInternalTransactionService';
@@ -17,7 +18,8 @@ export class TransactionService implements ITransactionService {
     private readonly store: any, // Subsquid store/database
     private readonly logTokenTransferParser: ILogTokenTransferParser,
     private readonly cacheService?: ICacheService,
-    private readonly internalTransactionService?: IInternalTransactionService
+    private readonly internalTransactionService?: IInternalTransactionService,
+    private readonly rpcClient?: IRpcClient
   ) {}
 
   public async getEnrichedTransaction(
@@ -400,6 +402,38 @@ export class TransactionService implements ITransactionService {
         decodedLogs: [],
         internalTransactions: []
       };
+
+      // On-demand error fetching for failed transactions
+      if (transaction.status === 0 && !transaction.error && this.rpcClient) {
+        try {
+          const errorInfo = await this.rpcClient.getTransactionErrorInfo(transaction.hash);
+          if (errorInfo.error || errorInfo.revertReason) {
+            enrichedTx.error = errorInfo.error;
+            enrichedTx.revertReason = errorInfo.revertReason;
+            
+            // Update the database with the fetched error info
+            await this.store.Transaction.update(
+              { hash: transaction.hash },
+              { 
+                error: errorInfo.error,
+                revertReason: errorInfo.revertReason
+              }
+            );
+            
+            logger.debug('Fetched and cached error info for failed transaction', {
+              hash: transaction.hash,
+              error: errorInfo.error,
+              revertReason: errorInfo.revertReason
+            });
+          }
+        } catch (error) {
+          logger.warn('Failed to fetch error info for transaction', {
+            hash: transaction.hash,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+          // Don't throw - continue with null error info
+        }
+      }
 
       // Parse token transfers if requested
       if (options.includeTokenTransfers !== false && logs.length > 0) {

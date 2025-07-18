@@ -311,12 +311,12 @@ export class ServiceRegistration {
       async create(store: any): Promise<ITransactionService> {
         const logTokenTransferParser = await serviceContainer.resolveInternal<ILogTokenTransferParser>('logTokenTransferParser');
         const cacheService = await serviceContainer.resolveInternal<ICacheService>('cacheService').catch(() => undefined);
+        const rpcClient = await serviceContainer.resolveInternal<IRpcClient>('rpcClient');
         
         // Create internal transaction service for transaction service integration
-        const rpcClient = await serviceContainer.resolveInternal<IRpcClient>('rpcClient');
         const internalTransactionService = new InternalTransactionService(rpcClient, cacheService, store);
         
-        return new TransactionService(store, logTokenTransferParser, cacheService, internalTransactionService);
+        return new TransactionService(store, logTokenTransferParser, cacheService, internalTransactionService, rpcClient);
       }
     });
 
