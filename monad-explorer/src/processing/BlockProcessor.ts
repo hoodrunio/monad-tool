@@ -87,6 +87,9 @@ export class BlockProcessor {
     const processedBlock = this.createBlockEntity(block);
     result.blocks.push(processedBlock);
 
+    // Collect transactions for batch enrichment
+    const transactionsForEnrichment: Transaction[] = [];
+
     // Process transactions
     for (const tx of block.transactions) {
       const processedTx = this.createTransactionEntity(tx, processedBlock);
@@ -112,9 +115,13 @@ export class BlockProcessor {
 
       // Process method signatures
       this.processMethodSignature(tx.input, result.methodSignatures);
+      transactionsForEnrichment.push(processedTx);
       
-      // ⚡ Queue transaction for async enrichment
-      await this.queueTransactionForEnrichment(processedTx, block);
+    }
+
+    // ⚡ Queue all transactions in batch after block processing is complete
+    if (transactionsForEnrichment.length > 0) {
+      await this.queueTransactionBatchForEnrichment(transactionsForEnrichment, processedBlock);
     }
   }
 
@@ -671,8 +678,77 @@ export class BlockProcessor {
   }
 
   /**
+   * Queue multiple transactions for background enrichment in batch
+   * ⚡ OPTIMIZATION: Batch processing to reduce queue overhead
+   */
+  private async queueTransactionBatchForEnrichment(transactions: Transaction[], block: Block): Promise<void> {
+    try {
+      const config = await this.container.resolve<any>('appConfig');
+      
+      if (!config.processor.enableAsyncProcessing) {
+        return;
+      }
+
+      const queueService = await this.container.resolve<any>('queueService');
+      
+      if (!queueService.isConnected()) {
+        return;
+      }
+
+      // Convert transactions to enrichment messages
+      const enrichmentMessages = transactions.map(transaction => ({
+        transactionHash: transaction.hash,
+        blockNumber: block.number,
+        blockBaseFeePerGas: block.baseFeePerGas?.toString() || '0',
+        transactionType: transaction.type,
+        gasPrice: transaction.gasPrice.toString(),
+        gasUsed: transaction.gasUsed?.toString() || '0',
+        maxFeePerGas: transaction.maxFeePerGas?.toString() || '0',
+        maxPriorityFeePerGas: transaction.maxPriorityFeePerGas?.toString() || '0',
+        input: transaction.input,
+        status: transaction.status,
+        isContractCreation: transaction.isContractCreation,
+        fromAddress: transaction.fromAddress,
+        nonce: transaction.nonce?.toString() || '0',
+      }));
+
+      // Send transactions in batches to avoid oversized messages
+      const batchSize = 500; // Process 500 transactions per batch
+      for (let i = 0; i < enrichmentMessages.length; i += batchSize) {
+        const batch = enrichmentMessages.slice(i, i + batchSize);
+        
+        const batchMessage = {
+          blockNumber: block.number,
+          batchId: `${block.number}-${Math.floor(i / batchSize)}`,
+          timestamp: Date.now(),
+          transactions: batch,
+        };
+
+        await queueService.publishTransactionEnrichmentBatch(batchMessage, {
+          priority: 8,
+          persistent: true,
+        });
+      }
+
+      logger.info('Transaction batch queued for enrichment', {
+        blockNumber: block.number,
+        totalTransactions: transactions.length,
+        batchCount: Math.ceil(enrichmentMessages.length / batchSize),
+      });
+
+    } catch (error) {
+      logger.warn('Failed to queue transaction batch for enrichment', {
+        blockNumber: block.number,
+        transactionCount: transactions.length,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      // Don't throw - continue processing even if queueing fails
+    }
+  }
+
+  /**
    * Queue transaction for background enrichment
-   * ⚡ NEW: Async processing of heavy transaction computations
+   * ⚡ DEPRECATED: Use queueTransactionBatchForEnrichment instead
    */
   private async queueTransactionForEnrichment(transaction: Transaction, block: Block): Promise<void> {
     try {

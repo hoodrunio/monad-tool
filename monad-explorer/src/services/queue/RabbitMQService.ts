@@ -244,6 +244,19 @@ export class RabbitMQService implements IQueueService {
     await this.publish('transaction-enrichment', queueMessage, options);
   }
 
+  async publishTransactionEnrichmentBatch(batchMessage: any, options?: PublishOptions): Promise<void> {
+    const queueMessage: IQueueMessage = {
+      type: 'TRANSACTION_ENRICHMENT_BATCH',
+      data: batchMessage,
+      priority: options?.priority || 8,
+      retryCount: 0,
+      timestamp: Date.now(),
+      messageId: `TRANSACTION_ENRICHMENT_BATCH-${batchMessage.blockNumber}-${batchMessage.batchId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    };
+
+    await this.publish('transaction-enrichment', queueMessage, options);
+  }
+
   // Legacy method for backward compatibility
   async publishMessage(routingKey: string, message: any, options?: PublishOptions): Promise<void> {
     if (routingKey === 'transaction.enrichment') {
@@ -398,10 +411,11 @@ export class RabbitMQService implements IQueueService {
 
   async consumeTransactionEnrichment(handler: MessageHandler<TransactionEnrichmentMessage>, options?: ConsumeOptions): Promise<void> {
     await this.consume(this.config.queues.transactionEnrichment, async (message: IQueueMessage) => {
-      if (message.type !== 'TRANSACTION_ENRICHMENT') {
+      if (message.type !== 'TRANSACTION_ENRICHMENT' && message.type !== 'TRANSACTION_ENRICHMENT_BATCH') {
         throw new Error(`Invalid message type: ${message.type}`);
       }
-      await handler(message.data as TransactionEnrichmentMessage);
+      // Pass the entire message object for batch handling
+      await handler(message as any);
     }, options);
   }
 

@@ -134,47 +134,31 @@ export class TransactionEnrichmentWorker {
   }
 
   /**
-   * Process transaction enrichment message
+   * Process transaction enrichment message (handles both single and batch messages)
    */
   private async processTransactionEnrichment(message: any): Promise<void> {
     const startTime = Date.now();
     
     try {
+      // Handle batch message
+      if (message.type === 'TRANSACTION_ENRICHMENT_BATCH' && message.data.transactions) {
+        await this.processTransactionEnrichmentBatch(message.data);
+        return;
+      }
+
+      // Determine if this is a message wrapper (from RabbitMQ) or direct data
+      const txData = message.data || message;
+
+      // Handle single transaction message (backward compatibility)
       const {
         transactionHash,
-        blockNumber,
-        blockBaseFeePerGas,
-        transactionType,
-        gasPrice,
-        gasUsed,
-        maxFeePerGas,
-        maxPriorityFeePerGas,
-        input,
-        status,
-        isContractCreation,
-        fromAddress,
-        nonce,
-      } = message;
+      } = txData;
 
       // Removed excessive debug logging for performance optimization
       // Only log errors and periodic summaries
 
       // ⚡ HEAVY COMPUTATIONS: Now done async
-      const enrichmentData = await this.computeTransactionEnrichment({
-        transactionHash,
-        blockNumber,
-        blockBaseFeePerGas,
-        transactionType,
-        gasPrice,
-        gasUsed,
-        maxFeePerGas,
-        maxPriorityFeePerGas,
-        input,
-        status,
-        isContractCreation,
-        fromAddress,
-        nonce,
-      });
+      const enrichmentData = await this.computeTransactionEnrichment(txData);
 
       // Update transaction in database
       await this.updateTransactionEnrichment(transactionHash, enrichmentData);
@@ -225,25 +209,25 @@ export class TransactionEnrichmentWorker {
       nonce,
     } = txData;
 
-    // 1. Calculate effective gas price
+    // 1. Calculate effective gas price (with safe BigInt conversion)
     const effectiveGasPrice = this.calculateEffectiveGasPrice({
       type: transactionType,
-      gasPrice: BigInt(gasPrice),
-      baseFeePerGas: BigInt(blockBaseFeePerGas),
-      maxFeePerGas: BigInt(maxFeePerGas),
-      maxPriorityFeePerGas: BigInt(maxPriorityFeePerGas),
+      gasPrice: BigInt(gasPrice || '0'),
+      baseFeePerGas: BigInt(blockBaseFeePerGas || '0'),
+      maxFeePerGas: BigInt(maxFeePerGas || '0'),
+      maxPriorityFeePerGas: BigInt(maxPriorityFeePerGas || '0'),
     });
 
-    // 2. Calculate transaction fee
-    const transactionFee = BigInt(gasUsed) * effectiveGasPrice;
+    // 2. Calculate transaction fee (with safe BigInt conversion)
+    const transactionFee = BigInt(gasUsed || '0') * effectiveGasPrice;
 
     // 3. Extract method information
     const methodInfo = this.extractMethodInfo(input);
 
-    // 4. Calculate contract address if needed
+    // 4. Calculate contract address if needed (with safe BigInt conversion)
     let contractAddress = null;
     if (isContractCreation) {
-      contractAddress = this.calculateContractAddress(fromAddress, BigInt(nonce));
+      contractAddress = this.calculateContractAddress(fromAddress, BigInt(nonce || '0'));
     }
 
     // 5. Error information will be fetched on-demand via API calls
@@ -258,6 +242,76 @@ export class TransactionEnrichmentWorker {
       error: errorInfo.error,
       revertReason: errorInfo.revertReason,
     };
+  }
+
+  /**
+   * Process transaction enrichment batch message
+   * ⚡ OPTIMIZATION: Process multiple transactions from batch message
+   */
+  private async processTransactionEnrichmentBatch(batchData: any): Promise<void> {
+    const startTime = Date.now();
+    const { blockNumber, batchId, transactions } = batchData;
+    
+    logger.info('Processing transaction enrichment batch', {
+      blockNumber,
+      batchId,
+      transactionCount: transactions.length,
+    });
+
+    let processedCount = 0;
+    let errorCount = 0;
+
+    try {
+      // Process transactions in parallel for better performance
+      const promises = transactions.map(async (transactionData: any) => {
+        try {
+          // Reuse the single transaction enrichment logic
+          const enrichmentData = await this.computeTransactionEnrichment(transactionData);
+          await this.updateTransactionEnrichment(transactionData.transactionHash, enrichmentData);
+          processedCount++;
+        } catch (error) {
+          errorCount++;
+          logger.warn('Failed to process transaction in batch', {
+            transactionHash: transactionData.transactionHash,
+            blockNumber,
+            batchId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+          // Don't throw - continue processing other transactions in batch
+        }
+      });
+
+      // Wait for all transactions in batch to complete
+      await Promise.allSettled(promises);
+
+      const duration = Date.now() - startTime;
+      logger.info('Transaction enrichment batch completed', {
+        blockNumber,
+        batchId,
+        duration,
+        processedCount,
+        errorCount,
+        totalTransactions: transactions.length,
+        successRate: ((processedCount / transactions.length) * 100).toFixed(2) + '%',
+      });
+
+      // Update batch progress tracking
+      this.processedCount += processedCount;
+      this.errorCount += errorCount;
+      this.logPeriodicSummary();
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      this.errorCount += transactions.length; // Count all as errors if batch fails
+      logger.error('Failed to process transaction enrichment batch', {
+        blockNumber,
+        batchId,
+        transactionCount: transactions.length,
+        duration,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      throw error;
+    }
   }
 
   /**
