@@ -712,8 +712,8 @@ export class BlockProcessor {
         nonce: transaction.nonce?.toString() || '0',
       }));
 
-      // Send transactions in batches to avoid oversized messages
-      const batchSize = 500; // Process 500 transactions per batch
+      // Send transactions in batches to avoid oversized messages  
+      const batchSize = 10000; // Process 10k transactions per batch for maximum efficiency
       for (let i = 0; i < enrichmentMessages.length; i += batchSize) {
         const batch = enrichmentMessages.slice(i, i + batchSize);
         
