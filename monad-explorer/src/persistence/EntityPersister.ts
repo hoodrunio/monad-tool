@@ -33,9 +33,11 @@ export class EntityPersister {
       await this.persistMethodSignatures(store, result);
       await this.persistBlocks(store, result);
 
-      // ⚡ PHASE 2: Parallel + Chunked (Heavy entities) 
+      // ⚡ PHASE 2: Sequential for FK dependencies, Parallel within each
+      await this.persistTransactionsChunked(store, result);
+      
+      // ⚡ PHASE 3: Parallel (No FK dependencies)
       await Promise.all([
-        this.persistTransactionsChunked(store, result),
         this.persistLogsChunked(store, result),
         this.persistTokensOptimized(store, result),
         this.persistContracts(store, result),
