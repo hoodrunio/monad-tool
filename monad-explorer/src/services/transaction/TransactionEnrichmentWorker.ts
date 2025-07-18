@@ -233,18 +233,8 @@ export class TransactionEnrichmentWorker {
       contractAddress = this.calculateContractAddress(fromAddress, BigInt(nonce));
     }
 
-    // 5. Fetch error information for failed transactions
+    // 5. Error information will be fetched on-demand via API calls
     let errorInfo = { error: null, revertReason: null };
-    if (status === 0) {
-      try {
-        errorInfo = await this.rpcClient.getTransactionErrorInfo(transactionHash);
-      } catch (error) {
-        logger.debug('Failed to fetch error info for transaction', {
-          transactionHash,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
-      }
-    }
 
     return {
       effectiveGasPrice: effectiveGasPrice.toString(),
