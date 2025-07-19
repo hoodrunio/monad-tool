@@ -148,7 +148,7 @@ export class EntityPersister {
     }
 
     try {
-      const CHUNK_SIZE = 50000; // Process 50000 transactions per chunk (high-performance server)
+      const CHUNK_SIZE = 20000; // Process 20000 transactions per chunk
       const chunks = this.chunkArray(result.transactions, CHUNK_SIZE);
       
       // Bulk sanitize all transactions first
@@ -160,7 +160,7 @@ export class EntityPersister {
         logger.debug(`Transaction chunk ${index + 1}/${chunks.length} persisted`, { 
           count: chunk.length 
         });
-      }, 6); // Max 8 concurrent chunks (high-performance server)
+      }, 3); // Max 3 concurrent chunks
       
       logger.info('All transactions persisted successfully', { 
         totalCount: result.transactions.length,
@@ -191,7 +191,7 @@ export class EntityPersister {
     }
 
     try {
-      const CHUNK_SIZE = 50000; // Process 50000 logs per chunk (high-performance server)
+      const CHUNK_SIZE = 20000; // Process 20000 logs per chunk
       const chunks = this.chunkArray(result.logs, CHUNK_SIZE);
       
       // Bulk sanitize all logs first
@@ -203,7 +203,7 @@ export class EntityPersister {
         logger.debug(`Log chunk ${index + 1}/${chunks.length} persisted`, { 
           count: chunk.length 
         });
-      }, 6); // Max 8 concurrent chunks (high-performance server)
+      }, 3); // Max 3 concurrent chunks
       
       logger.info('All logs persisted successfully', { 
         totalCount: result.logs.length,

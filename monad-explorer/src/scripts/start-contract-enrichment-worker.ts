@@ -97,27 +97,6 @@ class ContractEnrichmentWorkerApp {
         synchronize: false,
         logging: false,
         namingStrategy: new SnakeNamingStrategy(),
-        
-        // ⚡ CONTRACT WORKER CONNECTION POOLING OPTIMIZATIONS (20GB server)
-        poolSize: 15,                    // Increased pool for high-performance contract workers
-        maxQueryExecutionTime: 25000,    // Log slow queries (25+ seconds)
-        connectTimeoutMS: 20000,         // Connection timeout
-        extra: {
-          // PostgreSQL specific optimizations for contract workers (20GB server)
-          max: 15,                       // Maximum pool size (increased)
-          min: 3,                        // Minimum pool size (increased)
-          idle_timeout: 30000,           // Close idle connections after 30s
-          connectionTimeoutMillis: 20000, // Connection timeout
-          idleTimeoutMillis: 30000,      // Idle timeout
-          query_timeout: 60000,          // Query timeout (longer for contract analysis)
-          application_name: 'monad-explorer-contract-worker',
-          
-          // Contract worker specific optimizations
-          statement_timeout: 0,          // No statement timeout
-          lock_timeout: 8000,            // 8s lock timeout for contracts
-          idle_in_transaction_session_timeout: 40000, // 40s idle in transaction
-        },
-        
         entities: [
           'lib/model/generated/*.js'
         ],
