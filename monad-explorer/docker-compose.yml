@@ -14,12 +14,10 @@ services:
     volumes:
       # Data persistence için
       - postgres_secure_data:/var/lib/postgresql/data
-      # Güvenlik: read-only config
-      - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
-    # Use custom configuration file
-    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    # Use optimized inline configuration that was working
+    command: ["postgres", "-c", "shared_buffers=4GB", "-c", "effective_cache_size=8GB", "-c", "work_mem=128MB", "-c", "maintenance_work_mem=512MB", "-c", "max_connections=100", "-c", "checkpoint_completion_target=0.7"]
     # Güvenlik ayarları (increased for performance)
-    shm_size: 2gb
+    shm_size: 4gb
     restart: unless-stopped
     # Güvenlik: container'ı read-only yapın (data volume hariç)
     read_only: true
