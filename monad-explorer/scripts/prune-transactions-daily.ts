@@ -411,11 +411,11 @@ function getDateRange(config: DailyPruneConfig): { startDate: Date; endDate: Dat
     endDate = new Date(config.beforeDate);
     endDate.setUTCHours(0, 0, 0, 0);
     endDate.setDate(endDate.getDate() - 1); // beforeDate is exclusive
-    startDate = new Date('2020-01-01'); // Default start
+    startDate = new Date('2025-06-30'); // Default start
   } else if (config.toDate) {
     endDate = new Date(config.toDate);
     endDate.setUTCHours(23, 59, 59, 999);
-    startDate = new Date('2020-01-01'); // Default start
+    startDate = new Date('2025-06-30'); // Default start
   } else if (config.fromDate && config.toDate) {
     startDate = new Date(config.fromDate);
     startDate.setUTCHours(0, 0, 0, 0);
