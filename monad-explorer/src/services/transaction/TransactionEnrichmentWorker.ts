@@ -41,7 +41,7 @@ export class TransactionEnrichmentWorker {
       // Get RPC client from service container
       this.rpcClient = await serviceContainer.resolve<any>('rpcClient');
       
-      // Create database connection for worker
+      // Create optimized database connection for worker
       const config = appConfig.getConfig();
       this.dataSource = new DataSource({
         type: 'postgres',
@@ -53,6 +53,27 @@ export class TransactionEnrichmentWorker {
         synchronize: false,
         logging: false,
         namingStrategy: new SnakeNamingStrategy(),
+        
+        // ⚡ WORKER CONNECTION POOLING OPTIMIZATIONS (20GB server)
+        poolSize: 25,                    // Increased pool for high-performance workers
+        maxQueryExecutionTime: 20000,    // Log slow queries (faster detection)
+        connectTimeoutMS: 15000,         // Connection timeout
+        extra: {
+          // PostgreSQL specific optimizations for workers (20GB server)
+          max: 25,                       // Maximum pool size (increased)
+          min: 5,                        // Minimum pool size (increased)  
+          idle_timeout: 30000,           // Close idle connections after 30s
+          connectionTimeoutMillis: 15000, // Connection timeout
+          idleTimeoutMillis: 30000,      // Idle timeout
+          query_timeout: 60000,          // Query timeout
+          application_name: 'monad-explorer-tx-worker',
+          
+          // Worker-specific optimizations
+          statement_timeout: 0,          // No statement timeout
+          lock_timeout: 10000,           // 10s lock timeout for workers
+          idle_in_transaction_session_timeout: 30000, // 30s idle in transaction
+        },
+        
         entities: [Transaction, Block],
         migrations: ['lib/db/migrations/*.js'],
       });

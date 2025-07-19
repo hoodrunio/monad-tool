@@ -52,9 +52,7 @@ class TokenEnrichmentWorkerApp {
       const metadataFetcher = await serviceContainer.resolve<any>('tokenMetadataFetcher');
       const tokenRepository = await serviceContainer.resolve<any>('tokenRepository');
 
-      // Get database connection (TypeORM DataSource)
-      // For Squid framework, we need to access the database through the processor context
-      // Since we're in a separate worker, we'll create our own connection
+      // Get optimized database connection for token enrichment worker
       const dataSource = new DataSource({
         type: 'postgres',
         host: process.env.DB_HOST || 'localhost',
@@ -62,6 +60,27 @@ class TokenEnrichmentWorkerApp {
         username: process.env.DB_USER || 'postgres',
         password: process.env.DB_PASS || 'postgres',
         database: process.env.DB_NAME || 'squid',
+        
+        // ⚡ TOKEN WORKER CONNECTION POOLING OPTIMIZATIONS (20GB server)
+        poolSize: 20,                    // Increased pool for high-performance token workers
+        maxQueryExecutionTime: 15000,    // Log slow queries (15+ seconds)
+        connectTimeoutMS: 15000,         // Connection timeout
+        extra: {
+          // PostgreSQL specific optimizations for token workers (20GB server)
+          max: 20,                       // Maximum pool size (increased)
+          min: 5,                        // Minimum pool size (increased)
+          idle_timeout: 30000,           // Close idle connections after 30s
+          connectionTimeoutMillis: 15000, // Connection timeout
+          idleTimeoutMillis: 30000,      // Idle timeout
+          query_timeout: 30000,          // Query timeout (shorter for token ops)
+          application_name: 'monad-explorer-token-worker',
+          
+          // Token worker specific optimizations
+          statement_timeout: 0,          // No statement timeout
+          lock_timeout: 5000,            // 5s lock timeout for tokens
+          idle_in_transaction_session_timeout: 20000, // 20s idle in transaction
+        },
+        
         entities: [
           // Use only compiled JavaScript paths for production
           'lib/model/generated/*.js',

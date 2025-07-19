@@ -2,6 +2,7 @@ services:
   db:
     image: postgres:15
     container_name: monad-explorer-db-secure
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
     environment:
       POSTGRES_DB: ${DB_NAME:-squid}
       POSTGRES_PASSWORD: ${DB_PASS}
@@ -14,22 +15,25 @@ services:
     volumes:
       # Data persistence için
       - postgres_secure_data:/var/lib/postgresql/data
-      # Güvenlik: read-only config
-      - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
-    # Güvenlik ayarları
-    shm_size: 1gb
+      # Optimized PostgreSQL config
+      - ./postgresql.conf/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    # Memory optimizations (20GB server)
+    shm_size: 4gb
     restart: unless-stopped
-    # Güvenlik: container'ı read-only yapın (data volume hariç)
-    read_only: true
+    # Allow writes for config optimization
+    read_only: false
     tmpfs:
       - /tmp
       - /var/run/postgresql
-    # Resource limits
+    # High-performance resource limits (20GB server, 6 cores)
     deploy:
       resources:
         limits:
-          memory: 4G
-          cpus: '1.0'
+          memory: 16G
+          cpus: '5.0'
+        reservations:
+          memory: 12G
+          cpus: '4.0'
     # Network güvenliği
     networks:
       - monad-explorer-network

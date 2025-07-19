@@ -75,7 +75,7 @@ export class RestApiServer {
 
   private async initializeDatabase(): Promise<void> {
     try {
-      // Use same database config as Subsquid
+      // Use same database config as Subsquid with optimized connection pooling
       this.dataSource = new DataSource({
         type: 'postgres',
         host: process.env.DB_HOST || 'localhost',
@@ -86,6 +86,29 @@ export class RestApiServer {
         synchronize: false, // Don't modify schema
         logging: false,
         namingStrategy: new SnakeNamingStrategy(),
+        
+        // ⚡ CONNECTION POOLING OPTIMIZATIONS (20GB server)
+        poolSize: 50,                    // Max connections in pool (high-performance)
+        maxQueryExecutionTime: 20000,    // Log slow queries (20+ seconds)
+        
+        // ⚡ RECONNECTION SETTINGS
+        connectTimeoutMS: 30000,         // Connection timeout
+        extra: {
+            // PostgreSQL specific optimizations (20GB server)
+            max: 50,                       // Maximum pool size (high-performance)
+            min: 10,                       // Minimum pool size (increased)
+            idle_timeout: 30000,           // Close idle connections after 30s
+            connectionTimeoutMillis: 10000, // Connection timeout
+            idleTimeoutMillis: 30000,      // Idle timeout
+            query_timeout: 45000,          // Query timeout (optimized)
+            application_name: 'monad-explorer-api',
+          
+          // Performance optimizations
+          statement_timeout: 0,          // No statement timeout (use maxQueryExecutionTime instead)
+          lock_timeout: 30000,           // 30s lock timeout
+          idle_in_transaction_session_timeout: 60000, // 60s idle in transaction timeout
+        },
+        
         entities: [
           Block,
           Transaction,
