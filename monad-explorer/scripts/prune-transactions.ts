@@ -9,7 +9,7 @@ if (process.env.NODE_OPTIONS && !process.env.NODE_OPTIONS.includes('--max-old-sp
 
 import { DataSource } from 'typeorm';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
-import { Transaction, Block, DailyStats } from '../src/model/generated';
+import { Transaction, Block, DailyStats, Log } from '../src/model/generated';
 import { logger } from '../src/utils/logger';
 import dotenv from 'dotenv';
 
@@ -111,7 +111,7 @@ async function createDataSource(databaseUrl: string): Promise<DataSource> {
   const dataSource = new DataSource({
     type: 'postgres',
     url: databaseUrl,
-    entities: [Transaction, Block, DailyStats],
+    entities: [Transaction, Block, DailyStats, Log],
     logging: false,
     synchronize: false,
     namingStrategy: new SnakeNamingStrategy()
@@ -206,6 +206,55 @@ async function getCutoffTimestampForCount(
 }
 
 /**
+ * Delete logs associated with transactions in batches
+ */
+async function deleteLogsForTransactions(
+  dataSource: DataSource,
+  transactionIds: string[],
+  config: PruneConfig
+): Promise<number> {
+  const logRepo = dataSource.getRepository(Log);
+  let totalDeleted = 0;
+  
+  const batchSize = config.batchSize;
+  
+  // Process transaction IDs in batches
+  for (let i = 0; i < transactionIds.length; i += batchSize) {
+    const batchIds = transactionIds.slice(i, i + batchSize);
+    
+    if (config.dryRun) {
+      // Count logs that would be deleted
+      const logCount = await logRepo
+        .createQueryBuilder('log')
+        .where('log.transaction_id IN (:...transactionIds)', { transactionIds: batchIds })
+        .getCount();
+      
+      logger.info(`[DRY RUN] Would delete ${logCount} logs for ${batchIds.length} transactions`);
+      totalDeleted += logCount;
+    } else {
+      // Delete logs
+      const deleteResult = await logRepo
+        .createQueryBuilder()
+        .delete()
+        .where('transaction_id IN (:...transactionIds)', { transactionIds: batchIds })
+        .execute();
+      
+      const deletedCount = deleteResult.affected || 0;
+      totalDeleted += deletedCount;
+      
+      logger.info(`Deleted ${deletedCount} logs for ${batchIds.length} transactions`);
+    }
+    
+    // Force garbage collection if enabled
+    if (config.enableGc && global.gc) {
+      global.gc();
+    }
+  }
+  
+  return totalDeleted;
+}
+
+/**
  * Delete transactions in batches
  */
 async function deleteTransactionsInBatches(
@@ -213,16 +262,17 @@ async function deleteTransactionsInBatches(
   startDate: Date | null,
   endDate: Date | null,
   config: PruneConfig
-): Promise<number> {
+): Promise<{ transactionsDeleted: number; logsDeleted: number }> {
   const transactionRepo = dataSource.getRepository(Transaction);
-  let totalDeleted = 0;
+  let totalTransactionsDeleted = 0;
+  let totalLogsDeleted = 0;
   
   // Get total count for progress tracking
   const totalCount = await countTransactionsToDelete(dataSource, startDate, endDate);
   
   if (totalCount === 0) {
     logger.info('No transactions found to delete');
-    return 0;
+    return { transactionsDeleted: 0, logsDeleted: 0 };
   }
   
   logger.info(`Found ${totalCount} transactions to delete`);
@@ -259,17 +309,25 @@ async function deleteTransactionsInBatches(
     
     if (config.dryRun) {
       logger.info(`[DRY RUN] Would delete ${idsToDelete.length} transactions (IDs: ${idsToDelete.slice(0, 5).join(', ')}${idsToDelete.length > 5 ? '...' : ''})`);
+      
+      // Count logs that would be deleted
+      const logsDeleted = await deleteLogsForTransactions(dataSource, idsToDelete, config);
+      totalLogsDeleted += logsDeleted;
     } else {
-      // Delete transactions
+      // First delete associated logs
+      const logsDeleted = await deleteLogsForTransactions(dataSource, idsToDelete, config);
+      totalLogsDeleted += logsDeleted;
+      
+      // Then delete transactions
       const deleteResult = await transactionRepo
         .createQueryBuilder()
         .delete()
         .whereInIds(idsToDelete)
         .execute();
       
-      totalDeleted += deleteResult.affected || 0;
+      totalTransactionsDeleted += deleteResult.affected || 0;
       
-      logger.info(`Deleted ${deleteResult.affected || 0} transactions (${totalDeleted}/${totalCount})`);
+      logger.info(`Deleted ${deleteResult.affected || 0} transactions and ${logsDeleted} logs (${totalTransactionsDeleted}/${totalCount} transactions total)`);
     }
     
     offset += batchSize;
@@ -280,7 +338,7 @@ async function deleteTransactionsInBatches(
     }
   }
   
-  return totalDeleted;
+  return { transactionsDeleted: totalTransactionsDeleted, logsDeleted: totalLogsDeleted };
 }
 
 /**
@@ -290,9 +348,10 @@ async function deleteTransactionsOlderThanCutoff(
   dataSource: DataSource,
   cutoffTimestamp: Date,
   config: PruneConfig
-): Promise<number> {
+): Promise<{ transactionsDeleted: number; logsDeleted: number }> {
   const transactionRepo = dataSource.getRepository(Transaction);
-  let totalDeleted = 0;
+  let totalTransactionsDeleted = 0;
+  let totalLogsDeleted = 0;
   
   // Get total count for progress tracking
   const totalCount = await transactionRepo
@@ -302,7 +361,7 @@ async function deleteTransactionsOlderThanCutoff(
   
   if (totalCount === 0) {
     logger.info('No transactions found to delete');
-    return 0;
+    return { transactionsDeleted: 0, logsDeleted: 0 };
   }
   
   logger.info(`Found ${totalCount} transactions to delete (older than ${cutoffTimestamp.toISOString()})`);
@@ -330,17 +389,25 @@ async function deleteTransactionsOlderThanCutoff(
     
     if (config.dryRun) {
       logger.info(`[DRY RUN] Would delete ${idsToDelete.length} transactions (IDs: ${idsToDelete.slice(0, 5).join(', ')}${idsToDelete.length > 5 ? '...' : ''})`);
+      
+      // Count logs that would be deleted
+      const logsDeleted = await deleteLogsForTransactions(dataSource, idsToDelete, config);
+      totalLogsDeleted += logsDeleted;
     } else {
-      // Delete transactions
+      // First delete associated logs
+      const logsDeleted = await deleteLogsForTransactions(dataSource, idsToDelete, config);
+      totalLogsDeleted += logsDeleted;
+      
+      // Then delete transactions
       const deleteResult = await transactionRepo
         .createQueryBuilder()
         .delete()
         .whereInIds(idsToDelete)
         .execute();
       
-      totalDeleted += deleteResult.affected || 0;
+      totalTransactionsDeleted += deleteResult.affected || 0;
       
-      logger.info(`Deleted ${deleteResult.affected || 0} transactions (${totalDeleted}/${totalCount})`);
+      logger.info(`Deleted ${deleteResult.affected || 0} transactions and ${logsDeleted} logs (${totalTransactionsDeleted}/${totalCount} transactions total)`);
     }
     
     offset += batchSize;
@@ -351,7 +418,7 @@ async function deleteTransactionsOlderThanCutoff(
     }
   }
   
-  return totalDeleted;
+  return { transactionsDeleted: totalTransactionsDeleted, logsDeleted: totalLogsDeleted };
 }
 
 /**
@@ -602,7 +669,8 @@ async function main(): Promise<void> {
     const dataSource = await createDataSource(config.databaseUrl);
     
     try {
-      let deletedCount = 0;
+      let transactionsDeleted = 0;
+      let logsDeleted = 0;
       const startTime = Date.now();
       
       if (config.keepCount !== undefined) {
@@ -627,7 +695,9 @@ async function main(): Promise<void> {
         logger.info(`Cutoff timestamp: ${cutoffTimestamp.toISOString()}`);
         
         // Delete transactions older than cutoff
-        deletedCount = await deleteTransactionsOlderThanCutoff(dataSource, cutoffTimestamp, config);
+        const result = await deleteTransactionsOlderThanCutoff(dataSource, cutoffTimestamp, config);
+        transactionsDeleted = result.transactionsDeleted;
+        logsDeleted = result.logsDeleted;
         
         // Update daily stats for affected dates
         await updateDailyStatsAfterPruning(dataSource, cutoffTimestamp, null, config);
@@ -647,7 +717,9 @@ async function main(): Promise<void> {
         logger.info(`Found ${transactionCount} transactions to delete`);
         
         // Delete transactions
-        deletedCount = await deleteTransactionsInBatches(dataSource, startDate, endDate, config);
+        const result = await deleteTransactionsInBatches(dataSource, startDate, endDate, config);
+        transactionsDeleted = result.transactionsDeleted;
+        logsDeleted = result.logsDeleted;
         
         // Update daily stats
         await updateDailyStatsAfterPruning(dataSource, startDate, endDate, config);
@@ -656,9 +728,11 @@ async function main(): Promise<void> {
       const duration = Date.now() - startTime;
       
       logger.info('✅ Transaction pruning completed successfully', {
-        deletedCount,
+        transactionsDeleted,
+        logsDeleted,
+        totalDeleted: transactionsDeleted + logsDeleted,
         totalDuration: `${Math.round(duration / 1000)}s`,
-        averagePerTransaction: deletedCount > 0 ? `${Math.round(duration / deletedCount)}ms` : 'N/A'
+        averagePerTransaction: transactionsDeleted > 0 ? `${Math.round(duration / transactionsDeleted)}ms` : 'N/A'
       });
       
     } finally {
