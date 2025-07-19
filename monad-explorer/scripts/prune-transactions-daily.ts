@@ -7,18 +7,16 @@ if (process.env.NODE_OPTIONS && !process.env.NODE_OPTIONS.includes('--max-old-sp
   process.env.NODE_OPTIONS = '--max-old-space-size=8192';
 }
 
-import { Pool, PoolClient } from 'pg';
+import { Pool } from 'pg';
 import { logger } from '../src/utils/logger';
 import dotenv from 'dotenv';
-import cluster from 'cluster';
-import os from 'os';
 
 dotenv.config();
 
 /**
- * Configuration for parallel pruning operations
+ * Configuration for daily parallel pruning operations
  */
-interface ParallelPruneConfig {
+interface DailyPruneConfig {
   // Date range options
   beforeDate?: string;
   afterDate?: string;
@@ -38,35 +36,47 @@ interface ParallelPruneConfig {
 }
 
 /**
- * Worker task definition
+ * Worker task for a specific day
  */
-interface WorkerTask {
+interface DayWorkerTask {
   workerId: number;
-  startId: string;
-  endId: string;
-  estimatedCount: number;
+  date: string;
+  offset: number;
+  limit: number;
   batchSize: number;
   dryRun: boolean;
   enableGc: boolean;
 }
 
 /**
- * Worker result
+ * Worker result for a day
  */
-interface WorkerResult {
+interface DayWorkerResult {
   workerId: number;
+  date: string;
   transactionsDeleted: number;
   logsDeleted: number;
   duration: number;
-  dateRange: string;
+  chunksProcessed: number;
+}
+
+/**
+ * Daily summary
+ */
+interface DaySummary {
+  date: string;
+  totalTransactions: number;
+  totalLogs: number;
+  duration: number;
+  workersUsed: number;
 }
 
 /**
  * Default configuration
  */
-const DEFAULT_CONFIG: ParallelPruneConfig = {
-  batchSize: 50000,         // Larger batches for raw SQL
-  maxWorkers: 8,           // Use all available threads
+const DEFAULT_CONFIG: DailyPruneConfig = {
+  batchSize: 10000,         // 10K per batch within worker
+  maxWorkers: 5,           // Use all available threads
   dryRun: false,
   confirm: false,
   enableGc: true,
@@ -76,9 +86,9 @@ const DEFAULT_CONFIG: ParallelPruneConfig = {
 /**
  * Parse command line arguments
  */
-function parseArgs(): Partial<ParallelPruneConfig> {
+function parseArgs(): Partial<DailyPruneConfig> {
   const args = process.argv.slice(2);
-  const config: Partial<ParallelPruneConfig> = {};
+  const config: Partial<DailyPruneConfig> = {};
   
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i];
@@ -139,88 +149,32 @@ function createConnectionPool(databaseUrl: string, maxConnections: number): Pool
 }
 
 /**
- * Split transactions into chunks by ID for parallel processing
+ * Get list of days to process
  */
-async function splitTransactionsByCount(
-  pool: Pool,
-  startDate: Date,
-  endDate: Date,
-  numChunks: number
-): Promise<Array<{startId: string, endId: string, estimatedCount: number}>> {
-  const client = await pool.connect();
-  try {
-    // Get total count and ID range
-    const totalResult = await client.query(
-      'SELECT COUNT(*) as count, MIN(id) as min_id, MAX(id) as max_id FROM transaction WHERE timestamp >= $1 AND timestamp <= $2',
-      [startDate, endDate]
-    );
-    
-    const totalCount = parseInt(totalResult.rows[0].count);
-    const minId = totalResult.rows[0].min_id;
-    const maxId = totalResult.rows[0].max_id;
-    
-    if (totalCount === 0) {
-      return [];
-    }
-    
-    const chunksPerWorker = Math.ceil(totalCount / numChunks);
-    const chunks: Array<{startId: string, endId: string, estimatedCount: number}> = [];
-    
-    // Get transaction IDs at chunk boundaries
-    for (let i = 0; i < numChunks; i++) {
-      const offset = i * chunksPerWorker;
-      const limit = Math.min(chunksPerWorker, totalCount - offset);
-      
-      if (limit <= 0) break;
-      
-      // Get start ID for this chunk
-      const startResult = await client.query(`
-        SELECT id FROM transaction 
-        WHERE timestamp >= $1 AND timestamp <= $2 
-        ORDER BY id 
-        LIMIT 1 OFFSET $3
-      `, [startDate, endDate, offset]);
-      
-      // Get end ID for this chunk
-      const endOffset = offset + limit - 1;
-      const endResult = await client.query(`
-        SELECT id FROM transaction 
-        WHERE timestamp >= $1 AND timestamp <= $2 
-        ORDER BY id 
-        LIMIT 1 OFFSET $3
-      `, [startDate, endDate, endOffset]);
-      
-      if (startResult.rows.length > 0) {
-        const startId = startResult.rows[0].id;
-        const endId = endResult.rows.length > 0 ? endResult.rows[0].id : maxId;
-        
-        chunks.push({
-          startId,
-          endId,
-          estimatedCount: limit
-        });
-      }
-    }
-    
-    return chunks;
-  } finally {
-    client.release();
+function getDaysToProcess(startDate: Date, endDate: Date): string[] {
+  const days: string[] = [];
+  const currentDate = new Date(startDate);
+  
+  while (currentDate <= endDate) {
+    days.push(currentDate.toISOString().split('T')[0]); // YYYY-MM-DD format
+    currentDate.setDate(currentDate.getDate() + 1);
   }
+  
+  return days;
 }
 
 /**
- * Count total transactions in date range using raw SQL
+ * Count transactions for a specific day
  */
-async function countTransactionsInRange(
-  pool: Pool,
-  startDate: Date,
-  endDate: Date
-): Promise<number> {
+async function countTransactionsForDay(pool: Pool, date: string): Promise<number> {
   const client = await pool.connect();
   try {
+    const startOfDay = `${date}T00:00:00.000Z`;
+    const endOfDay = `${date}T23:59:59.999Z`;
+    
     const result = await client.query(
       'SELECT COUNT(*) as count FROM transaction WHERE timestamp >= $1 AND timestamp <= $2',
-      [startDate, endDate]
+      [startOfDay, endOfDay]
     );
     return parseInt(result.rows[0].count);
   } finally {
@@ -229,40 +183,46 @@ async function countTransactionsInRange(
 }
 
 /**
- * Delete logs and transactions in an ID range using raw SQL
+ * Delete transactions for a day chunk using raw SQL
  */
-async function deleteInIdRange(
+async function deleteDayChunk(
   pool: Pool,
-  startId: string,
-  endId: string,
+  date: string,
+  offset: number,
+  limit: number,
   batchSize: number,
   dryRun: boolean,
   enableGc: boolean,
   workerId: number
-): Promise<{ transactionsDeleted: number; logsDeleted: number }> {
+): Promise<{ transactionsDeleted: number; logsDeleted: number; chunksProcessed: number }> {
   const client = await pool.connect();
   let totalTransactionsDeleted = 0;
   let totalLogsDeleted = 0;
+  let chunksProcessed = 0;
   
   try {
-    let processedBatches = 0;
+    const startOfDay = `${date}T00:00:00.000Z`;
+    const endOfDay = `${date}T23:59:59.999Z`;
     
-    while (true) {
-      // Get batch of transaction IDs in range using proper hex comparison
+    let currentOffset = offset;
+    let remaining = limit;
+    
+    while (remaining > 0) {
+      const currentBatchSize = Math.min(batchSize, remaining);
+      
+      // Get batch of transaction IDs for this day
       const transactionResult = await client.query(`
         SELECT id FROM transaction 
-        WHERE id >= $1 AND id <= $2 
+        WHERE timestamp >= $1 AND timestamp <= $2 
         ORDER BY id 
-        LIMIT $3
-      `, [startId, endId, batchSize]);
+        LIMIT $3 OFFSET $4
+      `, [startOfDay, endOfDay, currentBatchSize, currentOffset]);
       
       if (transactionResult.rows.length === 0) {
-        logger.info(`[Worker ${workerId}] No more transactions found in range, completed after ${processedBatches} batches`);
         break;
       }
       
       const transactionIds = transactionResult.rows.map(row => row.id);
-      const lastId = transactionIds[transactionIds.length - 1];
       
       if (dryRun) {
         // Count logs that would be deleted
@@ -275,7 +235,7 @@ async function deleteInIdRange(
         totalLogsDeleted += logCount;
         totalTransactionsDeleted += transactionIds.length;
         
-        logger.info(`[Worker ${workerId}] [DRY RUN] Would delete ${transactionIds.length} transactions and ${logCount} logs (batch ${processedBatches + 1})`);
+        logger.info(`[Worker ${workerId}] [${date}] [DRY RUN] Would delete ${transactionIds.length} transactions and ${logCount} logs (chunk ${chunksProcessed + 1})`);
       } else {
         // Delete logs first
         const logDeleteResult = await client.query(`
@@ -293,30 +253,21 @@ async function deleteInIdRange(
         const transactionsDeleted = transactionDeleteResult.rowCount || 0;
         totalTransactionsDeleted += transactionsDeleted;
         
-        logger.info(`[Worker ${workerId}] Deleted ${transactionsDeleted} transactions and ${logsDeleted} logs (batch ${processedBatches + 1}, total: ${totalTransactionsDeleted})`);
+        logger.info(`[Worker ${workerId}] [${date}] Deleted ${transactionsDeleted} transactions and ${logsDeleted} logs (chunk ${chunksProcessed + 1})`);
       }
       
-      processedBatches++;
-      
-      // Update startId to continue from the next transaction
-      // For hex strings, we need to increment properly
-      const nextIdQuery = await client.query(`
-        SELECT id FROM transaction 
-        WHERE id > $1 AND id <= $2 
-        ORDER BY id 
-        LIMIT 1
-      `, [lastId, endId]);
-      
-      if (nextIdQuery.rows.length === 0) {
-        logger.info(`[Worker ${workerId}] Reached end of range, completed after ${processedBatches} batches`);
-        break;
-      }
-      
-      startId = nextIdQuery.rows[0].id;
+      currentOffset += currentBatchSize;
+      remaining -= transactionIds.length;
+      chunksProcessed++;
       
       // Force garbage collection if enabled
       if (enableGc && global.gc) {
         global.gc();
+      }
+      
+      // If we got fewer transactions than requested, we're done
+      if (transactionIds.length < currentBatchSize) {
+        break;
       }
     }
     
@@ -324,23 +275,24 @@ async function deleteInIdRange(
     client.release();
   }
   
-  return { transactionsDeleted: totalTransactionsDeleted, logsDeleted: totalLogsDeleted };
+  return { transactionsDeleted: totalTransactionsDeleted, logsDeleted: totalLogsDeleted, chunksProcessed };
 }
 
 /**
- * Worker process function
+ * Worker function for processing a day chunk
  */
-async function runWorker(task: WorkerTask): Promise<WorkerResult> {
+async function processDayWorker(task: DayWorkerTask): Promise<DayWorkerResult> {
   const startTime = Date.now();
   const pool = createConnectionPool(DEFAULT_CONFIG.databaseUrl, 1); // Single connection per worker
   
   try {
-    logger.info(`[Worker ${task.workerId}] Starting work on ID range: ${task.startId} to ${task.endId} (estimated: ${task.estimatedCount} transactions)`);
+    logger.info(`[Worker ${task.workerId}] [${task.date}] Starting work on offset ${task.offset}, limit ${task.limit}`);
     
-    const result = await deleteInIdRange(
+    const result = await deleteDayChunk(
       pool,
-      task.startId,
-      task.endId,
+      task.date,
+      task.offset,
+      task.limit,
       task.batchSize,
       task.dryRun,
       task.enableGc,
@@ -349,14 +301,15 @@ async function runWorker(task: WorkerTask): Promise<WorkerResult> {
     
     const duration = Date.now() - startTime;
     
-    logger.info(`[Worker ${task.workerId}] Completed: ${result.transactionsDeleted} transactions, ${result.logsDeleted} logs in ${Math.round(duration/1000)}s`);
+    logger.info(`[Worker ${task.workerId}] [${task.date}] Completed: ${result.transactionsDeleted} transactions, ${result.logsDeleted} logs in ${Math.round(duration/1000)}s`);
     
     return {
       workerId: task.workerId,
+      date: task.date,
       transactionsDeleted: result.transactionsDeleted,
       logsDeleted: result.logsDeleted,
       duration,
-      dateRange: `ID ${task.startId} to ${task.endId}`
+      chunksProcessed: result.chunksProcessed
     };
     
   } finally {
@@ -365,9 +318,72 @@ async function runWorker(task: WorkerTask): Promise<WorkerResult> {
 }
 
 /**
+ * Process a single day with all workers
+ */
+async function processDay(
+  date: string,
+  transactionCount: number,
+  config: DailyPruneConfig
+): Promise<DaySummary> {
+  if (transactionCount === 0) {
+    logger.info(`[${date}] No transactions to process`);
+    return {
+      date,
+      totalTransactions: 0,
+      totalLogs: 0,
+      duration: 0,
+      workersUsed: 0
+    };
+  }
+  
+  const startTime = Date.now();
+  
+  // Split work among workers
+  const transactionsPerWorker = Math.ceil(transactionCount / config.maxWorkers);
+  const tasks: DayWorkerTask[] = [];
+  
+  for (let i = 0; i < config.maxWorkers; i++) {
+    const offset = i * transactionsPerWorker;
+    const limit = Math.min(transactionsPerWorker, transactionCount - offset);
+    
+    if (limit <= 0) break;
+    
+    tasks.push({
+      workerId: i + 1,
+      date,
+      offset,
+      limit,
+      batchSize: config.batchSize,
+      dryRun: config.dryRun,
+      enableGc: config.enableGc
+    });
+  }
+  
+  logger.info(`[${date}] Starting ${tasks.length} workers for ${transactionCount} transactions...`);
+  
+  // Run all workers for this day in parallel
+  const results = await Promise.all(tasks.map(task => processDayWorker(task)));
+  
+  // Aggregate results
+  const totalTransactions = results.reduce((sum, r) => sum + r.transactionsDeleted, 0);
+  const totalLogs = results.reduce((sum, r) => sum + r.logsDeleted, 0);
+  const duration = Date.now() - startTime;
+  
+  logger.info(`[${date}] ✅ Day completed: ${totalTransactions} transactions, ${totalLogs} logs deleted by ${tasks.length} workers in ${Math.round(duration/1000)}s`);
+  
+  return {
+    date,
+    totalTransactions,
+    totalLogs,
+    duration,
+    workersUsed: tasks.length
+  };
+}
+
+/**
  * Validate configuration
  */
-function validateConfig(config: ParallelPruneConfig): void {
+function validateConfig(config: DailyPruneConfig): void {
   const hasDateOption = config.beforeDate || config.afterDate || config.fromDate || config.toDate;
   const hasCountOption = config.keepCount !== undefined;
   
@@ -387,13 +403,14 @@ function validateConfig(config: ParallelPruneConfig): void {
 /**
  * Get date range for pruning
  */
-function getDateRange(config: ParallelPruneConfig): { startDate: Date; endDate: Date } {
+function getDateRange(config: DailyPruneConfig): { startDate: Date; endDate: Date } {
   let startDate: Date;
   let endDate: Date;
   
   if (config.beforeDate) {
     endDate = new Date(config.beforeDate);
     endDate.setUTCHours(0, 0, 0, 0);
+    endDate.setDate(endDate.getDate() - 1); // beforeDate is exclusive
     startDate = new Date('2020-01-01'); // Default start
   } else if (config.toDate) {
     endDate = new Date(config.toDate);
@@ -414,21 +431,23 @@ function getDateRange(config: ParallelPruneConfig): { startDate: Date; endDate: 
 /**
  * Get user confirmation
  */
-async function getConfirmation(config: ParallelPruneConfig): Promise<boolean> {
+async function getConfirmation(config: DailyPruneConfig): Promise<boolean> {
   if (config.confirm) {
     return true;
   }
   
   const { startDate, endDate } = getDateRange(config);
+  const days = getDaysToProcess(startDate, endDate);
   
-  console.log('\n=== PARALLEL PRUNING OPERATION SUMMARY ===');
+  console.log('\n=== DAILY PARALLEL PRUNING OPERATION SUMMARY ===');
   console.log(`Database URL: ${config.databaseUrl}`);
   console.log(`Batch Size: ${config.batchSize}`);
   console.log(`Max Workers: ${config.maxWorkers}`);
   console.log(`Dry Run: ${config.dryRun}`);
-  console.log(`Date Range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
+  console.log(`Date Range: ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
+  console.log(`Total Days: ${days.length}`);
   
-  console.log('\n⚠️  WARNING: This will run parallel deletion operations!');
+  console.log('\n⚠️  WARNING: This will process days sequentially with parallel workers per day!');
   console.log('   Make sure your database can handle the concurrent load.');
   
   if (config.dryRun) {
@@ -443,7 +462,7 @@ async function getConfirmation(config: ParallelPruneConfig): Promise<boolean> {
   });
   
   return new Promise((resolve) => {
-    rl.question('\nDo you want to proceed with parallel deletion? (yes/no): ', (answer: string) => {
+    rl.question('\nDo you want to proceed with daily parallel deletion? (yes/no): ', (answer: string) => {
       rl.close();
       resolve(answer.toLowerCase() === 'yes' || answer.toLowerCase() === 'y');
     });
@@ -457,7 +476,7 @@ async function main(): Promise<void> {
   try {
     // Parse configuration
     const userConfig = parseArgs();
-    const config: ParallelPruneConfig = { ...DEFAULT_CONFIG, ...userConfig };
+    const config: DailyPruneConfig = { ...DEFAULT_CONFIG, ...userConfig };
     
     // Validate configuration
     validateConfig(config);
@@ -470,9 +489,11 @@ async function main(): Promise<void> {
     }
     
     const { startDate, endDate } = getDateRange(config);
+    const days = getDaysToProcess(startDate, endDate);
     
-    logger.info('Starting parallel transaction pruning operation', {
-      dateRange: `${startDate.toISOString()} to ${endDate.toISOString()}`,
+    logger.info('Starting daily parallel transaction pruning operation', {
+      dateRange: `${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`,
+      totalDays: days.length,
       batchSize: config.batchSize,
       maxWorkers: config.maxWorkers,
       dryRun: config.dryRun,
@@ -483,63 +504,59 @@ async function main(): Promise<void> {
     const coordinatorPool = createConnectionPool(config.databaseUrl, 2);
     
     try {
-      // Count total transactions
-      const totalTransactions = await countTransactionsInRange(coordinatorPool, startDate, endDate);
-      logger.info(`Found ${totalTransactions} transactions to process`);
+      const overallStartTime = Date.now();
+      const daySummaries: DaySummary[] = [];
+      let totalTransactionsDeleted = 0;
+      let totalLogsDeleted = 0;
       
-      if (totalTransactions === 0) {
-        logger.info('No transactions found to delete');
-        return;
+      // Process each day sequentially
+      for (let dayIndex = 0; dayIndex < days.length; dayIndex++) {
+        const date = days[dayIndex];
+        
+        logger.info(`\n📅 Processing day ${dayIndex + 1}/${days.length}: ${date}`);
+        
+        // Count transactions for this day
+        const transactionCount = await countTransactionsForDay(coordinatorPool, date);
+        
+        if (transactionCount === 0) {
+          logger.info(`[${date}] No transactions found, skipping`);
+          continue;
+        }
+        
+        logger.info(`[${date}] Found ${transactionCount} transactions to process`);
+        
+        // Process this day with all workers
+        const daySummary = await processDay(date, transactionCount, config);
+        daySummaries.push(daySummary);
+        
+        totalTransactionsDeleted += daySummary.totalTransactions;
+        totalLogsDeleted += daySummary.totalLogs;
+        
+        const remainingDays = days.length - dayIndex - 1;
+        logger.info(`[${date}] Progress: ${dayIndex + 1}/${days.length} days completed (${remainingDays} remaining)`);
       }
       
-             // Split work into chunks by transaction ID
-       const idChunks = await splitTransactionsByCount(coordinatorPool, startDate, endDate, config.maxWorkers);
-       
-       if (idChunks.length === 0) {
-         logger.info('No transaction chunks found to process');
-         return;
-       }
-       
-       // Create worker tasks
-       const tasks: WorkerTask[] = idChunks.map((chunk, index) => ({
-         workerId: index + 1,
-         startId: chunk.startId,
-         endId: chunk.endId,
-         estimatedCount: chunk.estimatedCount,
-         batchSize: config.batchSize,
-         dryRun: config.dryRun,
-         enableGc: config.enableGc
-       }));
+      const overallDuration = Date.now() - overallStartTime;
       
-      logger.info(`Starting ${config.maxWorkers} parallel workers...`);
-      
-      const startTime = Date.now();
-      
-      // Run all workers in parallel
-      const results = await Promise.all(tasks.map(task => runWorker(task)));
-      
-      // Aggregate results
-      const totalTransactionsDeleted = results.reduce((sum, r) => sum + r.transactionsDeleted, 0);
-      const totalLogsDeleted = results.reduce((sum, r) => sum + r.logsDeleted, 0);
-      const totalDuration = Date.now() - startTime;
-      
-      logger.info('✅ Parallel transaction pruning completed successfully', {
+      logger.info('\n✅ Daily parallel transaction pruning completed successfully', {
+        totalDaysProcessed: daySummaries.length,
         totalTransactionsDeleted,
         totalLogsDeleted,
         totalDeleted: totalTransactionsDeleted + totalLogsDeleted,
-        totalDuration: `${Math.round(totalDuration / 1000)}s`,
-        workersUsed: config.maxWorkers,
-        averagePerWorker: `${Math.round(totalTransactionsDeleted / config.maxWorkers)} transactions/worker`
+        overallDuration: `${Math.round(overallDuration / 1000)}s`,
+        averageTimePerDay: daySummaries.length > 0 ? `${Math.round(overallDuration / daySummaries.length / 1000)}s` : 'N/A'
       });
       
-      // Show per-worker results
-      results.forEach(result => {
-        logger.info(`Worker ${result.workerId} results:`, {
-          transactions: result.transactionsDeleted,
-          logs: result.logsDeleted,
-          duration: `${Math.round(result.duration / 1000)}s`,
-          dateRange: result.dateRange
-        });
+      // Show daily summary
+      daySummaries.forEach(summary => {
+        if (summary.totalTransactions > 0) {
+          logger.info(`Daily summary - ${summary.date}:`, {
+            transactions: summary.totalTransactions,
+            logs: summary.totalLogs,
+            duration: `${Math.round(summary.duration / 1000)}s`,
+            workers: summary.workersUsed
+          });
+        }
       });
       
     } finally {
@@ -547,7 +564,7 @@ async function main(): Promise<void> {
     }
     
   } catch (error) {
-    logger.error('❌ Parallel transaction pruning failed', {
+    logger.error('❌ Daily parallel transaction pruning failed', {
       error: error instanceof Error ? error.message : 'Unknown error',
       stack: error instanceof Error ? error.stack : undefined
     });
