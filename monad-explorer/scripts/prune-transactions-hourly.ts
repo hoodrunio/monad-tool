@@ -216,8 +216,18 @@ async function deleteHourChunk(
   let chunksProcessed = 0;
   
   try {
-    const startOfHour = `${date}T${hour.toString().padStart(2, '0')}:00:00.000Z`;
-    const endOfHour = `${date}T${hour.toString().padStart(2, '0')}:59:59.999Z`;
+    let startTime: string;
+    let endTime: string;
+    
+    if (hour === -1) {
+      // Full day processing
+      startTime = `${date}T00:00:00.000Z`;
+      endTime = `${date}T23:59:59.999Z`;
+    } else {
+      // Specific hour processing
+      startTime = `${date}T${hour.toString().padStart(2, '0')}:00:00.000Z`;
+      endTime = `${date}T${hour.toString().padStart(2, '0')}:59:59.999Z`;
+    }
     
     let currentOffset = offset;
     let remaining = limit;
@@ -225,13 +235,13 @@ async function deleteHourChunk(
     while (remaining > 0) {
       const currentBatchSize = Math.min(batchSize, remaining);
       
-      // Get batch of transaction IDs for this hour
+      // Get batch of transaction IDs for this time period
       const transactionResult = await client.query(`
         SELECT id FROM transaction 
         WHERE timestamp >= $1 AND timestamp <= $2 
         ORDER BY id 
         LIMIT $3 OFFSET $4
-      `, [startOfHour, endOfHour, currentBatchSize, currentOffset]);
+      `, [startTime, endTime, currentBatchSize, currentOffset]);
       
       if (transactionResult.rows.length === 0) {
         break;
@@ -240,35 +250,62 @@ async function deleteHourChunk(
       const transactionIds = transactionResult.rows.map(row => row.id);
       
       if (dryRun) {
-        // Count logs that would be deleted
+        // Count all related records that would be deleted
         const logCountResult = await client.query(`
           SELECT COUNT(*) as count FROM log 
           WHERE transaction_id = ANY($1)
         `, [transactionIds]);
         
+        const contractCountResult = await client.query(`
+          SELECT COUNT(*) as count FROM contract 
+          WHERE creation_transaction_id = ANY($1)
+        `, [transactionIds]);
+        
+        const internalTxCountResult = await client.query(`
+          SELECT COUNT(*) as count FROM internal_transaction 
+          WHERE transaction_id = ANY($1)
+        `, [transactionIds]);
+        
         const logCount = parseInt(logCountResult.rows[0].count);
-        totalLogsDeleted += logCount;
+        const contractCount = parseInt(contractCountResult.rows[0].count);
+        const internalTxCount = parseInt(internalTxCountResult.rows[0].count);
+        
+        totalLogsDeleted += logCount + contractCount + internalTxCount;
         totalTransactionsDeleted += transactionIds.length;
         
-        logger.info(`[Worker ${workerId}] [${date} ${hour}:00] [DRY RUN] Would delete ${transactionIds.length} transactions and ${logCount} logs (chunk ${chunksProcessed + 1})`);
+        logger.info(`[Worker ${workerId}] [${date} ${hour}:00] [DRY RUN] Would delete ${transactionIds.length} transactions, ${logCount} logs, ${contractCount} contracts, ${internalTxCount} internal_txs (chunk ${chunksProcessed + 1})`);
       } else {
-        // Delete logs first
+        // Delete in correct order: logs → contracts → internal_transactions → transactions
+        
+        // 1. Delete logs
         const logDeleteResult = await client.query(`
           DELETE FROM log WHERE transaction_id = ANY($1)
         `, [transactionIds]);
         
-        const logsDeleted = logDeleteResult.rowCount || 0;
-        totalLogsDeleted += logsDeleted;
+        // 2. Delete contracts
+        const contractDeleteResult = await client.query(`
+          DELETE FROM contract WHERE creation_transaction_id = ANY($1)
+        `, [transactionIds]);
         
-        // Delete transactions
+        // 3. Delete internal transactions  
+        const internalTxDeleteResult = await client.query(`
+          DELETE FROM internal_transaction WHERE transaction_id = ANY($1)
+        `, [transactionIds]);
+        
+        // 4. Delete transactions
         const transactionDeleteResult = await client.query(`
           DELETE FROM transaction WHERE id = ANY($1)
         `, [transactionIds]);
         
+        const logsDeleted = logDeleteResult.rowCount || 0;
+        const contractsDeleted = contractDeleteResult.rowCount || 0;
+        const internalTxsDeleted = internalTxDeleteResult.rowCount || 0;
         const transactionsDeleted = transactionDeleteResult.rowCount || 0;
+        
+        totalLogsDeleted += logsDeleted + contractsDeleted + internalTxsDeleted;
         totalTransactionsDeleted += transactionsDeleted;
         
-        logger.info(`[Worker ${workerId}] [${date} ${hour}:00] Deleted ${transactionsDeleted} transactions and ${logsDeleted} logs (chunk ${chunksProcessed + 1})`);
+        logger.info(`[Worker ${workerId}] [${date} ${hour}:00] Deleted ${transactionsDeleted} transactions, ${logsDeleted} logs, ${contractsDeleted} contracts, ${internalTxsDeleted} internal_txs (chunk ${chunksProcessed + 1})`);
       }
       
       currentOffset += currentBatchSize;
@@ -301,7 +338,8 @@ async function processHourWorker(task: HourWorkerTask): Promise<any> {
   const pool = createConnectionPool(DEFAULT_CONFIG.databaseUrl, 1); // Single connection per worker
   
   try {
-    logger.info(`[Worker ${task.workerId}] [${task.date} ${task.hour}:00] Starting work on offset ${task.offset}, limit ${task.limit}`);
+    const timeLabel = task.hour === -1 ? 'FULL-DAY' : `${task.hour}:00`;
+    logger.info(`[Worker ${task.workerId}] [${task.date} ${timeLabel}] Starting work on offset ${task.offset}, limit ${task.limit}`);
     
     const result = await deleteHourChunk(
       pool,
@@ -317,7 +355,7 @@ async function processHourWorker(task: HourWorkerTask): Promise<any> {
     
     const duration = Date.now() - startTime;
     
-    logger.info(`[Worker ${task.workerId}] [${task.date} ${task.hour}:00] Completed: ${result.transactionsDeleted} transactions, ${result.logsDeleted} logs in ${Math.round(duration/1000)}s`);
+    logger.info(`[Worker ${task.workerId}] [${task.date} ${timeLabel}] Completed: ${result.transactionsDeleted} transactions, ${result.logsDeleted} logs in ${Math.round(duration/1000)}s`);
     
     return {
       workerId: task.workerId,
@@ -446,7 +484,7 @@ async function processRegularDay(
 ): Promise<{ totalTransactions: number; totalLogs: number; duration: number }> {
   const startTime = Date.now();
   
-  // Use the same logic as daily processing
+  // Use the same logic as daily processing (hour -1 indicates full day processing)
   const transactionsPerWorker = Math.ceil(transactionCount / config.maxWorkers);
   const tasks: any[] = [];
   
@@ -459,7 +497,7 @@ async function processRegularDay(
     tasks.push({
       workerId: i + 1,
       date,
-      hour: -1, // Flag for daily processing
+      hour: -1, // Flag for daily processing (full day, not hourly)
       offset,
       limit,
       batchSize: config.batchSize,
