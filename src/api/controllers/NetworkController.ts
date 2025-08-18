@@ -197,7 +197,7 @@ export class NetworkController {
           COUNT(*) as total_block_events,
           COUNT(DISTINCT validator_id) as active_validators,
           COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_blocks,
-          COUNT(CASE WHEN status = 'skipped' THEN 1 END) as skipped_blocks,
+          COUNT(CASE WHEN status = 'skipped' THEN 1 END) as timeout_blocks,
           (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate
         FROM block_proposals
         WHERE timestamp >= now() - INTERVAL ${intervalClause}
@@ -240,7 +240,7 @@ export class NetworkController {
           block_metrics: {
             total_blocks: parseInt(b.total_block_events),
             successful_blocks: parseInt(b.successful_blocks),
-            skipped_blocks: parseInt(b.skipped_blocks),
+            timeout_blocks: parseInt(b.timeout_blocks),
             success_rate: parseFloat(b.block_success_rate)
           },
           qc_metrics: {
@@ -261,7 +261,7 @@ export class NetworkController {
           block_metrics: {
             total_blocks: 0,
             successful_blocks: 0,
-            skipped_blocks: 0,
+            timeout_blocks: 0,
             success_rate: 0
           }
         };
@@ -349,7 +349,7 @@ export class NetworkController {
             COUNT(DISTINCT bp.validator_id) as block_validator_count,
             COUNT(*) as block_events,
             COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as successful_blocks,
-            COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END) as skipped_blocks
+            COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END) as timeout_blocks
           FROM block_proposals bp
           LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
           WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}

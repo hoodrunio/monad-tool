@@ -151,7 +151,7 @@ export class FocusedLogProcessor {
         blockId: fields.seq_num || undefined,
         
         // Infrastructure will be populated by enhanceEventsWithInfrastructure
-        validatorDns: '',
+        validatorDns: fields.author_address || '',
         geographicRegion: 'unknown',
         infrastructureProvider: 'unknown',
         
@@ -159,8 +159,21 @@ export class FocusedLogProcessor {
       };
     }
 
-    // Extract skipped_block events
-    if (message === 'skipped_block') {
+    // Track finalized_block events for sequence number updates but don't create separate proposals
+    if (message === 'finalized_block') {
+      const seqNum = parseInt(fields.seq_num) || 0;
+      const epochNumber = parseInt(fields.epoch) || 1;
+      
+      this.lastLedgerSeqNum = seqNum;
+      this.lastLedgerEpoch = epochNumber;
+
+      // Don't return a BlockProposalEvent - finalized blocks are just confirmations
+      // of already proposed blocks, not new proposals
+      return null;
+    }
+
+    // Extract timeout events (previously skipped_block)
+    if (message === 'timeout') {
       return {
         timestamp: new Date(log.timestamp),
         validatorId: this.normalizeValidatorId(fields.author || 'unknown'),
@@ -172,7 +185,7 @@ export class FocusedLogProcessor {
         blockId: String(this.lastLedgerSeqNum) || undefined,
         
         // Infrastructure will be populated by enhanceEventsWithInfrastructure
-        validatorDns: '',
+        validatorDns: fields.author_address || '',
         geographicRegion: 'unknown',
         infrastructureProvider: 'unknown',
         

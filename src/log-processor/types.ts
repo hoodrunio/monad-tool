@@ -387,8 +387,9 @@ export const EventTypeMapping: Record<string, EventType> = {
   'try committing blocks using qc': EventType.QC_COMMIT_ATTEMPT,
   'qc triggered commit': EventType.QC_COMMIT_TRIGGERED,
   'proposed_block': EventType.BLOCK_PROPOSAL,
+  'finalized_block': EventType.BLOCK_COMMITTED,
   'committed block': EventType.BLOCK_COMMITTED,
-  'skipped_block': EventType.BLOCK_SKIPPED,
+  'timeout': EventType.BLOCK_SKIPPED,
   'base seq num committed': EventType.BLOCK_SEQUENCE_COMMITTED,
   'txpool updating committed block': EventType.TXPOOL_UPDATED
 };
@@ -506,16 +507,30 @@ export interface LedgerProposedBlockEvent {
   author: string;
   num_tx: string;
   block_id?: string;
+  author_address?: string;
 }
 
-export interface LedgerSkippedBlockEvent {
-  message: 'skipped_block';
+export interface LedgerFinalizedBlockEvent {
+  message: 'finalized_block';
+  round: string;
+  parent_round: string;
+  seq_num: string;
+  epoch: string;
+  author: string;
+  block_ts_ms: string;
+  now_ts_ms: string;
+  author_address?: string;
+}
+
+export interface LedgerTimeoutEvent {
+  message: 'timeout';
   round: string;
   author: string;
   epoch?: string;
+  author_address?: string;
 }
 
-export type LedgerBlockEvent = LedgerProposedBlockEvent | LedgerSkippedBlockEvent;
+export type LedgerBlockEvent = LedgerProposedBlockEvent | LedgerFinalizedBlockEvent | LedgerTimeoutEvent;
 
 // =============================================
 // BFT QC PROCESSING TYPES
