@@ -15,7 +15,7 @@ export class EpochController {
     const rpcClient = new NodeRpcClient(rpcUrl, rpcTimeout);
     
     // Initialize Epoch service with 50k block interval for Monad
-    this.epochService = new EpochService(rpcClient, 50000);
+    this.epochService = new EpochService(rpcClient, 5000);
     
     // Set average block time if configured - Monad default is 0.5 seconds
     const avgBlockTime = parseFloat(process.env.AVG_BLOCK_TIME || '0.5');
@@ -342,7 +342,7 @@ export class EpochController {
         success: true,
         data: {
           epochInterval: this.epochService.getEpochInterval(),
-          blocksPerEpoch: 50000,
+          blocksPerEpoch: 5000,
           description: 'Monad blockchain epoch configuration'
         },
         timestamp: new Date().toISOString()

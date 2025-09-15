@@ -29,7 +29,7 @@ export class EpochService {
   private readonly epochInterval: number;
   private avgBlockTimeSeconds: number = 0.5; // Default 0.5 seconds per block for Monad
 
-  constructor(private readonly rpcClient: NodeRpcClient, epochInterval: number = 50000) {
+  constructor(private readonly rpcClient: NodeRpcClient, epochInterval: number = 5000) {
     this.epochInterval = epochInterval;
     if (epochInterval <= 0) {
       throw new Error('Epoch interval must be a positive number.');
