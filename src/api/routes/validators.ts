@@ -5,6 +5,10 @@ import { ValidatorController } from '../controllers/ValidatorController';
 export function createValidatorRoutes(validatorController: ValidatorController): Router {
   const router = Router();
 
+  // Staking integration endpoints
+  router.get('/api/validators/staking/info', validatorController.getStakingInfo.bind(validatorController));
+  router.post('/api/validators/staking/update', validatorController.forceStakingUpdate.bind(validatorController));
+
   // Validator ranking and statistics
   router.get('/api/validators/rankings', validatorController.getValidatorRankings.bind(validatorController));
   

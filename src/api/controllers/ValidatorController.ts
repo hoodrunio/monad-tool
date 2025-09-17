@@ -1,18 +1,86 @@
 // Monad Validator Analytics - Refactored Validator Controller
-// Focus: Separate Validator Metrics (Block Proposals + QC Participation)
+// Focus: Separate Validator Metrics (Block Proposals + QC Participation) + Staking Integration
 import { Request, Response } from 'express';
 import { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { MonadRedisClient } from '../../cache/redis-client';
+import { StakingUpdateService } from '../../services/staking/StakingUpdateService';
 import { logger } from '../../utils/logger';
 
 export class ValidatorController {
   constructor(
     private clickhouseClient: MonadClickHouseClient,
-    private redisClient: MonadRedisClient
+    private redisClient: MonadRedisClient,
+    private stakingUpdateService?: StakingUpdateService
   ) {}
 
+  // Method to update staking service after initialization
+  setStakingUpdateService(stakingUpdateService: StakingUpdateService | null): void {
+    this.stakingUpdateService = stakingUpdateService || undefined;
+  }
+
   // =============================================
-  // VALIDATOR RANKINGS (Separate Metrics)
+  // STAKING INTEGRATION METHODS
+  // =============================================
+
+  async getStakingInfo(req: Request, res: Response): Promise<void> {
+    try {
+      if (!this.stakingUpdateService) {
+        res.status(503).json({
+          error: 'Staking service not available',
+          message: 'Staking integration is not configured',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const stats = this.stakingUpdateService.getStakingStats();
+      const status = this.stakingUpdateService.getStatus();
+
+      res.json({
+        stakingStats: stats,
+        serviceStatus: status,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to get staking info:', error);
+      res.status(500).json({
+        error: 'Failed to get staking info',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async forceStakingUpdate(req: Request, res: Response): Promise<void> {
+    try {
+      if (!this.stakingUpdateService) {
+        res.status(503).json({
+          error: 'Staking service not available',
+          message: 'Staking integration is not configured',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      logger.info('🔄 Force staking update requested');
+      await this.stakingUpdateService.forceUpdate();
+
+      res.json({
+        message: 'Staking update completed successfully',
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to force staking update:', error);
+      res.status(500).json({
+        error: 'Failed to force staking update',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  // =============================================
+  // VALIDATOR RANKINGS (Separate Metrics + Staking)
   // =============================================
 
   async getValidatorRankings(req: Request, res: Response): Promise<void> {
@@ -468,32 +536,48 @@ export class ValidatorController {
     const totalCount = countResult[0]?.total_count || 0;
     const totalPages = Math.ceil(totalCount / limit);
     
-    const rankings = dataResult.map((r, index) => ({
-      rank: offset + index + 1,
-      validator_id: r.validator_id,
-      stake: parseInt(r.stake || 0),
-      metrics: {
-        block_proposal_ratio: parseFloat(r.block_proposal_ratio || 0),
-        qc_participation_rate: parseFloat(r.qc_participation_rate || 0),
-        uptime_score: parseFloat(r.uptime_score || 0)
-      },
-      details: {
-        total_block_opportunities: parseInt(r.total_block_opportunities || 0),
-        total_qc_opportunities: parseInt(r.total_qc_opportunities || 0),
-        blocks_proposed: parseInt(r.blocks_proposed || 0),
-        blocks_skipped: parseInt(r.blocks_skipped || 0),
-        qc_participations: parseInt(r.qc_participations || 0)
-      },
-      infrastructure: {
-        validator_name: r.validator_name || 'unknown',
-        provider: r.provider || 'unknown',
-        location: r.location || 'unknown'
-      },
-      keybase: {
-        id: r.keybase_id || null,
-        logo_url: r.keybase_logo_url || null
+    const rankings = dataResult.map((r, index) => {
+      // Get staking information if available
+      let stakingInfo = null;
+      if (this.stakingUpdateService) {
+        const isActive = this.stakingUpdateService.isValidatorActive(r.validator_id);
+        const realTimeStake = this.stakingUpdateService.getValidatorStake(r.validator_id);
+        
+        stakingInfo = {
+          is_staking_active: isActive,
+          real_time_stake: realTimeStake ? realTimeStake.toString() : null,
+          database_stake: parseInt(r.stake || 0)
+        };
       }
-    }));
+
+      return {
+        rank: offset + index + 1,
+        validator_id: r.validator_id,
+        stake: parseInt(r.stake || 0),
+        staking: stakingInfo,
+        metrics: {
+          block_proposal_ratio: parseFloat(r.block_proposal_ratio || 0),
+          qc_participation_rate: parseFloat(r.qc_participation_rate || 0),
+          uptime_score: parseFloat(r.uptime_score || 0)
+        },
+        details: {
+          total_block_opportunities: parseInt(r.total_block_opportunities || 0),
+          total_qc_opportunities: parseInt(r.total_qc_opportunities || 0),
+          blocks_proposed: parseInt(r.blocks_proposed || 0),
+          blocks_skipped: parseInt(r.blocks_skipped || 0),
+          qc_participations: parseInt(r.qc_participations || 0)
+        },
+        infrastructure: {
+          validator_name: r.validator_name || 'unknown',
+          provider: r.provider || 'unknown',
+          location: r.location || 'unknown'
+        },
+        keybase: {
+          id: r.keybase_id || null,
+          logo_url: r.keybase_logo_url || null
+        }
+      };
+    });
 
     return {
       data: rankings,
@@ -579,32 +663,48 @@ export class ValidatorController {
 
     const rankings = result;
     
-    return rankings.map((r, index) => ({
-      rank: index + 1,
-      validator_id: r.validator_id,
-      stake: parseInt(r.stake || 0),
-      metrics: {
-        block_proposal_ratio: parseFloat(r.block_proposal_ratio || 0),
-        qc_participation_rate: parseFloat(r.qc_participation_rate || 0),
-        uptime_score: parseFloat(r.uptime_score || 0)
-      },
-      details: {
-        total_block_opportunities: parseInt(r.total_block_opportunities || 0),
-        total_qc_opportunities: parseInt(r.total_qc_opportunities || 0),
-        blocks_proposed: parseInt(r.blocks_proposed || 0),
-        blocks_skipped: parseInt(r.blocks_skipped || 0),
-        qc_participations: parseInt(r.qc_participations || 0)
-      },
-      infrastructure: {
-        validator_name: r.validator_name || 'unknown',
-        provider: r.provider || 'unknown',
-        location: r.location || 'unknown'
-      },
-      keybase: {
-        id: r.keybase_id || null,
-        logo_url: r.keybase_logo_url || null
+    return rankings.map((r, index) => {
+      // Get staking information if available
+      let stakingInfo = null;
+      if (this.stakingUpdateService) {
+        const isActive = this.stakingUpdateService.isValidatorActive(r.validator_id);
+        const realTimeStake = this.stakingUpdateService.getValidatorStake(r.validator_id);
+        
+        stakingInfo = {
+          is_staking_active: isActive,
+          real_time_stake: realTimeStake ? realTimeStake.toString() : null,
+          database_stake: parseInt(r.stake || 0)
+        };
       }
-    }));
+
+      return {
+        rank: index + 1,
+        validator_id: r.validator_id,
+        stake: parseInt(r.stake || 0),
+        staking: stakingInfo,
+        metrics: {
+          block_proposal_ratio: parseFloat(r.block_proposal_ratio || 0),
+          qc_participation_rate: parseFloat(r.qc_participation_rate || 0),
+          uptime_score: parseFloat(r.uptime_score || 0)
+        },
+        details: {
+          total_block_opportunities: parseInt(r.total_block_opportunities || 0),
+          total_qc_opportunities: parseInt(r.total_qc_opportunities || 0),
+          blocks_proposed: parseInt(r.blocks_proposed || 0),
+          blocks_skipped: parseInt(r.blocks_skipped || 0),
+          qc_participations: parseInt(r.qc_participations || 0)
+        },
+        infrastructure: {
+          validator_name: r.validator_name || 'unknown',
+          provider: r.provider || 'unknown',
+          location: r.location || 'unknown'
+        },
+        keybase: {
+          id: r.keybase_id || null,
+          logo_url: r.keybase_logo_url || null
+        }
+      };
+    });
   }
 
   private async getValidatorHourlyHistory(validatorId: string, hours: number): Promise<any[]> {

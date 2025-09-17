@@ -19,6 +19,9 @@ import { QueryPerformanceController } from './controllers/QueryPerformanceContro
 import { EpochController } from './controllers/EpochController';
 import { TransactionAnalyticsController } from './controllers/TransactionAnalyticsController';
 
+// Import Staking Services
+import { StakingUpdateService, StakingUpdateConfig } from '../services/staking/StakingUpdateService';
+
 // Import Routes
 import { createHealthRoutes } from './routes/health';
 import { createValidatorRoutes } from './routes/validators';
@@ -51,6 +54,7 @@ export class AnalyticsAPIServer {
   private clickhouseClient: MonadClickHouseClient;
   private redisClient: MonadRedisClient;
   private server: any;
+  private stakingUpdateService: StakingUpdateService | null = null;
 
   // Controllers
   private healthController!: HealthController;
@@ -91,6 +95,9 @@ export class AnalyticsAPIServer {
       defaultTtl: 300
     });
 
+    // Initialize staking services
+    this.initializeStakingServices();
+
     // Initialize controllers
     this.initializeControllers();
 
@@ -98,6 +105,34 @@ export class AnalyticsAPIServer {
     this.setupMiddleware();
     this.setupRoutes();
     this.setupErrorHandling();
+  }
+
+  // =============================================
+  // STAKING SERVICES INITIALIZATION
+  // =============================================
+
+  private initializeStakingServices(): void {
+    // Only initialize staking services if RPC URL is provided
+    const rpcUrl = process.env.MONAD_RPC_URL;
+    if (!rpcUrl) {
+      logger.warn('⚠️  MONAD_RPC_URL not configured, staking services will be disabled');
+      return;
+    }
+
+    try {
+      const stakingConfig: StakingUpdateConfig = {
+        updateIntervalMs: parseInt(process.env.STAKING_UPDATE_INTERVAL_MS || '30000'), // 30 seconds default
+        rpcUrl,
+        clickhouseClient: this.clickhouseClient,
+        redisClient: this.redisClient
+      };
+
+      this.stakingUpdateService = new StakingUpdateService(stakingConfig);
+      logger.info('✅ Staking services initialized');
+    } catch (error) {
+      logger.error('❌ Failed to initialize staking services:', error);
+      logger.warn('⚠️  Continuing without staking integration');
+    }
   }
 
   // =============================================
@@ -113,7 +148,8 @@ export class AnalyticsAPIServer {
 
     this.validatorController = new ValidatorController(
       this.clickhouseClient,
-      this.redisClient
+      this.redisClient,
+      this.stakingUpdateService || undefined
     );
 
     this.networkController = new NetworkController(
@@ -402,11 +438,31 @@ export class AnalyticsAPIServer {
 
   async start(): Promise<void> {
     try {
+      // Start staking service if available
+      if (this.stakingUpdateService) {
+        try {
+          logger.info('🔄 Initializing and starting staking service...');
+          await this.stakingUpdateService.initialize();
+          this.stakingUpdateService.start();
+          logger.info('✅ Staking service started');
+        } catch (error) {
+          logger.warn('⚠️  Failed to start staking service, continuing without staking integration:', error);
+          this.stakingUpdateService = null; // Disable staking service
+        }
+      }
+
       this.server = this.app.listen(this.config.port, () => {
         logger.info(`🚀 Monad Analytics API Server started on port ${this.config.port}`);
         logger.info(`📊 API Documentation: http://localhost:${this.config.port}/api/docs`);
         logger.info(`💚 Health Check: http://localhost:${this.config.port}/health`);
         logger.info(`📈 System Status: http://localhost:${this.config.port}/api/status`);
+        
+        if (this.stakingUpdateService) {
+          logger.info(`⚡ Staking Integration: GET /api/validators/staking/info`);
+          logger.info(`🔄 Force Update: POST /api/validators/staking/update`);
+        } else {
+          logger.info(`⚠️  Staking integration disabled - configure MONAD_RPC_URL for full features`);
+        }
       });
 
       // Set server timeout
@@ -419,6 +475,12 @@ export class AnalyticsAPIServer {
   }
 
   async stop(): Promise<void> {
+    // Stop staking service if running
+    if (this.stakingUpdateService) {
+      this.stakingUpdateService.stop();
+      logger.info('✅ Staking service stopped');
+    }
+
     if (this.server) {
       this.server.close();
       logger.info('✅ API server stopped');
