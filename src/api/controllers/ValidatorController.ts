@@ -118,6 +118,7 @@ export class ValidatorController {
       const limit = parseInt(req.query.limit as string) || 50;
       const page = parseInt(req.query.page as string) || 1;
       const sortBy = (req.query.sortBy as string) || 'uptime_score';
+      const activeOnly = req.query.active_only !== 'false'; // Default true, false only if explicitly set to 'false'
       
       // Validate parameters
       if (!['1h', '24h', '7d'].includes(timeWindow)) {
@@ -159,8 +160,8 @@ export class ValidatorController {
       // Force table optimization to ensure no duplicates exist
       await this.ensureNoDuplicates();
 
-      // Try cache first
-      const cacheKey = `validator_rankings:${timeWindow}:${limit}:${page}:${sortBy}`;
+      // Try cache first - include activeOnly in cache key
+      const cacheKey = `validator_rankings:${timeWindow}:${limit}:${page}:${sortBy}:${activeOnly}`;
       const cached = await this.redisClient['client'].get(cacheKey);
       
       if (cached) {
@@ -173,6 +174,7 @@ export class ValidatorController {
             limit,
             page,
             sortBy,
+            activeOnly,
             source: 'cache',
             formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
           },
@@ -182,7 +184,7 @@ export class ValidatorController {
       }
 
       // Calculate rankings with pagination from raw data
-      const result = await this.calculateValidatorRankingsWithPagination(timeWindow, limit, page, sortBy);
+      const result = await this.calculateValidatorRankingsWithPagination(timeWindow, limit, page, sortBy, activeOnly);
       
       // Cache result for 2 minutes (rankings update frequently)
       await this.redisClient['client'].setex(cacheKey, 120, JSON.stringify(result));
@@ -195,6 +197,7 @@ export class ValidatorController {
           limit,
           page,
           sortBy,
+          activeOnly,
           source: 'database',
           formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
         },
@@ -460,10 +463,27 @@ export class ValidatorController {
   // HELPER METHODS
   // =============================================
 
-  private async calculateValidatorRankingsWithPagination(timeWindow: string, limit: number, page: number, sortBy: string): Promise<{ data: any[], pagination: any }> {
+  private async calculateValidatorRankingsWithPagination(timeWindow: string, limit: number, page: number, sortBy: string, activeOnly: boolean = true): Promise<{ data: any[], pagination: any }> {
     const intervalClause = this.getIntervalClause(timeWindow);
     const offset = (page - 1) * limit;
     
+    // Get active validator secp addresses from staking service if activeOnly is true
+    let activeValidatorSecpAddresses: string[] = [];
+    if (activeOnly && this.stakingUpdateService) {
+      try {
+        activeValidatorSecpAddresses = await this.stakingUpdateService.getActiveValidatorSecpAddresses();
+        logger.info(`🔍 Filtering to ${activeValidatorSecpAddresses.length} active validators by secp addresses`);
+      } catch (error) {
+        logger.error('Failed to get active validator secp addresses:', error);
+      }
+    }
+    
+    // Build WHERE clause for active validators filter
+    // Note: Use secp addresses to match with validator_id field in database
+    const activeValidatorFilter = activeOnly && activeValidatorSecpAddresses.length > 0 
+      ? `AND validator_id IN (${activeValidatorSecpAddresses.map(addr => `'${addr}'`).join(', ')})` 
+      : '';
+
     // First, get the total count - ONLY counting validators that exist in validator_registry
     // Use DISTINCT to prevent counting duplicates
     const countQuery = `
@@ -471,7 +491,7 @@ export class ValidatorController {
         active_validators AS (
           SELECT DISTINCT validator_id 
           FROM validator_registry 
-          WHERE is_active = 1
+          WHERE is_active = 1 ${activeValidatorFilter}
           GROUP BY validator_id
         ),
         block_metrics AS (
@@ -508,7 +528,7 @@ export class ValidatorController {
             argMax(keybase_id, last_updated) as keybase_id,
             argMax(keybase_logo_url, last_updated) as keybase_logo_url
           FROM validator_registry 
-          WHERE is_active = 1
+          WHERE is_active = 1 ${activeValidatorFilter}
           GROUP BY validator_id
         ),
         block_metrics AS (
@@ -565,17 +585,27 @@ export class ValidatorController {
     const totalCount = countResult[0]?.total_count || 0;
     const totalPages = Math.ceil(totalCount / limit);
     
+    // Get validator mapping for staking information (if we have validators to process)
+    let validatorMapping = new Map<string, {validatorId: string, stake: bigint, isActive: boolean}>();
+    if (dataResult.length > 0 && this.stakingUpdateService) {
+      try {
+        validatorMapping = await this.stakingUpdateService.getValidatorMappingBySecpAddress();
+      } catch (error) {
+        logger.error('Failed to get validator mapping:', error);
+      }
+    }
+
     const rankings = dataResult.map((r, index) => {
-      // Get staking information if available
+      // Get staking information by secp address (validator_id in database)
       let stakingInfo = null;
-      if (this.stakingUpdateService) {
-        const isActive = this.stakingUpdateService.isValidatorActive(r.validator_id);
-        const realTimeStake = this.stakingUpdateService.getValidatorStake(r.validator_id);
+      if (this.stakingUpdateService && validatorMapping.size > 0) {
+        const stakingData = validatorMapping.get(r.validator_id);
         
         stakingInfo = {
-          is_staking_active: isActive,
-          real_time_stake: realTimeStake ? realTimeStake.toString() : null,
-          database_stake: parseInt(r.stake || 0)
+          is_staking_active: stakingData?.isActive || false,
+          real_time_stake: stakingData?.stake?.toString() || null,
+          database_stake: parseInt(r.stake || 0),
+          precompile_validator_id: stakingData?.validatorId || null
         };
       }
 

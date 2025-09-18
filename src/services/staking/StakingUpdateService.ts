@@ -277,4 +277,25 @@ export class StakingUpdateService {
   getValidatorStake(validatorId: string): bigint | null {
     return this.stakingService.getValidatorStake(validatorId);
   }
+
+  /**
+   * Get all active validator IDs
+   */
+  getActiveValidatorIds(): string[] {
+    return this.stakingService.getActiveValidatorIds();
+  }
+
+  /**
+   * Get secp addresses for active validators (for database matching)
+   */
+  async getActiveValidatorSecpAddresses(): Promise<string[]> {
+    return this.stakingService.getActiveValidatorSecpAddresses();
+  }
+
+  /**
+   * Get mapping of secp address to validator info (for enriching database results)
+   */
+  async getValidatorMappingBySecpAddress(): Promise<Map<string, {validatorId: string, stake: bigint, isActive: boolean}>> {
+    return this.stakingService.getValidatorMappingBySecpAddress();
+  }
 }

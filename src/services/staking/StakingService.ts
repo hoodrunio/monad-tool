@@ -321,6 +321,64 @@ export class StakingService {
   }
 
   /**
+   * Get secp addresses (pubkeys) for active validators
+   * This maps precompile validator IDs to their secp pubkey addresses for database matching
+   */
+  async getActiveValidatorSecpAddresses(): Promise<string[]> {
+    const activeIds = this.getActiveValidatorIds();
+    const secpAddresses: string[] = [];
+    
+    for (const validatorId of activeIds) {
+      try {
+        const validatorInfo = await this.getValidatorInfo(validatorId);
+        if (validatorInfo && validatorInfo.secpPubkey) {
+          // Convert secp pubkey bytes to hex address format used in database
+          const secpAddress = validatorInfo.secpPubkey.startsWith('0x') 
+            ? validatorInfo.secpPubkey.slice(2) 
+            : validatorInfo.secpPubkey;
+          secpAddresses.push(secpAddress);
+          logger.debug(`📍 Validator ID ${validatorId} -> secp address: ${secpAddress}`);
+        }
+      } catch (error) {
+        logger.warn(`Failed to get secp address for validator ${validatorId}:`, error);
+      }
+    }
+    
+    logger.info(`🔑 Found ${secpAddresses.length} secp addresses for ${activeIds.length} active validators`);
+    return secpAddresses;
+  }
+
+  /**
+   * Get mapping of secp address to precompile validator ID and stake
+   * This is used to enrich database results with real-time staking info
+   */
+  async getValidatorMappingBySecpAddress(): Promise<Map<string, {validatorId: string, stake: bigint, isActive: boolean}>> {
+    const activeIds = this.getActiveValidatorIds();
+    const mapping = new Map<string, {validatorId: string, stake: bigint, isActive: boolean}>();
+    
+    for (const validatorId of activeIds) {
+      try {
+        const validatorInfo = await this.getValidatorInfo(validatorId);
+        if (validatorInfo && validatorInfo.secpPubkey) {
+          const secpAddress = validatorInfo.secpPubkey.startsWith('0x') 
+            ? validatorInfo.secpPubkey.slice(2) 
+            : validatorInfo.secpPubkey;
+            
+          mapping.set(secpAddress, {
+            validatorId,
+            stake: validatorInfo.stake,
+            isActive: true
+          });
+        }
+      } catch (error) {
+        logger.warn(`Failed to get mapping for validator ${validatorId}:`, error);
+      }
+    }
+    
+    return mapping;
+  }
+
+  /**
    * Get statistics about current staking state
    */
   getStakingStats(): {
