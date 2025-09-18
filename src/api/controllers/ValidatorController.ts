@@ -36,9 +36,38 @@ export class ValidatorController {
       const stats = this.stakingUpdateService.getStakingStats();
       const status = this.stakingUpdateService.getStatus();
 
+      // Convert BigInt values to strings for JSON serialization
+      const sanitizedStats = stats ? {
+        ...stats,
+        totalStake: stats.totalStake?.toString(),
+        averageStake: stats.averageStake?.toString(),
+        currentEpoch: stats.currentEpoch?.toString()
+      } : null;
+
+      const sanitizedStatus = {
+        ...status,
+        lastStakingInfo: status.lastStakingInfo ? {
+          ...status.lastStakingInfo,
+          currentEpoch: status.lastStakingInfo.currentEpoch?.toString(),
+          // Convert validatorStakes Map with BigInt values to serializable object
+          validatorStakes: status.lastStakingInfo.validatorStakes ? 
+            Object.fromEntries(
+              Array.from((status.lastStakingInfo.validatorStakes as Map<string, bigint>).entries())
+                .map(([key, value]: [string, bigint]) => [key, value.toString()])
+            ) : null,
+          // Convert Sets to arrays
+          activeValidators: status.lastStakingInfo.activeValidators ? 
+            Array.from(status.lastStakingInfo.activeValidators) : [],
+          consensusValidators: status.lastStakingInfo.consensusValidators ? 
+            Array.from(status.lastStakingInfo.consensusValidators) : [],
+          executionValidators: status.lastStakingInfo.executionValidators ? 
+            Array.from(status.lastStakingInfo.executionValidators) : []
+        } : null
+      };
+
       res.json({
-        stakingStats: stats,
-        serviceStatus: status,
+        stakingStats: sanitizedStats,
+        serviceStatus: sanitizedStatus,
         timestamp: new Date().toISOString()
       });
     } catch (error) {
