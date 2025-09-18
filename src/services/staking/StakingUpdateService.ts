@@ -319,4 +319,11 @@ export class StakingUpdateService {
   async getValidatorMappingBySecpAddress(): Promise<Map<string, {validatorId: string, stake: bigint, isActive: boolean}>> {
     return this.stakingService.getValidatorMappingBySecpAddress();
   }
+
+  /**
+   * Initialize validator mappings from database (one-time setup)
+   */
+  async initializeValidatorMappings(): Promise<void> {
+    await this.stakingService.loadValidatorMappingsFromDatabase(this.config.clickhouseClient);
+  }
 }

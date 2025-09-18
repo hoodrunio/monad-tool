@@ -14,8 +14,18 @@ export class ValidatorController {
   ) {}
 
   // Method to update staking service after initialization
-  setStakingUpdateService(stakingUpdateService: StakingUpdateService | null): void {
+  async setStakingUpdateService(stakingUpdateService: StakingUpdateService | null): Promise<void> {
     this.stakingUpdateService = stakingUpdateService || undefined;
+    
+    // Initialize validator mappings from database (one-time setup)
+    if (this.stakingUpdateService) {
+      try {
+        await this.stakingUpdateService.initializeValidatorMappings();
+        logger.info('✅ Validator mappings initialized from database');
+      } catch (error) {
+        logger.warn('Failed to initialize validator mappings:', error);
+      }
+    }
   }
 
   // =============================================
@@ -36,11 +46,13 @@ export class ValidatorController {
       const stats = this.stakingUpdateService.getStakingStats();
       const status = this.stakingUpdateService.getStatus();
 
-      // Convert BigInt values to strings for JSON serialization
+      // Convert BigInt values to strings and wei to MON for JSON serialization
       const sanitizedStats = stats ? {
         ...stats,
         totalStake: stats.totalStake?.toString(),
         averageStake: stats.averageStake?.toString(),
+        totalStakeMON: stats.totalStake ? (Number(stats.totalStake) / Math.pow(10, 18)).toFixed(4) : "0",
+        averageStakeMON: stats.averageStake ? (Number(stats.averageStake) / Math.pow(10, 18)).toFixed(4) : "0",
         currentEpoch: stats.currentEpoch?.toString()
       } : null;
 
@@ -49,11 +61,17 @@ export class ValidatorController {
         lastStakingInfo: status.lastStakingInfo ? {
           ...status.lastStakingInfo,
           currentEpoch: status.lastStakingInfo.currentEpoch?.toString(),
-          // Convert validatorStakes Map with BigInt values to serializable object
+          // Convert validatorStakes Map with BigInt values to serializable object with MON conversion
           validatorStakes: status.lastStakingInfo.validatorStakes ? 
             Object.fromEntries(
               Array.from((status.lastStakingInfo.validatorStakes as Map<string, bigint>).entries())
-                .map(([key, value]: [string, bigint]) => [key, value.toString()])
+                .map(([key, value]: [string, bigint]) => [
+                  key, 
+                  {
+                    wei: value.toString(),
+                    mon: (Number(value) / Math.pow(10, 18)).toFixed(4)
+                  }
+                ])
             ) : null,
           // Convert Sets to arrays
           activeValidators: status.lastStakingInfo.activeValidators ? 
@@ -601,9 +619,15 @@ export class ValidatorController {
       if (this.stakingUpdateService && validatorMapping.size > 0) {
         const stakingData = validatorMapping.get(r.validator_id);
         
+        // Convert wei to MON (1 MON = 10^18 wei)
+        const realTimeStakeMON = stakingData?.stake 
+          ? (Number(stakingData.stake) / Math.pow(10, 18)).toFixed(4)
+          : null;
+        
         stakingInfo = {
           is_staking_active: stakingData?.isActive || false,
-          real_time_stake: stakingData?.stake?.toString() || null,
+          real_time_stake_mon: realTimeStakeMON,
+          real_time_stake_wei: stakingData?.stake?.toString() || null,
           database_stake: parseInt(r.stake || 0),
           precompile_validator_id: stakingData?.validatorId || null
         };

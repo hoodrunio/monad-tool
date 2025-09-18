@@ -49,10 +49,22 @@ export interface StakingInfo {
 export class StakingService {
   private provider: ethers.JsonRpcProvider;
   private stakingInfo: StakingInfo | null = null;
+  private lastUpdate: Date = new Date(0);
+  private updateInterval: number;
+
+  // Validator mapping caches - these are persistent and rarely change
+  private validatorIdToSecpMapping: Map<string, string> = new Map(); // precompile_id -> secp_address
+  private secpToValidatorIdMapping: Map<string, string> = new Map(); // secp_address -> precompile_id
+  private validatorStakeCache: Map<string, {stake: bigint, lastUpdate: Date}> = new Map(); // precompile_id -> stake_info
+  private lastMappingUpdate: Date = new Date(0);
+  private readonly MAPPING_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+  private readonly STAKE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
   private isInitialized = false;
 
-  constructor(rpcUrl: string) {
+  constructor(rpcUrl: string, updateInterval: number = 30000) {
     this.provider = new ethers.JsonRpcProvider(rpcUrl);
+    this.updateInterval = updateInterval;
+    logger.info(`🔗 StakingService initialized with RPC: ${rpcUrl}`);
   }
 
   async initialize(): Promise<void> {
@@ -320,63 +332,6 @@ export class StakingService {
     return this.stakingInfo ? Array.from(this.stakingInfo.activeValidators) : [];
   }
 
-  /**
-   * Get secp addresses (pubkeys) for active validators
-   * This maps precompile validator IDs to their secp pubkey addresses for database matching
-   */
-  async getActiveValidatorSecpAddresses(): Promise<string[]> {
-    const activeIds = this.getActiveValidatorIds();
-    const secpAddresses: string[] = [];
-    
-    for (const validatorId of activeIds) {
-      try {
-        const validatorInfo = await this.getValidatorInfo(validatorId);
-        if (validatorInfo && validatorInfo.secpPubkey) {
-          // Convert secp pubkey bytes to hex address format used in database
-          const secpAddress = validatorInfo.secpPubkey.startsWith('0x') 
-            ? validatorInfo.secpPubkey.slice(2) 
-            : validatorInfo.secpPubkey;
-          secpAddresses.push(secpAddress);
-          logger.debug(`📍 Validator ID ${validatorId} -> secp address: ${secpAddress}`);
-        }
-      } catch (error) {
-        logger.warn(`Failed to get secp address for validator ${validatorId}:`, error);
-      }
-    }
-    
-    logger.info(`🔑 Found ${secpAddresses.length} secp addresses for ${activeIds.length} active validators`);
-    return secpAddresses;
-  }
-
-  /**
-   * Get mapping of secp address to precompile validator ID and stake
-   * This is used to enrich database results with real-time staking info
-   */
-  async getValidatorMappingBySecpAddress(): Promise<Map<string, {validatorId: string, stake: bigint, isActive: boolean}>> {
-    const activeIds = this.getActiveValidatorIds();
-    const mapping = new Map<string, {validatorId: string, stake: bigint, isActive: boolean}>();
-    
-    for (const validatorId of activeIds) {
-      try {
-        const validatorInfo = await this.getValidatorInfo(validatorId);
-        if (validatorInfo && validatorInfo.secpPubkey) {
-          const secpAddress = validatorInfo.secpPubkey.startsWith('0x') 
-            ? validatorInfo.secpPubkey.slice(2) 
-            : validatorInfo.secpPubkey;
-            
-          mapping.set(secpAddress, {
-            validatorId,
-            stake: validatorInfo.stake,
-            isActive: true
-          });
-        }
-      } catch (error) {
-        logger.warn(`Failed to get mapping for validator ${validatorId}:`, error);
-      }
-    }
-    
-    return mapping;
-  }
 
   /**
    * Get statistics about current staking state
@@ -407,5 +362,127 @@ export class StakingService {
       currentEpoch: this.stakingInfo.currentEpoch,
       lastUpdated: this.stakingInfo.lastUpdated
     };
+  }
+
+  // =============================================
+  // OPTIMIZED CACHE METHODS
+  // =============================================
+
+  /**
+   * Ensure validator mapping exists in cache (lazy loading)
+   * Only calls precompile if mapping doesn't exist
+   */
+  private async ensureValidatorMapping(validatorId: string): Promise<string | null> {
+    // Check cache first
+    const cachedSecpAddress = this.validatorIdToSecpMapping.get(validatorId);
+    if (cachedSecpAddress) {
+      return cachedSecpAddress;
+    }
+
+    try {
+      // Get from precompile (only for new validators)
+      const validatorInfo = await this.getValidatorInfo(validatorId);
+      if (validatorInfo && validatorInfo.secpPubkey) {
+        const secpAddress = validatorInfo.secpPubkey.startsWith('0x') 
+          ? validatorInfo.secpPubkey.slice(2) 
+          : validatorInfo.secpPubkey;
+        
+        // Cache the mapping
+        this.validatorIdToSecpMapping.set(validatorId, secpAddress);
+        this.secpToValidatorIdMapping.set(secpAddress, validatorId);
+        
+        logger.info(`📍 Cached new validator mapping: ${validatorId} → ${secpAddress}`);
+        return secpAddress;
+      }
+    } catch (error) {
+      logger.warn(`Failed to get secp address for validator ${validatorId}:`, error);
+    }
+
+    return null;
+  }
+
+  /**
+   * Get secp address from cache (optimized, no precompile calls)
+   */
+  getSecpAddressFromCache(validatorId: string): string | null {
+    return this.validatorIdToSecpMapping.get(validatorId) || null;
+  }
+
+  /**
+   * Get precompile validator ID from secp address
+   */
+  getValidatorIdFromSecpAddress(secpAddress: string): string | null {
+    return this.secpToValidatorIdMapping.get(secpAddress) || null;
+  }
+
+  /**
+   * OPTIMIZED: Get secp addresses for active validators (from cache)
+   * No precompile calls unless mapping is missing
+   */
+  async getActiveValidatorSecpAddresses(): Promise<string[]> {
+    const activeIds = this.getActiveValidatorIds();
+    const secpAddresses: string[] = [];
+    
+    for (const validatorId of activeIds) {
+      const secpAddress = await this.ensureValidatorMapping(validatorId);
+      if (secpAddress) {
+        secpAddresses.push(secpAddress);
+      }
+    }
+    
+    logger.info(`🔑 Retrieved ${secpAddresses.length} secp addresses for ${activeIds.length} active validators (cache optimized)`);
+    return secpAddresses;
+  }
+
+  /**
+   * OPTIMIZED: Get validator mapping by secp address (from cache)
+   */
+  async getValidatorMappingBySecpAddress(): Promise<Map<string, {validatorId: string, stake: bigint, isActive: boolean}>> {
+    const activeIds = this.getActiveValidatorIds();
+    const mapping = new Map<string, {validatorId: string, stake: bigint, isActive: boolean}>();
+    
+    for (const validatorId of activeIds) {
+      const secpAddress = await this.ensureValidatorMapping(validatorId);
+      if (secpAddress) {
+        const stake = this.stakingInfo?.validatorStakes.get(validatorId) || BigInt(0);
+        mapping.set(secpAddress, {
+          validatorId,
+          stake,
+          isActive: true
+        });
+      }
+    }
+    
+    return mapping;
+  }
+
+  /**
+   * Load existing validator mappings from database (initialization)
+   */
+  async loadValidatorMappingsFromDatabase(clickhouseClient: any): Promise<void> {
+    try {
+      const query = `
+        SELECT DISTINCT
+          validator_id as secp_address,
+          node_id as validator_id
+        FROM validator_registry
+        WHERE node_id != '' AND node_id != validator_id
+        ORDER BY last_updated DESC
+      `;
+      
+      const results = await clickhouseClient.executeRawQuery(query);
+      
+      for (const row of results) {
+        if (row.validator_id && row.secp_address) {
+          this.validatorIdToSecpMapping.set(row.validator_id, row.secp_address);
+          this.secpToValidatorIdMapping.set(row.secp_address, row.validator_id);
+        }
+      }
+      
+      this.lastMappingUpdate = new Date();
+      logger.info(`📚 Loaded ${this.validatorIdToSecpMapping.size} validator mappings from database`);
+    } catch (error) {
+      logger.warn('Failed to load validator mappings from database:', error);
+    }
   }
 }
