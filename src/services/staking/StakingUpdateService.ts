@@ -92,7 +92,7 @@ export class StakingUpdateService {
   }
 
   /**
-   * Main update logic
+   * Main update logic - REFACTORED for database-first approach
    */
   private async performUpdate(): Promise<void> {
     if (this.isUpdating) {
@@ -103,24 +103,23 @@ export class StakingUpdateService {
     this.isUpdating = true;
 
     try {
+      logger.info('🔍 Checking for epoch changes every 30s...');
+      
       // Check if epoch has changed
       const epochChanged = await this.stakingService.hasEpochChanged();
       
       if (!epochChanged) {
-        logger.debug('No epoch change detected, skipping update');
+        logger.info('✅ No epoch change detected - current system is running correctly');
         return;
       }
 
       logger.info('📈 Epoch change detected, updating validator staking info...');
 
-      // Refresh staking information
+      // Refresh staking information from precompile
       await this.stakingService.refreshStakingInfo();
       
-      // Update comprehensive validator cache (this does the expensive scanning)
-      await this.stakingService.updateComprehensiveValidatorCache();
-      
-      // Update database
-      await this.updateValidatorRegistry();
+      // DATABASE-FIRST: Update validators incrementally
+      await this.stakingService.updateValidatorsIncrementally(this.config.clickhouseClient);
       
       // Clear cache
       await this.clearValidatorCache();
