@@ -148,18 +148,14 @@ export class ApplicationInitializer {
       }
 
       // =============================================
-      // PHASE 3: COMPREHENSIVE VALIDATOR MAPPING
+      // PHASE 3: FINAL VALIDATION
       // =============================================
-      
-      logger.info('🔍 Phase 3: Comprehensive validator mapping and database sync...');
-      await this.performComprehensiveValidatorMapping();
-      logger.info('✅ Comprehensive validator mapping completed');
 
       // =============================================
-      // PHASE 4: FINAL VALIDATION
+      // PHASE 3: FINAL VALIDATION
       // =============================================
       
-      logger.info('🔍 Phase 4: Final system validation...');
+      logger.info('🔍 Phase 3: Final system validation...');
       await this.performFinalValidation();
       logger.info('✅ Final validation completed');
 
@@ -289,69 +285,6 @@ export class ApplicationInitializer {
   // ===============================
   // Private Initialization Methods
   // ===============================
-
-  /**
-   * STARTUP: Comprehensive validator mapping (one-time full scan)
-   */
-  private async performComprehensiveValidatorMapping(): Promise<void> {
-    const stakingUpdateService = this.serviceContainer.getStakingUpdateService();
-    if (!stakingUpdateService) {
-      logger.warn('⚠️ Staking service not available, skipping validator mapping');
-      return;
-    }
-
-    try {
-      logger.info('🔍 Starting comprehensive validator mapping for startup...');
-      
-      // Initialize validator mappings from database first
-      await stakingUpdateService.initializeValidatorMappings();
-      
-      // Perform comprehensive validator mapping and database update
-      await stakingUpdateService.performComprehensiveUpdate();
-      
-      // Store last scanned validator ID for incremental updates
-      await this.storeLastScannedValidatorId();
-      
-      // Start the staking update service periodic tasks
-      stakingUpdateService.start();
-      
-      logger.info('✅ Comprehensive validator mapping completed at startup');
-      logger.info('🔄 Staking update service started for periodic incremental updates');
-      
-    } catch (error) {
-      logger.error('Failed to perform comprehensive validator mapping:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Store the last scanned validator ID for incremental updates
-   */
-  private async storeLastScannedValidatorId(): Promise<void> {
-    try {
-      // Get the highest validator ID (node_id) from database
-      const query = `
-        SELECT MAX(CAST(node_id AS Int32)) as max_validator_id
-        FROM validator_registry
-        WHERE node_id != '' AND node_id != validator_id
-        AND node_id REGEXP '^[0-9]+$'
-      `;
-      
-      const clickhouseClient = this.serviceContainer.getClickHouseClient();
-      const result = await clickhouseClient.executeRawQuery(query);
-      const maxValidatorId = result[0]?.max_validator_id || 0;
-      
-      // Store in Redis for incremental updates
-      const redisClient = this.serviceContainer.getRedisClient();
-      if (redisClient) {
-        await redisClient.getClient().set('last_scanned_validator_id', maxValidatorId.toString());
-        logger.info(`📊 Stored last scanned validator ID: ${maxValidatorId}`);
-      }
-      
-    } catch (error) {
-      logger.warn('Failed to store last scanned validator ID:', error);
-    }
-  }
 
   private async performFinalValidation(): Promise<void> {
     // Validate all services are working

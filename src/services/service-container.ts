@@ -12,7 +12,6 @@ import { MonadRedisClient, RedisConfig } from '../cache/redis-client';
 import { DatabaseValidatorInitializer } from './database-validator-initializer';
 import { logger } from '../utils/logger';
 import { ProviderPerformanceCacheService } from './provider-performance-cache';
-import { StakingUpdateService } from './staking/StakingUpdateService';
 
 export interface ServiceContainerConfig {
   clickhouse: ClickHouseConfig;
@@ -28,7 +27,6 @@ export class ServiceContainer {
   private _locationService: UnifiedLocationService | null = null;
   private _databaseValidator: DatabaseValidatorInitializer | null = null;
   private _providerCacheService: ProviderPerformanceCacheService | null = null;
-  private _stakingUpdateService: StakingUpdateService | null = null;
   
   private isInitialized: boolean = false;
   private config: ServiceContainerConfig;
@@ -98,14 +96,6 @@ export class ServiceContainer {
       }
     );
 
-    // Initialize StakingUpdateService (depends on ClickHouse and Redis)
-    this._stakingUpdateService = new StakingUpdateService({
-      clickhouseClient: this._clickhouseClient,
-      redisClient: this._redisClient,
-      rpcUrl: process.env.MONAD_RPC_URL || 'http://localhost:8080',
-      updateIntervalMs: parseInt(process.env.STAKING_UPDATE_INTERVAL_MS || '30000')
-    });
-
     this.isInitialized = true;
     logger.info('✅ ServiceContainer initialized successfully');
   }
@@ -168,16 +158,6 @@ export class ServiceContainer {
       throw new Error('ServiceContainer not initialized. Call initialize() first.');
     }
     return this._providerCacheService;
-  }
-
-  /**
-   * Get StakingUpdateService instance
-   */
-  getStakingUpdateService(): StakingUpdateService {
-    if (!this._stakingUpdateService) {
-      throw new Error('ServiceContainer not initialized. Call initialize() first.');
-    }
-    return this._stakingUpdateService;
   }
 
   /**

@@ -402,17 +402,6 @@ export class MonadRedisClient {
   }
 
   // =============================================
-  // CLIENT ACCESS
-  // =============================================
-
-  /**
-   * Get Redis client instance for custom operations
-   */
-  getClient(): Redis {
-    return this.client;
-  }
-
-  // =============================================
   // SPECIALIZED CACHING STRATEGIES
   // =============================================
 
