@@ -309,10 +309,36 @@ export class ValidatorController {
       const qcRate = parseFloat(qcData?.qc_participation_rate || 0);
       const uptimeScore = blockRatio * 0.7 + qcRate * 0.3;
 
+      // Get staking information for this validator
+      let stakingInfo = null;
+      if (this.stakingUpdateService) {
+        try {
+          const validatorMapping = await this.stakingUpdateService.getValidatorMappingBySecpAddress();
+          const stakingData = validatorMapping.get(validatorId);
+          
+          if (stakingData) {
+            // Convert wei to MON (1 MON = 10^18 wei)
+            const realTimeStakeMON = stakingData.stake 
+              ? (Number(stakingData.stake) / Math.pow(10, 18)).toFixed(4)
+              : null;
+            
+            stakingInfo = {
+              is_staking_active: stakingData.isActive,
+              real_time_stake_mon: realTimeStakeMON,
+              real_time_stake_wei: stakingData.stake?.toString() || null,
+              precompile_validator_id: stakingData.validatorId
+            };
+          }
+        } catch (error) {
+          logger.warn(`Failed to get staking info for validator ${validatorId}:`, error);
+        }
+      }
+
       // Format response with separate metrics
       res.json({
         validator_id: validatorId,
         stake: parseInt(blockData?.stake || 0),
+        staking: stakingInfo,
         metrics: {
           block_proposal_ratio: blockRatio,
           qc_participation_rate: qcRate,
