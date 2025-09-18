@@ -137,7 +137,9 @@ export class StakingService {
       data
     });
 
-    return BigInt(result);
+    // According to documentation: getEpoch() returns uint64
+    const decoded = ethers.AbiCoder.defaultAbiCoder().decode(['uint64'], result);
+    return BigInt(decoded[0]);
   }
 
   /**
