@@ -123,7 +123,7 @@ export class ApplicationInitializer {
       // --- END DYNAMIC EPOCH & DB SYNC ---
 
       // =============================================
-      // PHASE 2: CRITICAL VALIDATOR VALIDATION
+      // PHASE 2: CRITICAL VALIDATOR & STAKING VALIDATION
       // =============================================
       
       if (!this.startupConfig.skipValidatorCheck) {
@@ -132,6 +132,21 @@ export class ApplicationInitializer {
         
         const databaseValidator = this.serviceContainer.getDatabaseValidator();
         await databaseValidator.ensureValidatorsInDatabase();
+        
+        // STAKING INITIALIZATION: Initial population of all validators
+        logger.info('🔧 Phase 2b: Initial staking data population...');
+        try {
+          const stakingUpdateService = this.serviceContainer.getStakingUpdateService();
+          if (stakingUpdateService) {
+            await stakingUpdateService.performInitialPopulation();
+            logger.info('✅ Staking data initial population completed');
+          } else {
+            logger.warn('⚠️ StakingUpdateService not available, skipping staking initialization');
+          }
+        } catch (error) {
+          logger.error('Failed to initialize staking data:', error);
+          // Non-fatal error - continue startup but log the issue
+        }
         
         // Get final validator stats for result
         const validatorStats = await databaseValidator.getDatabaseValidatorStats();

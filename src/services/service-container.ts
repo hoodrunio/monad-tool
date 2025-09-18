@@ -12,6 +12,10 @@ import { MonadRedisClient, RedisConfig } from '../cache/redis-client';
 import { DatabaseValidatorInitializer } from './database-validator-initializer';
 import { logger } from '../utils/logger';
 import { ProviderPerformanceCacheService } from './provider-performance-cache';
+import { StakingUpdateService, StakingUpdateConfig } from './staking/StakingUpdateService';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 export interface ServiceContainerConfig {
   clickhouse: ClickHouseConfig;
@@ -27,6 +31,7 @@ export class ServiceContainer {
   private _locationService: UnifiedLocationService | null = null;
   private _databaseValidator: DatabaseValidatorInitializer | null = null;
   private _providerCacheService: ProviderPerformanceCacheService | null = null;
+  private _stakingUpdateService: StakingUpdateService | null = null;
   
   private isInitialized: boolean = false;
   private config: ServiceContainerConfig;
@@ -81,6 +86,18 @@ export class ServiceContainer {
 
     // Initialize database validator with ClickHouse client only
     this._databaseValidator = new DatabaseValidatorInitializer(this._clickhouseClient);
+
+    // Initialize staking update service
+    const rpcUrl = process.env.MONAD_RPC_URL || 'http://localhost:8080';
+    const stakingConfig: StakingUpdateConfig = {
+      updateIntervalMs: parseInt(process.env.STAKING_UPDATE_INTERVAL_MS || '30000'),
+      rpcUrl,
+      clickhouseClient: this._clickhouseClient,
+      redisClient: this._redisClient
+    };
+    
+    this._stakingUpdateService = new StakingUpdateService(stakingConfig);
+    await this._stakingUpdateService.initialize();
 
     // Initialize provider performance cache service
     this._providerCacheService = new ProviderPerformanceCacheService(
@@ -161,6 +178,13 @@ export class ServiceContainer {
   }
 
   /**
+   * Get StakingUpdateService instance
+   */
+  getStakingUpdateService(): StakingUpdateService | null {
+    return this._stakingUpdateService;
+  }
+
+  /**
    * Cleanup all services
    */
   async shutdown(): Promise<void> {
@@ -180,6 +204,12 @@ export class ServiceContainer {
       this._locationService = null;
       this._databaseValidator = null;
       this._providerCacheService = null;
+      
+      if (this._stakingUpdateService) {
+        this._stakingUpdateService.stop();
+        this._stakingUpdateService = null;
+      }
+      
       this.isInitialized = false;
 
       logger.info('✅ ServiceContainer shutdown complete');

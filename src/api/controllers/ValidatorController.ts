@@ -16,16 +16,7 @@ export class ValidatorController {
   // Method to update staking service after initialization
   async setStakingUpdateService(stakingUpdateService: StakingUpdateService | null): Promise<void> {
     this.stakingUpdateService = stakingUpdateService || undefined;
-    
-    // Initialize validator mappings from database (one-time setup)
-    if (this.stakingUpdateService) {
-      try {
-        await this.stakingUpdateService.initializeValidatorMappings();
-        logger.info('✅ Validator mappings initialized from database');
-      } catch (error) {
-        logger.warn('Failed to initialize validator mappings:', error);
-      }
-    }
+    logger.info('✅ StakingUpdateService updated in ValidatorController');
   }
 
   // =============================================
@@ -309,29 +300,38 @@ export class ValidatorController {
       const qcRate = parseFloat(qcData?.qc_participation_rate || 0);
       const uptimeScore = blockRatio * 0.7 + qcRate * 0.3;
 
-      // Get staking information for this validator
+      // DATABASE-FIRST: Get staking information from database
       let stakingInfo = null;
-      if (this.stakingUpdateService) {
-        try {
-          const validatorMapping = await this.stakingUpdateService.getValidatorMappingBySecpAddress();
-          const stakingData = validatorMapping.get(validatorId);
-          
-          if (stakingData) {
-            // Convert wei to MON (1 MON = 10^18 wei)
-            const realTimeStakeMON = stakingData.stake 
-              ? (Number(stakingData.stake) / Math.pow(10, 18)).toFixed(4)
-              : null;
+      try {
+        const stakingQuery = `
+          SELECT 
+            precompile_validator_id,
+            is_staking_active,
+            real_time_stake_wei
+          FROM validator_registry 
+          WHERE validator_id = '${validatorId}'
+          ORDER BY last_updated DESC 
+          LIMIT 1
+        `;
+        
+        const stakingResult = await this.clickhouseClient.executeRawQuery(stakingQuery);
+        const stakingData = stakingResult[0];
+        
+        if (stakingData) {
+          // Convert wei to MON (1 MON = 10^18 wei)
+          const realTimeStakeMON = stakingData.real_time_stake_wei 
+            ? (Number(stakingData.real_time_stake_wei) / Math.pow(10, 18)).toFixed(4)
+            : "0";
             
-            stakingInfo = {
-              is_staking_active: stakingData.isActive,
-              real_time_stake_mon: realTimeStakeMON,
-              real_time_stake_wei: stakingData.stake?.toString() || null,
-              precompile_validator_id: stakingData.validatorId
-            };
-          }
-        } catch (error) {
-          logger.warn(`Failed to get staking info for validator ${validatorId}:`, error);
+          stakingInfo = {
+            is_staking_active: Boolean(stakingData.is_staking_active),
+            real_time_stake_mon: realTimeStakeMON,
+            real_time_stake_wei: stakingData.real_time_stake_wei || "0",
+            precompile_validator_id: stakingData.precompile_validator_id || null
+          };
         }
+      } catch (error) {
+        logger.warn(`Failed to get staking info for validator ${validatorId}:`, error);
       }
 
       // Format response with separate metrics
@@ -511,22 +511,8 @@ export class ValidatorController {
     const intervalClause = this.getIntervalClause(timeWindow);
     const offset = (page - 1) * limit;
     
-    // Get active validator secp addresses from staking service if activeOnly is true
-    let activeValidatorSecpAddresses: string[] = [];
-    if (activeOnly && this.stakingUpdateService) {
-      try {
-        activeValidatorSecpAddresses = await this.stakingUpdateService.getActiveValidatorSecpAddresses();
-        logger.info(`🔍 Filtering to ${activeValidatorSecpAddresses.length} active validators by secp addresses`);
-      } catch (error) {
-        logger.error('Failed to get active validator secp addresses:', error);
-      }
-    }
-    
-    // Build WHERE clause for active validators filter
-    // Note: Use secp addresses to match with validator_id field in database
-    const activeValidatorFilter = activeOnly && activeValidatorSecpAddresses.length > 0 
-      ? `AND validator_id IN (${activeValidatorSecpAddresses.map(addr => `'${addr}'`).join(', ')})` 
-      : '';
+    // DATABASE-FIRST: Filter by is_staking_active column directly
+    const activeValidatorFilter = activeOnly ? 'AND is_staking_active = 1' : '';
 
     // First, get the total count - ONLY counting validators that exist in validator_registry
     // Use DISTINCT to prevent counting duplicates
@@ -570,7 +556,10 @@ export class ValidatorController {
             argMax(location, last_updated) as location,
             argMax(stake, last_updated) as stake,
             argMax(keybase_id, last_updated) as keybase_id,
-            argMax(keybase_logo_url, last_updated) as keybase_logo_url
+            argMax(keybase_logo_url, last_updated) as keybase_logo_url,
+            argMax(precompile_validator_id, last_updated) as precompile_validator_id,
+            argMax(is_staking_active, last_updated) as is_staking_active,
+            argMax(real_time_stake_wei, last_updated) as real_time_stake_wei
           FROM validator_registry 
           WHERE is_active = 1 ${activeValidatorFilter}
           GROUP BY validator_id
@@ -629,35 +618,16 @@ export class ValidatorController {
     const totalCount = countResult[0]?.total_count || 0;
     const totalPages = Math.ceil(totalCount / limit);
     
-    // Get validator mapping for staking information (if we have validators to process)
-    let validatorMapping = new Map<string, {validatorId: string, stake: bigint, isActive: boolean}>();
-    if (dataResult.length > 0 && this.stakingUpdateService) {
-      try {
-        validatorMapping = await this.stakingUpdateService.getValidatorMappingBySecpAddress();
-      } catch (error) {
-        logger.error('Failed to get validator mapping:', error);
-      }
-    }
-
     const rankings = dataResult.map((r, index) => {
-      // Get staking information by secp address (validator_id in database)
-      let stakingInfo = null;
-      if (this.stakingUpdateService && validatorMapping.size > 0) {
-        const stakingData = validatorMapping.get(r.validator_id);
-        
-        // Convert wei to MON (1 MON = 10^18 wei)
-        const realTimeStakeMON = stakingData?.stake 
-          ? (Number(stakingData.stake) / Math.pow(10, 18)).toFixed(4)
-          : null;
-        
-        stakingInfo = {
-          is_staking_active: stakingData?.isActive || false,
-          real_time_stake_mon: realTimeStakeMON,
-          real_time_stake_wei: stakingData?.stake?.toString() || null,
-          database_stake: parseInt(r.stake || 0),
-          precompile_validator_id: stakingData?.validatorId || null
-        };
-      }
+      // DATABASE-FIRST: Staking information is already in validator_registry table
+      let stakingInfo = {
+        is_staking_active: Boolean(r.is_staking_active),
+        real_time_stake_mon: r.real_time_stake_wei ? 
+          (Number(r.real_time_stake_wei) / Math.pow(10, 18)).toFixed(4) : "0",
+        real_time_stake_wei: r.real_time_stake_wei || "0",
+        database_stake: parseInt(r.stake || 0),
+        precompile_validator_id: r.precompile_validator_id || null
+      };
 
       return {
         rank: offset + index + 1,
@@ -717,7 +687,10 @@ export class ValidatorController {
             argMax(location, last_updated) as location,
             argMax(stake, last_updated) as stake,
             argMax(keybase_id, last_updated) as keybase_id,
-            argMax(keybase_logo_url, last_updated) as keybase_logo_url
+            argMax(keybase_logo_url, last_updated) as keybase_logo_url,
+            argMax(precompile_validator_id, last_updated) as precompile_validator_id,
+            argMax(is_staking_active, last_updated) as is_staking_active,
+            argMax(real_time_stake_wei, last_updated) as real_time_stake_wei
           FROM validator_registry 
           WHERE is_active = 1
           GROUP BY validator_id
@@ -773,18 +746,15 @@ export class ValidatorController {
     const rankings = result;
     
     return rankings.map((r, index) => {
-      // Get staking information if available
-      let stakingInfo = null;
-      if (this.stakingUpdateService) {
-        const isActive = this.stakingUpdateService.isValidatorActive(r.validator_id);
-        const realTimeStake = this.stakingUpdateService.getValidatorStake(r.validator_id);
-        
-        stakingInfo = {
-          is_staking_active: isActive,
-          real_time_stake: realTimeStake ? realTimeStake.toString() : null,
-          database_stake: parseInt(r.stake || 0)
-        };
-      }
+      // DATABASE-FIRST: Staking information already available in query result
+      let stakingInfo = {
+        is_staking_active: Boolean(r.is_staking_active),
+        real_time_stake_mon: r.real_time_stake_wei ? 
+          (Number(r.real_time_stake_wei) / Math.pow(10, 18)).toFixed(4) : "0",
+        real_time_stake_wei: r.real_time_stake_wei || "0",
+        database_stake: parseInt(r.stake || 0),
+        precompile_validator_id: r.precompile_validator_id || null
+      };
 
       return {
         rank: index + 1,
