@@ -19,8 +19,8 @@ import { QueryPerformanceController } from './controllers/QueryPerformanceContro
 import { EpochController } from './controllers/EpochController';
 import { TransactionAnalyticsController } from './controllers/TransactionAnalyticsController';
 
-// Import Database-Centric Staking Services
-import { DatabaseStakingUpdateService, StakingUpdateConfig } from '../services/staking/DatabaseStakingUpdateService';
+// Import Staking Services
+import { StakingUpdateService, StakingUpdateConfig } from '../services/staking/StakingUpdateService';
 
 // Import Routes
 import { createHealthRoutes } from './routes/health';
@@ -54,7 +54,7 @@ export class AnalyticsAPIServer {
   private clickhouseClient: MonadClickHouseClient;
   private redisClient: MonadRedisClient;
   private server: any;
-  private stakingUpdateService: DatabaseStakingUpdateService | null = null;
+  private stakingUpdateService: StakingUpdateService | null = null;
 
   // Controllers
   private healthController!: HealthController;
@@ -127,7 +127,7 @@ export class AnalyticsAPIServer {
         redisClient: this.redisClient
       };
 
-      this.stakingUpdateService = new DatabaseStakingUpdateService(stakingConfig);
+      this.stakingUpdateService = new StakingUpdateService(stakingConfig);
       logger.info('✅ Staking services initialized');
     } catch (error) {
       logger.error('❌ Failed to initialize staking services:', error);
@@ -441,8 +441,9 @@ export class AnalyticsAPIServer {
       // Start staking service if available
       if (this.stakingUpdateService) {
         try {
-          logger.info('🔄 Starting database staking service...');
-          await this.stakingUpdateService.start();
+          logger.info('🔄 Initializing and starting staking service...');
+          await this.stakingUpdateService.initialize();
+          this.stakingUpdateService.start();
           logger.info('✅ Staking service started');
         } catch (error) {
           logger.warn('⚠️  Failed to start staking service, continuing without staking integration:', error);

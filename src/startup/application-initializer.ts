@@ -6,10 +6,8 @@
  * 
  */
 
-import { DatabaseMigrationService } from '../database/migration-service';
-import { DatabaseStakingService } from '../services/staking/DatabaseStakingService';
-import { logger } from '../utils/logger';
 import { ServiceContainer, ServiceContainerConfig } from '../services/service-container';
+import { logger } from '../utils/logger';
 import { EpochService } from '../services/epoch/EpochService';
 import { NodeRpcClient } from '../services/blockchain/NodeRpcClient';
 
@@ -33,7 +31,6 @@ export interface StartupResult {
     validatorService: boolean;
     locationService: boolean;
   };
-  stakingInitialization?: boolean;
   errors: string[];
 }
 
@@ -88,52 +85,6 @@ export class ApplicationInitializer {
       result.services.validatorService = true;
       result.services.locationService = true;
       logger.info('✅ Service container verified');
-
-      // =============================================
-      // PHASE 1.5: DATABASE MIGRATIONS & STAKING INIT
-      // =============================================
-      
-      logger.info('🔧 Phase 1.5: Running database migrations and staking initialization...');
-      
-      const clickhouseClient = this.serviceContainer.getClickHouseClient();
-      
-      // Run database migrations
-      const migrationService = new DatabaseMigrationService(clickhouseClient);
-      await migrationService.runMigrations();
-      
-      // Initialize staking service
-      const rpcUrl = process.env.RPC_URL;
-      if (!rpcUrl) {
-        throw new Error('RPC_URL environment variable is not set.');
-      }
-      
-      const stakingService = new DatabaseStakingService(rpcUrl, clickhouseClient);
-      await stakingService.initialize();
-      
-      // Check if we need to populate validators
-      const hasStakingColumns = await migrationService.hasStakingColumns();
-      if (hasStakingColumns) {
-        const { changed, currentEpoch } = await stakingService.hasEpochChanged();
-        
-        // Check if we have any validators with staking data
-        const stakingDataExists = await clickhouseClient.executeRawQuery(`
-          SELECT count() as count
-          FROM validator_registry
-          WHERE precompile_validator_id != ''
-          LIMIT 1
-        `);
-        
-        if (stakingDataExists[0]?.count === 0) {
-          logger.info('🔍 No staking data found, performing initial comprehensive population...');
-          await stakingService.populateAllValidators(currentEpoch);
-          result.stakingInitialization = true;
-          logger.info('✅ Initial staking population completed');
-        } else {
-          logger.info('✅ Existing staking data found, skipping initial population');
-        }
-      }
-      
-      logger.info('✅ Database migrations and staking initialization completed');
 
       // --- DYNAMIC EPOCH & DB SYNC ---
       try {

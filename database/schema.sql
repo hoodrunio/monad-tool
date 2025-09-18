@@ -44,12 +44,6 @@ CREATE TABLE validator_registry (
     position UInt16,
     is_active UInt8 DEFAULT 1,
     
-    -- staking integration
-    precompile_validator_id String DEFAULT '',
-    is_staking_active UInt8 DEFAULT 0,
-    real_time_stake_wei String DEFAULT '0',
-    last_stake_update DateTime64(3, 'UTC') DEFAULT now(),
-    
     -- DNS and infrastructure mapping
     dns_address String DEFAULT '',
     dns_host String DEFAULT '',
