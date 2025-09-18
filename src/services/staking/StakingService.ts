@@ -61,6 +61,11 @@ export class StakingService {
   private readonly STAKE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
   private isInitialized = false;
 
+  // COMPREHENSIVE VALIDATOR CACHE - Updated only on epoch changes
+  private comprehensiveValidatorCache: Map<string, {validatorId: string, stake: bigint, isActive: boolean}> = new Map();
+  private lastComprehensiveScan: Date = new Date(0);
+  private readonly COMPREHENSIVE_SCAN_TTL = 60 * 60 * 1000; // 1 hour max
+
   constructor(rpcUrl: string, updateInterval: number = 30000) {
     this.provider = new ethers.JsonRpcProvider(rpcUrl);
     this.updateInterval = updateInterval;
@@ -435,11 +440,26 @@ export class StakingService {
   }
 
   /**
-   * OPTIMIZED: Get validator mapping by secp address (from cache)
+   * OPTIMIZED: Get validator mappings (from cache, updated only on epoch changes)
    */
   async getValidatorMappingBySecpAddress(): Promise<Map<string, {validatorId: string, stake: bigint, isActive: boolean}>> {
-    const activeIds = this.getActiveValidatorIds();
+    // Use cached comprehensive data - NO real-time scanning on API requests!
+    if (this.comprehensiveValidatorCache.size > 0) {
+      // Use debug level to avoid spam
+      return new Map(this.comprehensiveValidatorCache);
+    }
+
+    // Fallback: if no comprehensive cache, use active validators only (fast path)
+    logger.warn('📊 No comprehensive cache available, falling back to active validators only');
+    return this.getActiveValidatorMappingOnly();
+  }
+
+  /**
+   * FAST FALLBACK: Get only active validator mappings (no comprehensive scan)
+   */
+  private async getActiveValidatorMappingOnly(): Promise<Map<string, {validatorId: string, stake: bigint, isActive: boolean}>> {
     const mapping = new Map<string, {validatorId: string, stake: bigint, isActive: boolean}>();
+    const activeIds = this.getActiveValidatorIds();
     
     for (const validatorId of activeIds) {
       const secpAddress = await this.ensureValidatorMapping(validatorId);
@@ -454,6 +474,190 @@ export class StakingService {
     }
     
     return mapping;
+  }
+
+  /**
+   * COMPREHENSIVE: Get ALL validators with stake (1 to N, until result is 0)
+   * This includes both active and inactive validators
+   */
+  async getAllValidatorsWithStake(): Promise<Map<string, {stake: bigint, secpPubkey?: string}>> {
+    const validators = new Map<string, {stake: bigint, secpPubkey?: string}>();
+    
+    logger.info('🔍 Scanning ALL validators with stake (comprehensive approach)...');
+    
+    // Start from validator ID 1 and continue until we get null/empty result
+    for (let validatorId = 1; validatorId <= 1000; validatorId++) {
+      try {
+        const validatorInfo = await this.getValidatorInfo(validatorId.toString());
+        
+        if (!validatorInfo || !validatorInfo.stake || validatorInfo.stake === BigInt(0)) {
+          // If we get 5 consecutive empty results, assume we've reached the end
+          let emptyCount = 0;
+          for (let checkId = validatorId; checkId < validatorId + 5 && checkId <= 1000; checkId++) {
+            const checkInfo = await this.getValidatorInfo(checkId.toString());
+            if (!checkInfo || !checkInfo.stake || checkInfo.stake === BigInt(0)) {
+              emptyCount++;
+            } else {
+              break;
+            }
+          }
+          
+          if (emptyCount >= 5) {
+            logger.info(`🏁 Reached end of validators at ID ${validatorId} (5 consecutive empty results)`);
+            break;
+          }
+          continue;
+        }
+        
+        validators.set(validatorId.toString(), {
+          stake: validatorInfo.stake,
+          secpPubkey: validatorInfo.secpPubkey
+        });
+        
+        if (validatorId % 10 === 0) {
+          logger.info(`📊 Scanned ${validatorId} validators, found ${validators.size} with stake`);
+        }
+        
+      } catch (error) {
+        logger.warn(`Failed to get validator info for ID ${validatorId}:`, error);
+        // Continue scanning even if one fails
+      }
+    }
+    
+    logger.info(`✅ Comprehensive scan complete: Found ${validators.size} validators with stake`);
+    return validators;
+  }
+
+  /**
+   * UPDATE COMPREHENSIVE CACHE - Only called on epoch changes!
+   */
+  async updateComprehensiveValidatorCache(): Promise<void> {
+    logger.info('🔄 Updating comprehensive validator cache (epoch change detected)...');
+    
+    try {
+      // Get all validators with stake
+      const allValidators = await this.getAllValidatorsWithStake();
+      
+      // Clear and rebuild comprehensive cache
+      this.comprehensiveValidatorCache.clear();
+      
+      for (const [validatorId, validatorInfo] of allValidators.entries()) {
+        const secpAddress = await this.ensureValidatorMapping(validatorId);
+        if (secpAddress) {
+          const isActive = this.stakingInfo?.activeValidators.has(validatorId) || false;
+          this.comprehensiveValidatorCache.set(secpAddress, {
+            validatorId,
+            stake: validatorInfo.stake,
+            isActive
+          });
+        }
+      }
+      
+      this.lastComprehensiveScan = new Date();
+      logger.info(`✅ Comprehensive cache updated: ${this.comprehensiveValidatorCache.size} validators cached`);
+      
+    } catch (error) {
+      logger.error('Failed to update comprehensive validator cache:', error);
+    }
+  }
+
+  /**
+   * INCREMENTAL: Scan for new validators starting from a specific ID
+   */
+  async scanNewValidators(startId: number): Promise<Map<string, {stake: bigint, secpPubkey?: string}>> {
+    const newValidators = new Map<string, {stake: bigint, secpPubkey?: string}>();
+    
+    logger.info(`🔍 Incremental scan: checking validators from ID ${startId}...`);
+    
+    // Scan from startId until we hit consecutive empty results
+    for (let validatorId = startId; validatorId <= startId + 100; validatorId++) {
+      try {
+        const validatorInfo = await this.getValidatorInfo(validatorId.toString());
+        
+        if (!validatorInfo || !validatorInfo.stake || validatorInfo.stake === BigInt(0)) {
+          // Check if we've hit the end (5 consecutive empty results)
+          let emptyCount = 0;
+          for (let checkId = validatorId; checkId < validatorId + 5 && checkId <= startId + 100; checkId++) {
+            const checkInfo = await this.getValidatorInfo(checkId.toString());
+            if (!checkInfo || !checkInfo.stake || checkInfo.stake === BigInt(0)) {
+              emptyCount++;
+            } else {
+              break;
+            }
+          }
+          
+          if (emptyCount >= 5) {
+            logger.info(`🏁 Incremental scan ended at ID ${validatorId} (5 consecutive empty results)`);
+            break;
+          }
+          continue;
+        }
+        
+        newValidators.set(validatorId.toString(), {
+          stake: validatorInfo.stake,
+          secpPubkey: validatorInfo.secpPubkey
+        });
+        
+        if (validatorId % 10 === 0 && newValidators.size > 0) {
+          logger.info(`📊 Incremental scan: found ${newValidators.size} new validators up to ID ${validatorId}`);
+        }
+        
+      } catch (error) {
+        logger.warn(`Failed to check validator ID ${validatorId} during incremental scan:`, error);
+      }
+    }
+    
+    logger.info(`✅ Incremental scan complete: Found ${newValidators.size} new validators`);
+    return newValidators;
+  }
+
+  /**
+   * Add new validators to comprehensive cache
+   */
+  async addNewValidatorsToCache(newValidators: Map<string, {stake: bigint, secpPubkey?: string}>): Promise<void> {
+    logger.info(`📝 Adding ${newValidators.size} new validators to cache...`);
+    
+    for (const [validatorId, validatorInfo] of newValidators.entries()) {
+      try {
+        // Get secp address mapping
+        const secpAddress = await this.ensureValidatorMapping(validatorId);
+        if (secpAddress) {
+          const isActive = this.stakingInfo?.activeValidators.has(validatorId) || false;
+          
+          // Add to comprehensive cache
+          this.comprehensiveValidatorCache.set(secpAddress, {
+            validatorId,
+            stake: validatorInfo.stake,
+            isActive
+          });
+          
+          logger.debug(`📍 Added validator ${validatorId} (${secpAddress}) to cache`);
+        }
+      } catch (error) {
+        logger.warn(`Failed to add validator ${validatorId} to cache:`, error);
+      }
+    }
+    
+    logger.info(`✅ Successfully added ${newValidators.size} new validators to cache`);
+  }
+
+  /**
+   * Update specific validator stake in cache
+   */
+  updateValidatorStakeInCache(validatorId: string, newStake: bigint): void {
+    // Update in comprehensive cache
+    for (const [secpAddress, validatorData] of this.comprehensiveValidatorCache.entries()) {
+      if (validatorData.validatorId === validatorId) {
+        validatorData.stake = newStake;
+        logger.debug(`💰 Updated stake for validator ${validatorId}: ${newStake.toString()}`);
+        break;
+      }
+    }
+    
+    // Update in staking info if available
+    if (this.stakingInfo && this.stakingInfo.validatorStakes.has(validatorId)) {
+      this.stakingInfo.validatorStakes.set(validatorId, newStake);
+    }
   }
 
   /**

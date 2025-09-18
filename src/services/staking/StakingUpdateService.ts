@@ -111,13 +111,13 @@ export class StakingUpdateService {
         return;
       }
 
-      logger.info('📈 Epoch change detected, updating validator staking info...');
+      logger.info('📈 Epoch change detected, performing incremental validator update...');
 
-      // Refresh staking information
+      // Refresh staking information first
       await this.stakingService.refreshStakingInfo();
       
-      // Update database
-      await this.updateValidatorRegistry();
+      // Use incremental update instead of comprehensive scan
+      await this.performIncrementalUpdate();
       
       // Clear cache
       await this.clearValidatorCache();
@@ -178,9 +178,11 @@ export class StakingUpdateService {
         GROUP BY validator_id
       `);
 
-      // Then insert/update active validators with new stake amounts
-      // Get mapping of precompile validator ID -> secp address
+      // Then insert/update ALL validators with stake (active + inactive)
+      // Get comprehensive mapping of precompile validator ID -> secp address
       const validatorMapping = await this.stakingService.getValidatorMappingBySecpAddress();
+      
+      logger.info(`📊 Updating ${validatorMapping.size} validators (including inactive with stake)`);
       
       for (const [secpAddress, mapping] of validatorMapping.entries()) {
         const validatorId = mapping.validatorId;
@@ -224,7 +226,7 @@ export class StakingUpdateService {
             ${stakingInfo.currentEpoch},
             ${stake.toString()},
             ${existing.position || 0},  -- Preserve existing position
-            1,  -- Active
+            ${mapping.isActive ? 1 : 0},  -- Active status from precompile
             '${existing.validator_name || 'unknown'}',
             '${existing.keybase_id || ''}',
             '${existing.keybase_logo_url || ''}',
@@ -325,5 +327,103 @@ export class StakingUpdateService {
    */
   async initializeValidatorMappings(): Promise<void> {
     await this.stakingService.loadValidatorMappingsFromDatabase(this.config.clickhouseClient);
+  }
+
+  /**
+   * PUBLIC: Get staking service instance for startup operations
+   */
+  getStakingService() {
+    return this.stakingService;
+  }
+
+  /**
+   * PUBLIC: Force comprehensive validator mapping and database update
+   */
+  async performComprehensiveUpdate(): Promise<void> {
+    await this.stakingService.updateComprehensiveValidatorCache();
+    await this.updateValidatorRegistry();
+  }
+
+  /**
+   * PUBLIC: Incremental update - only new validators and stake changes
+   */
+  async performIncrementalUpdate(): Promise<void> {
+    const redisClient = this.config.redisClient;
+    if (!redisClient) {
+      logger.warn('Redis not available for incremental updates, falling back to comprehensive update');
+      return this.performComprehensiveUpdate();
+    }
+
+    try {
+      // Get last scanned validator ID
+      const lastScannedId = await redisClient.getClient().get('last_scanned_validator_id');
+      const startId = lastScannedId ? parseInt(lastScannedId) + 1 : 1;
+      
+      logger.info(`🔄 Incremental update: scanning from validator ID ${startId}...`);
+      
+      // Scan for new validators only
+      const newValidators = await this.stakingService.scanNewValidators(startId);
+      
+      if (newValidators.size > 0) {
+        logger.info(`📊 Found ${newValidators.size} new validators, updating cache and database...`);
+        
+        // Update cache with new validators
+        await this.stakingService.addNewValidatorsToCache(newValidators);
+        
+        // Update database
+        await this.updateValidatorRegistry();
+        
+        // Update last scanned ID
+        const maxNewId = Math.max(...Array.from(newValidators.keys()).map(id => parseInt(id)));
+        await redisClient.getClient().set('last_scanned_validator_id', maxNewId.toString());
+        
+        logger.info(`🔖 Updated last scanned validator ID to: ${maxNewId}`);
+      } else {
+        logger.info('📊 No new validators found during incremental scan');
+      }
+      
+      // Always update stakes for active validators
+      await this.updateActiveValidatorStakes();
+      
+      logger.info('✅ Incremental update completed');
+      
+    } catch (error) {
+      logger.error('Failed to perform incremental update:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update only active validator stakes (efficient)
+   */
+  private async updateActiveValidatorStakes(): Promise<void> {
+    const activeIds = this.stakingService.getActiveValidatorIds();
+    logger.info(`💰 Refreshing stakes for ${activeIds.length} active validators`);
+    
+    let updatedCount = 0;
+    const errors: string[] = [];
+    
+    for (const validatorId of activeIds) {
+      try {
+        const validatorInfo = await this.stakingService.getValidatorInfo(validatorId);
+        if (validatorInfo && validatorInfo.stake) {
+          // Update cache with new stake
+          this.stakingService.updateValidatorStakeInCache(validatorId, validatorInfo.stake);
+          updatedCount++;
+        }
+      } catch (error) {
+        const errorMsg = `Failed to update stake for validator ${validatorId}: ${error}`;
+        logger.warn(errorMsg);
+        errors.push(errorMsg);
+      }
+    }
+    
+    if (updatedCount > 0) {
+      logger.info(`✅ Successfully updated stakes for ${updatedCount}/${activeIds.length} active validators`);
+    }
+    
+    if (errors.length > 0) {
+      logger.warn(`⚠️ ${errors.length} errors occurred during stake updates`);
+    }
   }
 }
