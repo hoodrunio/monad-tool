@@ -3,29 +3,20 @@
 import { Request, Response } from 'express';
 import { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { MonadRedisClient } from '../../cache/redis-client';
-import { StakingUpdateService } from '../../services/staking/StakingUpdateService';
+import { DatabaseStakingUpdateService } from '../../services/staking/DatabaseStakingUpdateService';
 import { logger } from '../../utils/logger';
 
 export class ValidatorController {
   constructor(
     private clickhouseClient: MonadClickHouseClient,
     private redisClient: MonadRedisClient,
-    private stakingUpdateService?: StakingUpdateService
+    private stakingUpdateService?: DatabaseStakingUpdateService
   ) {}
 
-  // Method to update staking service after initialization
-  async setStakingUpdateService(stakingUpdateService: StakingUpdateService | null): Promise<void> {
+  // Method to update staking service after initialization  
+  setStakingUpdateService(stakingUpdateService: DatabaseStakingUpdateService | null): void {
     this.stakingUpdateService = stakingUpdateService || undefined;
-    
-    // Initialize validator mappings from database (one-time setup)
-    if (this.stakingUpdateService) {
-      try {
-        await this.stakingUpdateService.initializeValidatorMappings();
-        logger.info('✅ Validator mappings initialized from database');
-      } catch (error) {
-        logger.warn('Failed to initialize validator mappings:', error);
-      }
-    }
+    logger.info('✅ Database staking service connected to ValidatorController');
   }
 
   // =============================================
@@ -43,44 +34,25 @@ export class ValidatorController {
         return;
       }
 
-      const stats = this.stakingUpdateService.getStakingStats();
+      const stats = await this.stakingUpdateService.getStakingStats();
       const status = this.stakingUpdateService.getStatus();
 
-      // Convert BigInt values to strings and wei to MON for JSON serialization
+      // Database stats are already in proper format
       const sanitizedStats = stats ? {
-        ...stats,
-        totalStake: stats.totalStake?.toString(),
-        averageStake: stats.averageStake?.toString(),
-        totalStakeMON: stats.totalStake ? (Number(stats.totalStake) / Math.pow(10, 18)).toFixed(4) : "0",
-        averageStakeMON: stats.averageStake ? (Number(stats.averageStake) / Math.pow(10, 18)).toFixed(4) : "0",
-        currentEpoch: stats.currentEpoch?.toString()
+        totalActiveValidators: stats.totalActiveValidators,
+        totalValidators: stats.totalValidators,
+        totalStakeWei: stats.totalStakeWei,
+        totalStakeMON: stats.totalStakeMON,
+        currentEpoch: stats.currentEpoch,
+        lastUpdated: stats.lastUpdated.toISOString()
       } : null;
 
+      // Simplified status - database-centric approach doesn't need complex nested data
       const sanitizedStatus = {
-        ...status,
-        lastStakingInfo: status.lastStakingInfo ? {
-          ...status.lastStakingInfo,
-          currentEpoch: status.lastStakingInfo.currentEpoch?.toString(),
-          // Convert validatorStakes Map with BigInt values to serializable object with MON conversion
-          validatorStakes: status.lastStakingInfo.validatorStakes ? 
-            Object.fromEntries(
-              Array.from((status.lastStakingInfo.validatorStakes as Map<string, bigint>).entries())
-                .map(([key, value]: [string, bigint]) => [
-                  key, 
-                  {
-                    wei: value.toString(),
-                    mon: (Number(value) / Math.pow(10, 18)).toFixed(4)
-                  }
-                ])
-            ) : null,
-          // Convert Sets to arrays
-          activeValidators: status.lastStakingInfo.activeValidators ? 
-            Array.from(status.lastStakingInfo.activeValidators) : [],
-          consensusValidators: status.lastStakingInfo.consensusValidators ? 
-            Array.from(status.lastStakingInfo.consensusValidators) : [],
-          executionValidators: status.lastStakingInfo.executionValidators ? 
-            Array.from(status.lastStakingInfo.executionValidators) : []
-        } : null
+        isRunning: status.isRunning,
+        isUpdating: status.isUpdating,
+        updateIntervalMs: status.updateIntervalMs,
+        lastUpdate: status.lastUpdate.toISOString()
       };
 
       res.json({
@@ -570,7 +542,11 @@ export class ValidatorController {
             argMax(location, last_updated) as location,
             argMax(stake, last_updated) as stake,
             argMax(keybase_id, last_updated) as keybase_id,
-            argMax(keybase_logo_url, last_updated) as keybase_logo_url
+            argMax(keybase_logo_url, last_updated) as keybase_logo_url,
+            -- Include staking information from database
+            argMax(precompile_validator_id, last_updated) as precompile_validator_id,
+            argMax(is_staking_active, last_updated) as is_staking_active,
+            argMax(real_time_stake_wei, last_updated) as real_time_stake_wei
           FROM validator_registry 
           WHERE is_active = 1 ${activeValidatorFilter}
           GROUP BY validator_id
@@ -629,35 +605,20 @@ export class ValidatorController {
     const totalCount = countResult[0]?.total_count || 0;
     const totalPages = Math.ceil(totalCount / limit);
     
-    // Get validator mapping for staking information (if we have validators to process)
-    let validatorMapping = new Map<string, {validatorId: string, stake: bigint, isActive: boolean}>();
-    if (dataResult.length > 0 && this.stakingUpdateService) {
-      try {
-        validatorMapping = await this.stakingUpdateService.getValidatorMappingBySecpAddress();
-      } catch (error) {
-        logger.error('Failed to get validator mapping:', error);
-      }
-    }
-
     const rankings = dataResult.map((r, index) => {
-      // Get staking information by secp address (validator_id in database)
-      let stakingInfo = null;
-      if (this.stakingUpdateService && validatorMapping.size > 0) {
-        const stakingData = validatorMapping.get(r.validator_id);
+      // Staking information is now directly from database query
+      const realTimeStakeWei = r.real_time_stake_wei || '0';
+      const realTimeStakeMON = realTimeStakeWei !== '0' 
+        ? (Number(realTimeStakeWei) / Math.pow(10, 18)).toFixed(4)
+        : '0';
         
-        // Convert wei to MON (1 MON = 10^18 wei)
-        const realTimeStakeMON = stakingData?.stake 
-          ? (Number(stakingData.stake) / Math.pow(10, 18)).toFixed(4)
-          : null;
-        
-        stakingInfo = {
-          is_staking_active: stakingData?.isActive || false,
-          real_time_stake_mon: realTimeStakeMON,
-          real_time_stake_wei: stakingData?.stake?.toString() || null,
-          database_stake: parseInt(r.stake || 0),
-          precompile_validator_id: stakingData?.validatorId || null
-        };
-      }
+      const stakingInfo = {
+        is_staking_active: Boolean(r.is_staking_active),
+        real_time_stake_mon: realTimeStakeMON,
+        real_time_stake_wei: realTimeStakeWei,
+        database_stake: parseInt(r.stake || 0),
+        precompile_validator_id: r.precompile_validator_id || null
+      };
 
       return {
         rank: offset + index + 1,
@@ -699,121 +660,6 @@ export class ValidatorController {
         has_prev_page: page > 1
       }
     };
-  }
-
-  private async calculateValidatorRankings(timeWindow: string, limit: number, sortBy: string): Promise<any[]> {
-    const intervalClause = this.getIntervalClause(timeWindow);
-    
-    // Combined query to get both block proposal and QC participation metrics
-    // IMPORTANT: Only include validators that exist in validator_registry with is_active = 1
-    // Use DISTINCT and argMax to handle potential duplicates gracefully
-    const query = `
-      WITH 
-        active_validators AS (
-          SELECT DISTINCT
-            validator_id,
-            argMax(validator_name, last_updated) as validator_name,
-            argMax(provider, last_updated) as provider,
-            argMax(location, last_updated) as location,
-            argMax(stake, last_updated) as stake,
-            argMax(keybase_id, last_updated) as keybase_id,
-            argMax(keybase_logo_url, last_updated) as keybase_logo_url
-          FROM validator_registry 
-          WHERE is_active = 1
-          GROUP BY validator_id
-        ),
-        block_metrics AS (
-          SELECT 
-            bp.validator_id,
-            COUNT(*) as total_block_opportunities,
-            COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as blocks_proposed,
-            COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END) as blocks_skipped,
-            (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
-          FROM block_proposals bp
-          INNER JOIN active_validators av ON bp.validator_id = av.validator_id
-          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
-          GROUP BY bp.validator_id
-        ),
-        qc_metrics AS (
-          SELECT 
-            qc.validator_id,
-            COUNT(*) as total_qc_opportunities,
-            COUNT(CASE WHEN qc.participated = 1 THEN 1 END) as qc_participations,
-            (COUNT(CASE WHEN qc.participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
-          FROM qc_participation qc
-          INNER JOIN active_validators av ON qc.validator_id = av.validator_id
-          WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
-          GROUP BY qc.validator_id
-        )
-      SELECT 
-        av.validator_id as validator_id,
-        COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
-        COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
-        (COALESCE(b.block_proposal_ratio, 0) * 0.7 + COALESCE(q.qc_participation_rate, 0) * 0.3) as uptime_score,
-        COALESCE(b.total_block_opportunities, 0) as total_block_opportunities,
-        COALESCE(b.blocks_proposed, 0) as blocks_proposed,
-        COALESCE(b.blocks_skipped, 0) as blocks_skipped,
-        COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
-        COALESCE(q.qc_participations, 0) as qc_participations,
-        av.validator_name as validator_name,
-        av.provider as provider,
-        av.location as location,
-        av.stake as stake,
-        av.keybase_id as keybase_id,
-        av.keybase_logo_url as keybase_logo_url
-      FROM active_validators av
-      LEFT JOIN block_metrics b ON av.validator_id = b.validator_id
-      LEFT JOIN qc_metrics q ON av.validator_id = q.validator_id
-      ORDER BY ${this.getSortByClause(sortBy)}
-      LIMIT ${limit}
-    `;
-
-    const result = await this.clickhouseClient.executeRawQuery(query);
-
-    const rankings = result;
-    
-    return rankings.map((r, index) => {
-      // Get staking information if available
-      let stakingInfo = null;
-      if (this.stakingUpdateService) {
-        const isActive = this.stakingUpdateService.isValidatorActive(r.validator_id);
-        const realTimeStake = this.stakingUpdateService.getValidatorStake(r.validator_id);
-        
-        stakingInfo = {
-          is_staking_active: isActive,
-          real_time_stake: realTimeStake ? realTimeStake.toString() : null,
-          database_stake: parseInt(r.stake || 0)
-        };
-      }
-
-      return {
-        rank: index + 1,
-        validator_id: r.validator_id,
-        stake: parseInt(r.stake || 0),
-        staking: stakingInfo,
-        metrics: {
-          block_proposal_ratio: parseFloat(r.block_proposal_ratio || 0),
-          qc_participation_rate: parseFloat(r.qc_participation_rate || 0),
-          uptime_score: parseFloat(r.uptime_score || 0)
-        },
-        details: {
-          total_block_opportunities: parseInt(r.total_block_opportunities || 0),
-          total_qc_opportunities: parseInt(r.total_qc_opportunities || 0),
-          blocks_proposed: parseInt(r.blocks_proposed || 0),
-          blocks_skipped: parseInt(r.blocks_skipped || 0),
-          qc_participations: parseInt(r.qc_participations || 0)
-        },
-        infrastructure: {
-          validator_name: r.validator_name || 'unknown',
-          provider: r.provider || 'unknown',
-          location: r.location || 'unknown'
-        },
-        keybase: {
-          id: r.keybase_id || null,
-          logo_url: r.keybase_logo_url || null
-        }
-      };
-    });
   }
 
   private async getValidatorHourlyHistory(validatorId: string, hours: number): Promise<any[]> {
