@@ -146,40 +146,45 @@ export class StakingUpdateService {
 
       // First, mark all validators as inactive
       await this.config.clickhouseClient.executeCommand(`
-        INSERT INTO validator_registry 
-        SELECT 
+        INSERT INTO validator_registry (
           validator_id,
-          validator_name,
-          provider,
-          location,
+          node_id,
+          epoch,
           stake,
+          position,
+          is_active,
+          validator_name,
           keybase_id,
           keybase_logo_url,
-          ${stakingInfo.currentEpoch} as epoch,
-          0 as is_active,  -- Mark as inactive
-          now() as last_updated
-        FROM (
-          SELECT DISTINCT
-            validator_id,
-            argMax(validator_name, last_updated) as validator_name,
-            argMax(provider, last_updated) as provider,
-            argMax(location, last_updated) as location,
-            argMax(stake, last_updated) as stake,
-            argMax(keybase_id, last_updated) as keybase_id,
-            argMax(keybase_logo_url, last_updated) as keybase_logo_url
-          FROM validator_registry
-          WHERE is_active = 1
-          GROUP BY validator_id
+          provider,
+          location,
+          last_updated
         )
+        SELECT 
+          validator_id,
+          argMax(node_id, last_updated) as node_id,
+          ${stakingInfo.currentEpoch} as epoch,
+          argMax(stake, last_updated) as stake,
+          argMax(position, last_updated) as position,
+          0 as is_active,  -- Mark as inactive
+          argMax(validator_name, last_updated) as validator_name,
+          argMax(keybase_id, last_updated) as keybase_id,
+          argMax(keybase_logo_url, last_updated) as keybase_logo_url,
+          argMax(provider, last_updated) as provider,
+          argMax(location, last_updated) as location,
+          now() as last_updated
+        FROM validator_registry
+        WHERE is_active = 1
+        GROUP BY validator_id
       `);
 
       // Then insert/update active validators with new stake amounts
-      const activeValidators = Array.from(stakingInfo.activeValidators);
+      // Get mapping of precompile validator ID -> secp address
+      const validatorMapping = await this.stakingService.getValidatorMappingBySecpAddress();
       
-      for (const validatorId of activeValidators) {
-        const stake = stakingInfo.validatorStakes.get(validatorId) || BigInt(0);
-        const isInConsensus = stakingInfo.consensusValidators.has(validatorId);
-        const isInExecution = stakingInfo.executionValidators.has(validatorId);
+      for (const [secpAddress, mapping] of validatorMapping.entries()) {
+        const validatorId = mapping.validatorId;
+        const stake = mapping.stake;
 
         // Get existing validator info to preserve metadata
         const existingValidatorQuery = `
@@ -188,27 +193,43 @@ export class StakingUpdateService {
             argMax(provider, last_updated) as provider,
             argMax(location, last_updated) as location,
             argMax(keybase_id, last_updated) as keybase_id,
-            argMax(keybase_logo_url, last_updated) as keybase_logo_url
+            argMax(keybase_logo_url, last_updated) as keybase_logo_url,
+            argMax(position, last_updated) as position
           FROM validator_registry
-          WHERE validator_id = '${validatorId}'
+          WHERE validator_id = '${secpAddress}'
           GROUP BY validator_id
         `;
 
         const existingData = await this.config.clickhouseClient.executeRawQuery(existingValidatorQuery);
         const existing = existingData[0] || {};
 
-        // Insert updated validator record
+        // Insert updated validator record with proper column specification
         await this.config.clickhouseClient.executeCommand(`
-          INSERT INTO validator_registry VALUES (
-            '${validatorId}',
-            '${existing.validator_name || 'unknown'}',
-            '${existing.provider || 'unknown'}',
-            '${existing.location || 'unknown'}',
+          INSERT INTO validator_registry (
+            validator_id,
+            node_id,
+            epoch,
+            stake,
+            position,
+            is_active,
+            validator_name,
+            keybase_id,
+            keybase_logo_url,
+            provider,
+            location,
+            last_updated
+          ) VALUES (
+            '${secpAddress}',  -- Keep secp address as validator_id for database consistency
+            '${validatorId}',  -- Store precompile validator ID as node_id for future reference
+            ${stakingInfo.currentEpoch},
             ${stake.toString()},
+            ${existing.position || 0},  -- Preserve existing position
+            1,  -- Active
+            '${existing.validator_name || 'unknown'}',
             '${existing.keybase_id || ''}',
             '${existing.keybase_logo_url || ''}',
-            ${stakingInfo.currentEpoch},
-            1,  -- Active
+            '${existing.provider || 'unknown'}',
+            '${existing.location || 'unknown'}',
             now()
           )
         `);
@@ -217,7 +238,7 @@ export class StakingUpdateService {
       // Optimize table to merge records
       await this.config.clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
       
-      logger.info(`✅ Updated ${activeValidators.length} active validators in database`);
+      logger.info(`✅ Updated ${validatorMapping.size} active validators in database`);
     } catch (error) {
       logger.error('Failed to update validator registry:', error);
       throw error;
