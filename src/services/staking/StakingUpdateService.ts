@@ -30,6 +30,14 @@ export class StakingUpdateService {
       logger.info('🔧 Initializing Staking Update Service...');
       
       await this.stakingService.initialize();
+
+      // Ensure database snapshot matches current consensus set on startup
+      try {
+        await this.stakingService.updateValidatorsIncrementally(this.config.clickhouseClient);
+        logger.info('✅ Initial staking snapshot synchronized with database');
+      } catch (syncError) {
+        logger.warn('Failed to synchronize initial staking snapshot:', syncError);
+      }
       
       logger.info('✅ Staking Update Service initialized');
     } catch (error) {

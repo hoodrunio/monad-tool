@@ -607,6 +607,12 @@ export class StakingService {
       // Upsert current validator set with refreshed staking data
       const validatorRowsToInsert: any[] = [];
       const epochValue = Number(currentEpoch);
+      let timestampOffset = 0;
+
+      const nextTimestampString = (): string => {
+        const timestamp = new Date(Date.now() + timestampOffset++);
+        return this.formatDateTime(timestamp);
+      };
 
       if (this.stakingInfo) {
         for (const validatorId of allCurrentValidators) {
@@ -619,6 +625,10 @@ export class StakingService {
           const stake = this.stakingInfo.validatorStakes.get(validatorId) || BigInt(baseRow.stake || 0);
           const stakeString = stake.toString();
           const isConsensus = consensusValidators.has(validatorId);
+          const lastUpdated = nextTimestampString();
+          const firstSeen = baseRow.first_seen
+            ? this.formatDateTime(baseRow.first_seen)
+            : lastUpdated;
 
           validatorRowsToInsert.push({
             validator_id: baseRow.validator_id,
@@ -637,8 +647,8 @@ export class StakingService {
             location: baseRow.location || 'unknown',
             country: baseRow.country || 'unknown',
             datacenter: baseRow.datacenter || 'unknown',
-            first_seen: this.formatDateTime(baseRow.first_seen) || this.formatDateTime(new Date()),
-            last_updated: this.formatDateTime(new Date()),
+            first_seen: firstSeen,
+            last_updated: lastUpdated,
             precompile_validator_id: validatorId,
             is_staking_active: isConsensus ? 1 : 0,
             real_time_stake_wei: stakeString
@@ -650,6 +660,11 @@ export class StakingService {
           if (allCurrentValidators.has(validatorId)) {
             return;
           }
+
+          const lastUpdated = nextTimestampString();
+          const firstSeen = row.first_seen
+            ? this.formatDateTime(row.first_seen)
+            : lastUpdated;
 
           validatorRowsToInsert.push({
             validator_id: row.validator_id,
@@ -668,8 +683,8 @@ export class StakingService {
             location: row.location || 'unknown',
             country: row.country || 'unknown',
             datacenter: row.datacenter || 'unknown',
-            first_seen: this.formatDateTime(row.first_seen) || this.formatDateTime(new Date()),
-            last_updated: this.formatDateTime(new Date()),
+            first_seen: firstSeen,
+            last_updated: lastUpdated,
             precompile_validator_id: validatorId,
             is_staking_active: 0,
             real_time_stake_wei: String(row.real_time_stake_wei || row.stake || 0)
@@ -691,23 +706,24 @@ export class StakingService {
   }
 
   private formatDateTime(value: string | Date): string {
+    const toClickHouse = (date: Date): string => {
+      const iso = date.toISOString();
+      return iso.replace('T', ' ').replace('Z', '');
+    };
+
     if (value instanceof Date) {
-      const normalized = value.toISOString().slice(0, 19).replace('T', ' ');
-      return `${normalized}.000`;
+      return toClickHouse(value);
     }
 
     if (typeof value === 'string' && value.trim().length > 0) {
-      if (value.includes('T')) {
-        const normalized = value.slice(0, 19).replace('T', ' ');
-        return `${normalized}.000`;
+      const parsed = new Date(value);
+      if (!Number.isNaN(parsed.getTime())) {
+        return toClickHouse(parsed);
       }
-
-      return value.includes('.') ? value : `${value}.000`;
+      return toClickHouse(new Date());
     }
 
-    const date = new Date();
-    const normalized = date.toISOString().slice(0, 19).replace('T', ' ');
-    return `${normalized}.000`;
+    return toClickHouse(new Date());
   }
 
   /**
