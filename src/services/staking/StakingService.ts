@@ -613,10 +613,15 @@ export class StakingService {
 
       if (this.stakingInfo) {
         for (const validatorId of allCurrentValidators) {
+          const isConsensus = consensusValidators.has(validatorId);
+
           const baseRow = await this.getRegistryRowForValidator(
             validatorId,
             latestRowMap,
-            clickhouseClient
+            clickhouseClient,
+            epochValue,
+            nextTimestampString,
+            isConsensus
           );
 
           if (!baseRow) {
@@ -624,9 +629,13 @@ export class StakingService {
             continue;
           }
 
+          if (baseRow.__isPlaceholder) {
+            newValidators++;
+            delete baseRow.__isPlaceholder;
+          }
+
           const stake = this.stakingInfo.validatorStakes.get(validatorId) || BigInt(baseRow.stake || 0);
           const stakeString = stake.toString();
-          const isConsensus = consensusValidators.has(validatorId);
           const lastUpdated = nextTimestampString();
           const firstSeen = baseRow.first_seen
             ? this.formatDateTime(baseRow.first_seen)
@@ -648,6 +657,13 @@ export class StakingService {
             last_updated: lastUpdated,
             ...preservedMetadata
           });
+
+          baseRow.first_seen = firstSeen;
+          baseRow.last_updated = lastUpdated;
+          baseRow.is_active = isConsensus ? 1 : 0;
+          baseRow.is_staking_active = isConsensus ? 1 : 0;
+          baseRow.real_time_stake_wei = stakeString;
+          baseRow.stake = stakeString;
         }
 
         // Mark validators that have left the consensus set as inactive
@@ -677,6 +693,11 @@ export class StakingService {
             last_updated: lastUpdated,
             ...preservedMetadata
           });
+
+          row.first_seen = firstSeen;
+          row.last_updated = lastUpdated;
+          row.is_active = 0;
+          row.is_staking_active = 0;
         });
 
         if (validatorRowsToInsert.length > 0) {
@@ -704,7 +725,14 @@ export class StakingService {
     }
 
     if (typeof value === 'string' && value.trim().length > 0) {
-      const parsed = new Date(value);
+      const trimmed = value.trim();
+
+      // Already in ClickHouse format; return as-is
+      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(trimmed)) {
+        return trimmed;
+      }
+
+      const parsed = new Date(trimmed);
       if (!Number.isNaN(parsed.getTime())) {
         return toClickHouse(parsed);
       }
@@ -763,7 +791,10 @@ export class StakingService {
   private async getRegistryRowForValidator(
     validatorId: string,
     cache: Map<string, any>,
-    clickhouseClient: any
+    clickhouseClient: any,
+    epochValue: number,
+    nextTimestampString: () => string,
+    isConsensus: boolean
   ): Promise<any | null> {
     const cached = cache.get(validatorId);
     if (cached) {
@@ -796,6 +827,10 @@ export class StakingService {
         ? secpHex.slice(2)
         : secpHex;
 
+      if (!secpAddress || secpAddress.length === 0) {
+        return null;
+      }
+
       const rowBySecp = await this.fetchLatestRegistryRow(
         clickhouseClient,
         `validator_id = '${secpAddress}'`
@@ -806,11 +841,68 @@ export class StakingService {
         cache.set(validatorId, rowBySecp);
         return rowBySecp;
       }
+
+      const placeholder = this.createPlaceholderRegistryRow(
+        validatorId,
+        secpAddress,
+        validatorInfo,
+        epochValue,
+        nextTimestampString,
+        isConsensus
+      );
+
+      if (placeholder) {
+        cache.set(validatorId, placeholder);
+        return placeholder;
+      }
     } catch (error) {
       logger.warn(`Failed to backfill registry row for validator ${validatorId}:`, error);
     }
 
     return null;
+  }
+
+  private createPlaceholderRegistryRow(
+    validatorId: string,
+    secpAddress: string,
+    validatorInfo: StakingValidator,
+    epochValue: number,
+    nextTimestampString: () => string,
+    isConsensus: boolean
+  ): any | null {
+    try {
+      const timestamp = nextTimestampString();
+      const stakeBigInt = this.stakingInfo?.validatorStakes.get(validatorId) ?? validatorInfo.stake;
+      const stakeString = stakeBigInt?.toString() ?? '0';
+
+      return {
+        validator_id: secpAddress,
+        node_id: secpAddress,
+        precompile_validator_id: validatorId,
+        stake: stakeString,
+        position: 0,
+        dns_address: '',
+        dns_host: '',
+        dns_port: 8000,
+        validator_name: 'unknown',
+        keybase_id: '',
+        keybase_logo_url: '',
+        provider: 'unknown',
+        location: 'unknown',
+        country: 'unknown',
+        datacenter: 'unknown',
+        first_seen: timestamp,
+        last_updated: timestamp,
+        epoch: epochValue,
+        is_active: isConsensus ? 1 : 0,
+        is_staking_active: isConsensus ? 1 : 0,
+        real_time_stake_wei: stakeString,
+        __isPlaceholder: true
+      };
+    } catch (error) {
+      logger.warn(`Failed to create placeholder registry row for validator ${validatorId}:`, error);
+      return null;
+    }
   }
 
   private async fetchLatestRegistryRow(
