@@ -594,14 +594,12 @@ export class ValidatorController {
         real_time_stake_mon: r.real_time_stake_wei ? 
           (Number(r.real_time_stake_wei) / Math.pow(10, 18)).toFixed(4) : "0",
         real_time_stake_wei: r.real_time_stake_wei || "0",
-        database_stake: parseInt(r.stake || 0),
         precompile_validator_id: r.precompile_validator_id || null
       };
 
       return {
         rank: offset + index + 1,
         validator_id: r.validator_id,
-        stake: parseInt(r.stake || 0),
         staking: stakingInfo,
         metrics: {
           block_proposal_ratio: parseFloat(r.block_proposal_ratio || 0),
@@ -641,38 +639,44 @@ export class ValidatorController {
   }
 
   private buildActiveValidatorsCTE(activeOnly: boolean): string {
-    const activeFilter = activeOnly ? 'AND is_staking_active = 1' : '';
+    const statusFilter = activeOnly ? 'WHERE is_staking_active = 1' : '';
 
     return `
-      SELECT
-        validator_id,
-        validator_name,
-        provider,
-        location,
-        stake,
-        keybase_id,
-        keybase_logo_url,
-        precompile_validator_id,
-        is_staking_active,
-        real_time_stake_wei
+      SELECT *
       FROM (
         SELECT
           validator_id,
-          validator_name,
-          provider,
-          location,
-          stake,
-          keybase_id,
-          keybase_logo_url,
-          precompile_validator_id,
-          is_staking_active,
-          real_time_stake_wei,
-          ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) as rn
+          COALESCE(
+            argMaxIf(validator_name, last_updated, validator_name != '' AND validator_name != 'unknown'),
+            argMax(validator_name, last_updated)
+          ) AS validator_name,
+          COALESCE(
+            argMaxIf(provider, last_updated, provider != '' AND provider != 'unknown'),
+            argMax(provider, last_updated)
+          ) AS provider,
+          COALESCE(
+            argMaxIf(location, last_updated, location != '' AND location != 'unknown'),
+            argMax(location, last_updated)
+          ) AS location,
+          argMax(stake, last_updated) AS stake,
+          COALESCE(
+            argMaxIf(keybase_id, last_updated, keybase_id != ''),
+            argMax(keybase_id, last_updated)
+          ) AS keybase_id,
+          COALESCE(
+            argMaxIf(keybase_logo_url, last_updated, keybase_logo_url != ''),
+            argMax(keybase_logo_url, last_updated)
+          ) AS keybase_logo_url,
+          argMax(precompile_validator_id, last_updated) AS precompile_validator_id,
+          argMax(is_staking_active, last_updated) AS is_staking_active,
+          COALESCE(
+            argMaxIf(real_time_stake_wei, last_updated, real_time_stake_wei != '' AND real_time_stake_wei != '0'),
+            argMax(real_time_stake_wei, last_updated)
+          ) AS real_time_stake_wei
         FROM validator_registry
-        WHERE is_active = 1
-      )
-      WHERE rn = 1
-      ${activeFilter}
+        GROUP BY validator_id
+      ) latest_validators
+      ${statusFilter}
     `;
   }
 
@@ -680,8 +684,8 @@ export class ValidatorController {
     const intervalClause = this.getIntervalClause(timeWindow);
     
     // Combined query to get both block proposal and QC participation metrics
-    // IMPORTANT: Only include validators that exist in validator_registry with is_active = 1
-    // Use latest snapshot per validator (window function) to prevent duplicates cleanly
+    // IMPORTANT: Only include validators from validator_registry with current is_staking_active = 1 when activeOnly is true
+    // Use aggregated snapshot per validator to keep the latest metadata and avoid duplicate rows
     const activeValidatorsCTE = this.buildActiveValidatorsCTE(true);
 
     const query = `
@@ -749,14 +753,12 @@ export class ValidatorController {
         real_time_stake_mon: r.real_time_stake_wei ? 
           (Number(r.real_time_stake_wei) / Math.pow(10, 18)).toFixed(4) : "0",
         real_time_stake_wei: r.real_time_stake_wei || "0",
-        database_stake: parseInt(r.stake || 0),
         precompile_validator_id: r.precompile_validator_id || null
       };
 
       return {
         rank: index + 1,
         validator_id: r.validator_id,
-        stake: parseInt(r.stake || 0),
         staking: stakingInfo,
         metrics: {
           block_proposal_ratio: parseFloat(r.block_proposal_ratio || 0),

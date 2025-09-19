@@ -481,6 +481,10 @@ export class StakingService {
       let newValidators = 0;
       let consecutiveEmpty = 0;
       
+      const consensusValidators = this.stakingInfo?.consensusValidators ?? new Set<string>();
+      const executionValidators = this.stakingInfo?.executionValidators ?? new Set<string>();
+      const allCurrentValidators = new Set<string>([...consensusValidators, ...executionValidators]);
+
       // Scan for new validators starting from last_id + 1
       for (let validatorId = lastId + 1; validatorId <= lastId + 100; validatorId++) {
         try {
@@ -502,12 +506,13 @@ export class StakingService {
 
           if (!secpAddress) continue;
 
-          const isActive = this.stakingInfo?.activeValidators.has(validatorId.toString()) || false;
+          const isConsensus = consensusValidators.has(validatorId.toString());
 
           // Insert new validator
           await clickhouseClient.executeCommand(`
             INSERT INTO validator_registry (
               validator_id,
+              node_id,
               precompile_validator_id,
               epoch,
               stake,
@@ -521,11 +526,12 @@ export class StakingService {
               last_updated
             ) VALUES (
               '${secpAddress}',
+              '${secpAddress}',
               '${validatorId}',
               ${currentEpoch},
               ${validatorInfo.stake.toString()},
-              ${isActive ? 1 : 0},
-              ${isActive ? 1 : 0},
+              ${isConsensus ? 1 : 0},
+              ${isConsensus ? 1 : 0},
               '${validatorInfo.stake.toString()}',
               'unknown',
               'unknown', 
@@ -542,43 +548,138 @@ export class StakingService {
         }
       }
 
-      // Update existing active validators' stakes
-      if (this.stakingInfo?.activeValidators) {
-        let updatedStakes = 0;
-        
-        for (const activeValidatorId of this.stakingInfo.activeValidators) {
-          const stake = this.stakingInfo.validatorStakes.get(activeValidatorId);
-          if (stake) {
-            await clickhouseClient.executeCommand(`
-              INSERT INTO validator_registry (
-                validator_id,
-                precompile_validator_id,
-                epoch,
-                stake,
-                is_active,
-                is_staking_active,
-                real_time_stake_wei,
-                last_updated
-              )
-              SELECT 
-                validator_id,
-                precompile_validator_id,
-                ${currentEpoch} as epoch,
-                ${stake.toString()} as stake,
-                1 as is_active,
-                1 as is_staking_active,
-                '${stake.toString()}' as real_time_stake_wei,
-                now() as last_updated
-              FROM validator_registry
-              WHERE precompile_validator_id = '${activeValidatorId}'
-              ORDER BY last_updated DESC
-              LIMIT 1
-            `);
-            updatedStakes++;
+      // Get latest snapshot for all validators currently stored in the registry
+      const latestRows = await clickhouseClient.executeRawQuery(`
+        SELECT
+          validator_id,
+          node_id,
+          precompile_validator_id,
+          stake,
+          position,
+          dns_address,
+          dns_host,
+          dns_port,
+          validator_name,
+          keybase_id,
+          keybase_logo_url,
+          provider,
+          location,
+          country,
+          datacenter,
+          first_seen,
+          is_active,
+          is_staking_active,
+          real_time_stake_wei
+        FROM (
+          SELECT
+            validator_id,
+            argMax(node_id, last_updated) AS node_id,
+            argMax(precompile_validator_id, last_updated) AS precompile_validator_id,
+            argMax(stake, last_updated) AS stake,
+            argMax(position, last_updated) AS position,
+            COALESCE(argMaxIf(dns_address, last_updated, dns_address != ''), argMax(dns_address, last_updated)) AS dns_address,
+            COALESCE(argMaxIf(dns_host, last_updated, dns_host != ''), argMax(dns_host, last_updated)) AS dns_host,
+            COALESCE(argMaxIf(dns_port, last_updated, dns_port != 0), argMax(dns_port, last_updated)) AS dns_port,
+            COALESCE(argMaxIf(validator_name, last_updated, validator_name != '' AND validator_name != 'unknown'), argMax(validator_name, last_updated)) AS validator_name,
+            COALESCE(argMaxIf(keybase_id, last_updated, keybase_id != ''), argMax(keybase_id, last_updated)) AS keybase_id,
+            COALESCE(argMaxIf(keybase_logo_url, last_updated, keybase_logo_url != ''), argMax(keybase_logo_url, last_updated)) AS keybase_logo_url,
+            COALESCE(argMaxIf(provider, last_updated, provider != '' AND provider != 'unknown'), argMax(provider, last_updated)) AS provider,
+            COALESCE(argMaxIf(location, last_updated, location != '' AND location != 'unknown'), argMax(location, last_updated)) AS location,
+            COALESCE(argMaxIf(country, last_updated, country != '' AND country != 'unknown'), argMax(country, last_updated)) AS country,
+            COALESCE(argMaxIf(datacenter, last_updated, datacenter != '' AND datacenter != 'unknown'), argMax(datacenter, last_updated)) AS datacenter,
+            argMax(first_seen, last_updated) AS first_seen,
+            argMax(is_active, last_updated) AS is_active,
+            argMax(is_staking_active, last_updated) AS is_staking_active,
+            COALESCE(argMaxIf(real_time_stake_wei, last_updated, real_time_stake_wei != '' AND real_time_stake_wei != '0'), argMax(real_time_stake_wei, last_updated)) AS real_time_stake_wei
+          FROM validator_registry
+          GROUP BY validator_id
+        ) latest
+        WHERE precompile_validator_id != ''
+      `);
+
+      const latestRowMap = new Map<string, any>();
+      latestRows.forEach((row: any) => {
+        if (row.precompile_validator_id) {
+          latestRowMap.set(row.precompile_validator_id, row);
+        }
+      });
+
+      // Upsert current validator set with refreshed staking data
+      const validatorRowsToInsert: any[] = [];
+      const epochValue = Number(currentEpoch);
+
+      if (this.stakingInfo) {
+        for (const validatorId of allCurrentValidators) {
+          const baseRow = latestRowMap.get(validatorId);
+          if (!baseRow) {
+            logger.warn(`No existing registry row found for validator ${validatorId} while updating stakes.`);
+            continue;
           }
+
+          const stake = this.stakingInfo.validatorStakes.get(validatorId) || BigInt(baseRow.stake || 0);
+          const stakeString = stake.toString();
+          const isConsensus = consensusValidators.has(validatorId);
+
+          validatorRowsToInsert.push({
+            validator_id: baseRow.validator_id,
+            node_id: baseRow.node_id || baseRow.validator_id,
+            epoch: epochValue,
+            stake: stakeString,
+            position: Number(baseRow.position || 0),
+            is_active: isConsensus ? 1 : 0,
+            dns_address: baseRow.dns_address || '',
+            dns_host: baseRow.dns_host || '',
+            dns_port: Number(baseRow.dns_port || 8000),
+            validator_name: baseRow.validator_name || 'unknown',
+            keybase_id: baseRow.keybase_id || '',
+            keybase_logo_url: baseRow.keybase_logo_url || '',
+            provider: baseRow.provider || 'unknown',
+            location: baseRow.location || 'unknown',
+            country: baseRow.country || 'unknown',
+            datacenter: baseRow.datacenter || 'unknown',
+            first_seen: this.formatDateTime(baseRow.first_seen) || this.formatDateTime(new Date()),
+            last_updated: this.formatDateTime(new Date()),
+            precompile_validator_id: validatorId,
+            is_staking_active: isConsensus ? 1 : 0,
+            real_time_stake_wei: stakeString
+          });
         }
 
-        logger.info(`✅ Updated stakes for ${updatedStakes} active validators`);
+        // Mark validators that have left the consensus set as inactive
+        latestRowMap.forEach((row, validatorId) => {
+          if (allCurrentValidators.has(validatorId)) {
+            return;
+          }
+
+          validatorRowsToInsert.push({
+            validator_id: row.validator_id,
+            node_id: row.node_id || row.validator_id,
+            epoch: epochValue,
+            stake: String(row.stake || 0),
+            position: Number(row.position || 0),
+            is_active: 0,
+            dns_address: row.dns_address || '',
+            dns_host: row.dns_host || '',
+            dns_port: Number(row.dns_port || 8000),
+            validator_name: row.validator_name || 'unknown',
+            keybase_id: row.keybase_id || '',
+            keybase_logo_url: row.keybase_logo_url || '',
+            provider: row.provider || 'unknown',
+            location: row.location || 'unknown',
+            country: row.country || 'unknown',
+            datacenter: row.datacenter || 'unknown',
+            first_seen: this.formatDateTime(row.first_seen) || this.formatDateTime(new Date()),
+            last_updated: this.formatDateTime(new Date()),
+            precompile_validator_id: validatorId,
+            is_staking_active: 0,
+            real_time_stake_wei: String(row.real_time_stake_wei || row.stake || 0)
+          });
+        });
+
+        if (validatorRowsToInsert.length > 0) {
+          await clickhouseClient.insertRows('validator_registry', validatorRowsToInsert);
+          logger.info(`✅ Updated staking snapshot for ${validatorRowsToInsert.length} validators`);
+        }
       }
 
       logger.info(`✅ Incremental update complete: ${newValidators} new validators added`);
@@ -587,6 +688,26 @@ export class StakingService {
       logger.error('Failed to update validators incrementally:', error);
       throw error;
     }
+  }
+
+  private formatDateTime(value: string | Date): string {
+    if (value instanceof Date) {
+      const normalized = value.toISOString().slice(0, 19).replace('T', ' ');
+      return `${normalized}.000`;
+    }
+
+    if (typeof value === 'string' && value.trim().length > 0) {
+      if (value.includes('T')) {
+        const normalized = value.slice(0, 19).replace('T', ' ');
+        return `${normalized}.000`;
+      }
+
+      return value.includes('.') ? value : `${value}.000`;
+    }
+
+    const date = new Date();
+    const normalized = date.toISOString().slice(0, 19).replace('T', ' ');
+    return `${normalized}.000`;
   }
 
   /**

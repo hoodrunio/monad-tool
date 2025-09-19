@@ -571,6 +571,18 @@ export class MonadClickHouseClient {
     await this.client.command({ query: command });
   }
 
+  async insertRows(table: string, rows: any[]): Promise<void> {
+    if (!rows || rows.length === 0) {
+      return;
+    }
+
+    await this.client.insert({
+      table,
+      values: rows,
+      format: 'JSONEachRow'
+    });
+  }
+
   // =============================================
   // VALIDATOR REGISTRY SYNC
   // =============================================
@@ -744,4 +756,4 @@ export class MonadClickHouseClient {
     }
     return String(value).trim();
   }
-} 
+}
