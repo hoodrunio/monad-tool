@@ -102,7 +102,6 @@ export class ServiceContainer {
     };
     
     this._stakingUpdateService = new StakingUpdateService(stakingConfig);
-    await this._stakingUpdateService.initialize();
 
     // Initialize provider performance cache service
     this._providerCacheService = new ProviderPerformanceCacheService(

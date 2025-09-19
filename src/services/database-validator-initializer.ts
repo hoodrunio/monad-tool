@@ -115,19 +115,18 @@ export class DatabaseValidatorInitializer {
               provider,
               epoch,
               last_updated,
-              ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) AS rn
+              row_number() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) AS rn
             FROM validator_registry
-            WHERE is_active = 1
           )
           WHERE rn = 1
         )
         SELECT
-          COUNT() as total_validators,
-          SUM(dns_address != '') as validators_with_dns,
-          SUM(location != '' AND location != 'unknown') as validators_with_location,
-          SUM(provider != '' AND provider != 'unknown') as validators_with_provider,
-          groupArrayDistinct(epoch) as epochs,
-          max(last_updated) as last_updated
+          COUNT() AS total_validators,
+          SUM(if(ifNull(dns_address, '') = '', 0, 1)) AS validators_with_dns,
+          SUM(if(ifNull(location, '') = '' OR lowerUTF8(ifNull(location, '')) = 'unknown', 0, 1)) AS validators_with_location,
+          SUM(if(ifNull(provider, '') = '' OR lowerUTF8(ifNull(provider, '')) = 'unknown', 0, 1)) AS validators_with_provider,
+          groupArrayDistinct(epoch) AS epochs,
+          max(last_updated) AS last_updated
         FROM latest_validators
       `;
 

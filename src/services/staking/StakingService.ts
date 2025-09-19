@@ -410,18 +410,17 @@ export class StakingService {
           await clickhouseClient.executeCommand(`
             INSERT INTO validator_registry (
               validator_id,
+              node_id,
               precompile_validator_id,
               epoch,
               stake,
               is_active,
               is_staking_active,
               real_time_stake_wei,
-              validator_name,
-              provider,
-              location,
               first_seen,
               last_updated
             ) VALUES (
+              '${secpAddress}',
               '${secpAddress}',
               '${validatorId}',
               ${currentEpoch},
@@ -429,9 +428,6 @@ export class StakingService {
               ${isActive ? 1 : 0},
               ${isActive ? 1 : 0},
               '${validatorInfo.stake.toString()}',
-              'unknown',
-              'unknown',
-              'unknown',
               now(),
               now()
             )
@@ -519,9 +515,6 @@ export class StakingService {
               is_active,
               is_staking_active,
               real_time_stake_wei,
-              validator_name,
-              provider,
-              location,
               first_seen,
               last_updated
             ) VALUES (
@@ -533,9 +526,6 @@ export class StakingService {
               ${isConsensus ? 1 : 0},
               ${isConsensus ? 1 : 0},
               '${validatorInfo.stake.toString()}',
-              'unknown',
-              'unknown', 
-              'unknown',
               now(),
               now()
             )
@@ -605,7 +595,7 @@ export class StakingService {
       });
 
       // Upsert current validator set with refreshed staking data
-      const validatorRowsToInsert: any[] = [];
+      const validatorRowsToInsert: Record<string, any>[] = [];
       const epochValue = Number(currentEpoch);
       let timestampOffset = 0;
 
@@ -630,6 +620,8 @@ export class StakingService {
             ? this.formatDateTime(baseRow.first_seen)
             : lastUpdated;
 
+          const preservedMetadata = this.preserveValidatorMetadata(baseRow);
+
           validatorRowsToInsert.push({
             validator_id: baseRow.validator_id,
             node_id: baseRow.node_id || baseRow.validator_id,
@@ -637,21 +629,12 @@ export class StakingService {
             stake: stakeString,
             position: Number(baseRow.position || 0),
             is_active: isConsensus ? 1 : 0,
-            dns_address: baseRow.dns_address || '',
-            dns_host: baseRow.dns_host || '',
-            dns_port: Number(baseRow.dns_port || 8000),
-            validator_name: baseRow.validator_name || 'unknown',
-            keybase_id: baseRow.keybase_id || '',
-            keybase_logo_url: baseRow.keybase_logo_url || '',
-            provider: baseRow.provider || 'unknown',
-            location: baseRow.location || 'unknown',
-            country: baseRow.country || 'unknown',
-            datacenter: baseRow.datacenter || 'unknown',
+            is_staking_active: isConsensus ? 1 : 0,
+            real_time_stake_wei: stakeString,
+            precompile_validator_id: validatorId,
             first_seen: firstSeen,
             last_updated: lastUpdated,
-            precompile_validator_id: validatorId,
-            is_staking_active: isConsensus ? 1 : 0,
-            real_time_stake_wei: stakeString
+            ...preservedMetadata
           });
         }
 
@@ -666,6 +649,8 @@ export class StakingService {
             ? this.formatDateTime(row.first_seen)
             : lastUpdated;
 
+          const preservedMetadata = this.preserveValidatorMetadata(row);
+
           validatorRowsToInsert.push({
             validator_id: row.validator_id,
             node_id: row.node_id || row.validator_id,
@@ -673,21 +658,12 @@ export class StakingService {
             stake: String(row.stake || 0),
             position: Number(row.position || 0),
             is_active: 0,
-            dns_address: row.dns_address || '',
-            dns_host: row.dns_host || '',
-            dns_port: Number(row.dns_port || 8000),
-            validator_name: row.validator_name || 'unknown',
-            keybase_id: row.keybase_id || '',
-            keybase_logo_url: row.keybase_logo_url || '',
-            provider: row.provider || 'unknown',
-            location: row.location || 'unknown',
-            country: row.country || 'unknown',
-            datacenter: row.datacenter || 'unknown',
+            is_staking_active: 0,
+            real_time_stake_wei: String(row.real_time_stake_wei || row.stake || 0),
+            precompile_validator_id: row.precompile_validator_id || validatorId,
             first_seen: firstSeen,
             last_updated: lastUpdated,
-            precompile_validator_id: validatorId,
-            is_staking_active: 0,
-            real_time_stake_wei: String(row.real_time_stake_wei || row.stake || 0)
+            ...preservedMetadata
           });
         });
 
@@ -724,6 +700,52 @@ export class StakingService {
     }
 
     return toClickHouse(new Date());
+  }
+
+  /**
+   * Preserve non-staking metadata fields from existing registry rows so staking updates
+   * never clobber infrastructure information.
+   */
+  private preserveValidatorMetadata(baseRow: any): Record<string, any> {
+    if (!baseRow) {
+      return {};
+    }
+
+    const preserved: Record<string, any> = {};
+    const stringFields = [
+      'dns_address',
+      'dns_host',
+      'validator_name',
+      'keybase_id',
+      'keybase_logo_url',
+      'provider',
+      'location',
+      'country',
+      'datacenter'
+    ];
+
+    for (const field of stringFields) {
+      const value = baseRow[field];
+      if (typeof value !== 'string') {
+        continue;
+      }
+
+      const trimmed = value.trim();
+      if (!trimmed || trimmed.toLowerCase() === 'unknown') {
+        continue;
+      }
+
+      preserved[field] = value;
+    }
+
+    if (baseRow.dns_port !== undefined && baseRow.dns_port !== null) {
+      const port = Number(baseRow.dns_port);
+      if (!Number.isNaN(port) && port > 0) {
+        preserved.dns_port = port;
+      }
+    }
+
+    return preserved;
   }
 
   /**

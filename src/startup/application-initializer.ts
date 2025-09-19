@@ -133,18 +133,18 @@ export class ApplicationInitializer {
         const databaseValidator = this.serviceContainer.getDatabaseValidator();
         await databaseValidator.ensureValidatorsInDatabase();
         
-        // STAKING INITIALIZATION: Initial population of all validators
-        logger.info('🔧 Phase 2b: Initial staking data population...');
+        // STAKING INITIALIZATION: Align staking flags without touching infrastructure data
+        logger.info('🔧 Phase 2b: Synchronizing staking state with database...');
         try {
           const stakingUpdateService = this.serviceContainer.getStakingUpdateService();
           if (stakingUpdateService) {
-            await stakingUpdateService.performInitialPopulation();
-            logger.info('✅ Staking data initial population completed');
+            await stakingUpdateService.initialize();
+            logger.info('✅ Staking update service synchronized with database');
           } else {
             logger.warn('⚠️ StakingUpdateService not available, skipping staking initialization');
           }
         } catch (error) {
-          logger.error('Failed to initialize staking data:', error);
+          logger.error('Failed to synchronize staking data:', error);
           // Non-fatal error - continue startup but log the issue
         }
         
