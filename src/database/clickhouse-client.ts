@@ -38,6 +38,10 @@ export class MonadClickHouseClient {
     });
   }
 
+  getDatabaseName(): string {
+    return this.config.database;
+  }
+
   // =============================================
   // SCHEMA INITIALIZATION
   // =============================================

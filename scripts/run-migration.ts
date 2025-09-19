@@ -14,7 +14,7 @@ async function runMigration() {
     port: parseInt(process.env.CLICKHOUSE_PORT || '8123'),
     username: process.env.CLICKHOUSE_USER || 'default',
     password: process.env.CLICKHOUSE_PASSWORD || '',
-    database: process.env.CLICKHOUSE_DB || 'monad_analytics',
+    database: process.env.CLICKHOUSE_DATABASE || process.env.CLICKHOUSE_DB || 'monad_analytics',
     max_open_connections: 10,
     max_query_timeout: 30000,
     compression: true

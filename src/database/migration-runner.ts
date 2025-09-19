@@ -50,6 +50,7 @@ export class MigrationRunner {
         FROM system.columns 
         WHERE table = 'validator_registry' 
         AND name = 'precompile_validator_id'
+        AND database = '${this.clickhouseClient.getDatabaseName()}'
       `);
       
       return result[0]?.has_column === 0;
