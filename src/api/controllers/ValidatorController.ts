@@ -511,58 +511,24 @@ export class ValidatorController {
     const intervalClause = this.getIntervalClause(timeWindow);
     const offset = (page - 1) * limit;
     
-    // DATABASE-FIRST: Filter by is_staking_active column directly
-    const activeValidatorFilter = activeOnly ? 'AND is_staking_active = 1' : '';
+    const activeValidatorsCTE = this.buildActiveValidatorsCTE(activeOnly);
 
-    // First, get the total count - ONLY counting validators that exist in validator_registry
-    // Use DISTINCT to prevent counting duplicates
+    // First, get the total count - use aggregated latest validator records to ensure accuracy
     const countQuery = `
       WITH 
         active_validators AS (
-          SELECT DISTINCT validator_id 
-          FROM validator_registry 
-          WHERE is_active = 1 ${activeValidatorFilter}
-          GROUP BY validator_id
-        ),
-        block_metrics AS (
-          SELECT bp.validator_id
-          FROM block_proposals bp
-          INNER JOIN active_validators av ON bp.validator_id = av.validator_id
-          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
-          GROUP BY bp.validator_id
-        ),
-        qc_metrics AS (
-          SELECT qc.validator_id
-          FROM qc_participation qc
-          INNER JOIN active_validators av ON qc.validator_id = av.validator_id
-          WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
-          GROUP BY qc.validator_id
+          ${activeValidatorsCTE}
         )
-      SELECT COUNT(DISTINCT COALESCE(b.validator_id, q.validator_id)) as total_count
-      FROM block_metrics b
-      FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
-      WHERE COALESCE(b.validator_id, q.validator_id) IS NOT NULL
+      SELECT COUNT(*) as total_count
+      FROM active_validators
     `;
 
     // Main query with pagination and stake amounts - ONLY include validators in validator_registry
-    // Use DISTINCT and latest record per validator to prevent duplicates
+    // Use aggregated latest record per validator to prevent duplicates
     const query = `
       WITH 
         active_validators AS (
-          SELECT DISTINCT
-            validator_id, 
-            argMax(validator_name, last_updated) as validator_name,
-            argMax(provider, last_updated) as provider,
-            argMax(location, last_updated) as location,
-            argMax(stake, last_updated) as stake,
-            argMax(keybase_id, last_updated) as keybase_id,
-            argMax(keybase_logo_url, last_updated) as keybase_logo_url,
-            argMax(precompile_validator_id, last_updated) as precompile_validator_id,
-            argMax(is_staking_active, last_updated) as is_staking_active,
-            argMax(real_time_stake_wei, last_updated) as real_time_stake_wei
-          FROM validator_registry 
-          WHERE is_active = 1 ${activeValidatorFilter}
-          GROUP BY validator_id
+          ${activeValidatorsCTE}
         ),
         block_metrics AS (
           SELECT 
@@ -602,7 +568,10 @@ export class ValidatorController {
         av.location as location,
         av.stake as stake,
         av.keybase_id as keybase_id,
-        av.keybase_logo_url as keybase_logo_url
+        av.keybase_logo_url as keybase_logo_url,
+        av.precompile_validator_id as precompile_validator_id,
+        av.is_staking_active as is_staking_active,
+        av.real_time_stake_wei as real_time_stake_wei
       FROM active_validators av
       LEFT JOIN block_metrics b ON av.validator_id = b.validator_id
       LEFT JOIN qc_metrics q ON av.validator_id = q.validator_id
@@ -671,29 +640,54 @@ export class ValidatorController {
     };
   }
 
+  private buildActiveValidatorsCTE(activeOnly: boolean): string {
+    const activeFilter = activeOnly ? 'AND is_staking_active = 1' : '';
+
+    return `
+      SELECT
+        validator_id,
+        validator_name,
+        provider,
+        location,
+        stake,
+        keybase_id,
+        keybase_logo_url,
+        precompile_validator_id,
+        is_staking_active,
+        real_time_stake_wei
+      FROM (
+        SELECT
+          validator_id,
+          validator_name,
+          provider,
+          location,
+          stake,
+          keybase_id,
+          keybase_logo_url,
+          precompile_validator_id,
+          is_staking_active,
+          real_time_stake_wei,
+          ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) as rn
+        FROM validator_registry
+        WHERE is_active = 1
+      )
+      WHERE rn = 1
+      ${activeFilter}
+    `;
+  }
+
   private async calculateValidatorRankings(timeWindow: string, limit: number, sortBy: string): Promise<any[]> {
     const intervalClause = this.getIntervalClause(timeWindow);
     
     // Combined query to get both block proposal and QC participation metrics
     // IMPORTANT: Only include validators that exist in validator_registry with is_active = 1
-    // Use DISTINCT and argMax to handle potential duplicates gracefully
+    // Use latest snapshot per validator (window function) to prevent duplicates cleanly
+    const activeValidatorsCTE = this.buildActiveValidatorsCTE(true);
+
     const query = `
       WITH 
         active_validators AS (
-          SELECT DISTINCT
-            validator_id,
-            argMax(validator_name, last_updated) as validator_name,
-            argMax(provider, last_updated) as provider,
-            argMax(location, last_updated) as location,
-            argMax(stake, last_updated) as stake,
-            argMax(keybase_id, last_updated) as keybase_id,
-            argMax(keybase_logo_url, last_updated) as keybase_logo_url,
-            argMax(precompile_validator_id, last_updated) as precompile_validator_id,
-            argMax(is_staking_active, last_updated) as is_staking_active,
-            argMax(real_time_stake_wei, last_updated) as real_time_stake_wei
-          FROM validator_registry 
-          WHERE is_active = 1
-          GROUP BY validator_id
+          ${activeValidatorsCTE}
         ),
         block_metrics AS (
           SELECT 
@@ -733,7 +727,10 @@ export class ValidatorController {
         av.location as location,
         av.stake as stake,
         av.keybase_id as keybase_id,
-        av.keybase_logo_url as keybase_logo_url
+        av.keybase_logo_url as keybase_logo_url,
+        av.precompile_validator_id as precompile_validator_id,
+        av.is_staking_active as is_staking_active,
+        av.real_time_stake_wei as real_time_stake_wei
       FROM active_validators av
       LEFT JOIN block_metrics b ON av.validator_id = b.validator_id
       LEFT JOIN qc_metrics q ON av.validator_id = q.validator_id
@@ -991,14 +988,11 @@ export class ValidatorController {
     try {
       // Check if we need to optimize the table (detect duplicates)
       const duplicateCheckQuery = `
-        SELECT validator_id, COUNT(*) as count
-        FROM (
-          SELECT DISTINCT validator_id, epoch, last_updated
-          FROM validator_registry
-          WHERE is_active = 1
-        )
-        GROUP BY validator_id
-        HAVING count > 1
+        SELECT validator_id
+        FROM validator_registry
+        WHERE is_active = 1
+        GROUP BY validator_id, epoch, last_updated
+        HAVING COUNT(*) > 1
         LIMIT 1
       `;
       

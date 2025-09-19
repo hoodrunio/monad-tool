@@ -99,16 +99,36 @@ export class DatabaseValidatorInitializer {
   }> {
     try {
       const query = `
-        SELECT 
-          COUNT(*) as total_validators,
-          SUM(CASE WHEN dns_address != '' THEN 1 ELSE 0 END) as validators_with_dns,
-          SUM(CASE WHEN location != 'unknown' AND location != '' THEN 1 ELSE 0 END) as validators_with_location,
-          SUM(CASE WHEN provider != 'unknown' AND provider != '' THEN 1 ELSE 0 END) as validators_with_provider,
-          uniq(epoch) as unique_epochs,
-          groupArray(DISTINCT epoch) as epochs,
-          MAX(last_updated) as last_updated
-        FROM validator_registry
-        WHERE is_active = 1
+        WITH latest_validators AS (
+          SELECT
+            validator_id,
+            dns_address,
+            location,
+            provider,
+            epoch,
+            last_updated
+          FROM (
+            SELECT
+              validator_id,
+              dns_address,
+              location,
+              provider,
+              epoch,
+              last_updated,
+              ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) AS rn
+            FROM validator_registry
+            WHERE is_active = 1
+          )
+          WHERE rn = 1
+        )
+        SELECT
+          COUNT() as total_validators,
+          SUM(dns_address != '') as validators_with_dns,
+          SUM(location != '' AND location != 'unknown') as validators_with_location,
+          SUM(provider != '' AND provider != 'unknown') as validators_with_provider,
+          groupArrayDistinct(epoch) as epochs,
+          max(last_updated) as last_updated
+        FROM latest_validators
       `;
 
       const results = await this.clickhouseClient.executeRawQuery(query);
