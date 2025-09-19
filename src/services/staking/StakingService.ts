@@ -589,8 +589,15 @@ export class StakingService {
 
       const latestRowMap = new Map<string, any>();
       latestRows.forEach((row: any) => {
-        if (row.precompile_validator_id) {
-          latestRowMap.set(row.precompile_validator_id, row);
+        if (!row) {
+          return;
+        }
+
+        const rawKey = row.precompile_validator_id;
+        const key = rawKey !== undefined && rawKey !== null ? String(rawKey).trim() : '';
+
+        if (key.length > 0) {
+          latestRowMap.set(key, row);
         }
       });
 
@@ -606,7 +613,12 @@ export class StakingService {
 
       if (this.stakingInfo) {
         for (const validatorId of allCurrentValidators) {
-          const baseRow = latestRowMap.get(validatorId);
+          const baseRow = await this.getRegistryRowForValidator(
+            validatorId,
+            latestRowMap,
+            clickhouseClient
+          );
+
           if (!baseRow) {
             logger.warn(`No existing registry row found for validator ${validatorId} while updating stakes.`);
             continue;
@@ -746,6 +758,95 @@ export class StakingService {
     }
 
     return preserved;
+  }
+
+  private async getRegistryRowForValidator(
+    validatorId: string,
+    cache: Map<string, any>,
+    clickhouseClient: any
+  ): Promise<any | null> {
+    const cached = cache.get(validatorId);
+    if (cached) {
+      return cached;
+    }
+
+    // Try to fetch by precompile ID first
+    const rowByPrecompile = await this.fetchLatestRegistryRow(
+      clickhouseClient,
+      `precompile_validator_id = '${validatorId}'`
+    );
+    if (rowByPrecompile) {
+      cache.set(validatorId, rowByPrecompile);
+      return rowByPrecompile;
+    }
+
+    // Fallback: derive secp address from precompile and look up by validator_id
+    try {
+      const validatorInfo = await this.getValidatorInfo(validatorId);
+      if (!validatorInfo || !validatorInfo.secpPubkey) {
+        return null;
+      }
+
+      const rawSecp = validatorInfo.secpPubkey as string | Uint8Array;
+      const secpHex = typeof rawSecp === 'string'
+        ? rawSecp
+        : ethers.hexlify(rawSecp);
+
+      const secpAddress = secpHex.startsWith('0x')
+        ? secpHex.slice(2)
+        : secpHex;
+
+      const rowBySecp = await this.fetchLatestRegistryRow(
+        clickhouseClient,
+        `validator_id = '${secpAddress}'`
+      );
+
+      if (rowBySecp) {
+        rowBySecp.precompile_validator_id = validatorId;
+        cache.set(validatorId, rowBySecp);
+        return rowBySecp;
+      }
+    } catch (error) {
+      logger.warn(`Failed to backfill registry row for validator ${validatorId}:`, error);
+    }
+
+    return null;
+  }
+
+  private async fetchLatestRegistryRow(
+    clickhouseClient: any,
+    whereClause: string
+  ): Promise<any | null> {
+    const query = `
+      SELECT
+        validator_id,
+        node_id,
+        precompile_validator_id,
+        stake,
+        position,
+        dns_address,
+        dns_host,
+        dns_port,
+        validator_name,
+        keybase_id,
+        keybase_logo_url,
+        provider,
+        location,
+        country,
+        datacenter,
+        first_seen,
+        is_active,
+        is_staking_active,
+        real_time_stake_wei,
+        last_updated
+      FROM validator_registry
+      WHERE ${whereClause}
+      ORDER BY last_updated DESC
+      LIMIT 1
+    `;
+
+    const rows = await clickhouseClient.executeRawQuery(query);
+    return rows.length > 0 ? rows[0] : null;
   }
 
   /**
