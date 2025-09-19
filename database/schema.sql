@@ -38,11 +38,14 @@ CREATE TABLE validator_registry (
     validator_id String,
     node_id String,
     epoch UInt32,
+    precompile_validator_id String DEFAULT '' COMMENT 'Precompile validator ID (1, 2, 3, ...)',
     
     -- Validator info from registry
     stake UInt64,
     position UInt16,
     is_active UInt8 DEFAULT 1,
+    is_staking_active UInt8 DEFAULT 0 COMMENT 'Whether validator is currently active in consensus/execution sets',
+    real_time_stake_wei String DEFAULT '0' COMMENT 'Current stake amount in wei from precompile',
     
     -- DNS and infrastructure mapping
     dns_address String DEFAULT '',
@@ -65,6 +68,9 @@ CREATE TABLE validator_registry (
     -- Tracking
     first_seen DateTime64(3, 'UTC') DEFAULT now(),
     last_updated DateTime64(3, 'UTC') DEFAULT now()
+
+    ,INDEX idx_precompile_validator_id precompile_validator_id TYPE bloom_filter(0.01) GRANULARITY 1
+    ,INDEX idx_is_staking_active is_staking_active TYPE set(2) GRANULARITY 1
 ) ENGINE = ReplacingMergeTree(last_updated)
 PARTITION BY epoch
 ORDER BY (validator_id, epoch)

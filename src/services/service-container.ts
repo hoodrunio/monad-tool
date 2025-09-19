@@ -13,6 +13,7 @@ import { DatabaseValidatorInitializer } from './database-validator-initializer';
 import { logger } from '../utils/logger';
 import { ProviderPerformanceCacheService } from './provider-performance-cache';
 import { StakingUpdateService, StakingUpdateConfig } from './staking/StakingUpdateService';
+import { MigrationRunner } from '../database/migration-runner';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -67,6 +68,10 @@ export class ServiceContainer {
     // Initialize database client
     this._clickhouseClient = new MonadClickHouseClient(this.config.clickhouse);
     await this._clickhouseClient.initializeSchema();
+
+    // Ensure database schema migrations have been applied
+    const migrationRunner = new MigrationRunner(this._clickhouseClient);
+    await migrationRunner.runMigrationIfNeeded();
 
     // Initialize Redis client
     this._redisClient = new MonadRedisClient(this.config.redis);
