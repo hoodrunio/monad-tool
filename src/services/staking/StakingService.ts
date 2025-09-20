@@ -614,6 +614,7 @@ export class StakingService {
       if (this.stakingInfo) {
         for (const validatorId of allCurrentValidators) {
           const isConsensus = consensusValidators.has(validatorId);
+          const isActiveValidator = isConsensus;
 
           const baseRow = await this.getRegistryRowForValidator(
             validatorId,
@@ -621,7 +622,8 @@ export class StakingService {
             clickhouseClient,
             epochValue,
             nextTimestampString,
-            isConsensus
+            isConsensus,
+            isActiveValidator
           );
 
           if (!baseRow) {
@@ -649,7 +651,7 @@ export class StakingService {
             epoch: epochValue,
             stake: stakeString,
             position: Number(baseRow.position || 0),
-            is_active: isConsensus ? 1 : 0,
+            is_active: isActiveValidator ? 1 : 0,
             is_staking_active: isConsensus ? 1 : 0,
             real_time_stake_wei: stakeString,
             precompile_validator_id: validatorId,
@@ -660,7 +662,7 @@ export class StakingService {
 
           baseRow.first_seen = firstSeen;
           baseRow.last_updated = lastUpdated;
-          baseRow.is_active = isConsensus ? 1 : 0;
+          baseRow.is_active = isActiveValidator ? 1 : 0;
           baseRow.is_staking_active = isConsensus ? 1 : 0;
           baseRow.real_time_stake_wei = stakeString;
           baseRow.stake = stakeString;
@@ -862,6 +864,169 @@ export class StakingService {
     }
   }
 
+  async synchronizeValidatorSnapshots(clickhouseClient: any): Promise<void> {
+    try {
+      // First, make sure no validator is missing a precompile ID
+      await this.backfillMissingPrecompileIds(clickhouseClient);
+
+      logger.info('🔁 Synchronizing validator stakes and activity state with staking precompile...');
+
+      const latestRows = await clickhouseClient.executeRawQuery(`
+        WITH latest AS (
+          SELECT
+            validator_id,
+            node_id,
+            precompile_validator_id,
+            stake,
+            position,
+            dns_address,
+            dns_host,
+            dns_port,
+            validator_name,
+            keybase_id,
+            keybase_logo_url,
+            provider,
+            location,
+            country,
+            datacenter,
+            first_seen,
+            last_updated,
+            is_active,
+            is_staking_active,
+            real_time_stake_wei,
+            epoch,
+            ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) AS rn
+          FROM validator_registry
+        )
+        SELECT
+          validator_id,
+          node_id,
+          precompile_validator_id,
+          stake,
+          position,
+          dns_address,
+          dns_host,
+          dns_port,
+          validator_name,
+          keybase_id,
+          keybase_logo_url,
+          provider,
+          location,
+          country,
+          datacenter,
+          first_seen,
+          last_updated,
+          is_active,
+          is_staking_active,
+          real_time_stake_wei,
+          epoch
+        FROM latest
+        WHERE rn = 1
+      `);
+
+      if (!latestRows || latestRows.length === 0) {
+        logger.info('✅ No validator snapshots found for synchronization');
+        return;
+      }
+
+      const rowsToInsert: Record<string, any>[] = [];
+
+      const missingSecp = new Set<string>();
+      for (const row of latestRows) {
+        if (!row?.precompile_validator_id) {
+          const normalized = this.normalizeSecpAddress(row?.validator_id);
+          if (normalized) {
+            missingSecp.add(normalized);
+          }
+        }
+      }
+
+      let secpToPrecompile = new Map<string, string>();
+      if (missingSecp.size > 0) {
+        const maxKnownIdResult = await clickhouseClient.executeRawQuery(`
+          SELECT max(toUInt32(precompile_validator_id)) AS max_id
+          FROM validator_registry
+          WHERE precompile_validator_id != ''
+        `);
+        const maxKnownId = Number(maxKnownIdResult[0]?.max_id || 0);
+        const activeMaxId = this.stakingInfo
+          ? Math.max(0, ...Array.from(this.stakingInfo.validatorStakes.keys()).map(id => Number(id)).filter(n => !Number.isNaN(n)))
+          : 0;
+        const scanLimit = Math.max(maxKnownId, activeMaxId) + 200;
+        if (scanLimit > 0) {
+          secpToPrecompile = await this.buildPrecompileIdMapping(missingSecp, scanLimit);
+        }
+      }
+
+      const now = new Date();
+      let timestampOffset = 0;
+      const nextTimestamp = () => this.formatDateTime(new Date(now.getTime() + (timestampOffset++)));
+      const epochValue = Number(this.stakingInfo?.currentEpoch ?? 0);
+
+      for (const row of latestRows) {
+        const normalizedSecp = this.normalizeSecpAddress(row.validator_id);
+        let precompileId = row.precompile_validator_id;
+
+        if ((!precompileId || precompileId.length === 0) && normalizedSecp) {
+          precompileId = secpToPrecompile.get(normalizedSecp) || '';
+        }
+
+        if (!precompileId) {
+          logger.warn(`⚠️ Unable to determine precompile ID during synchronization for validator ${row.validator_id}`);
+          continue;
+        }
+
+        let stakeBigInt = this.stakingInfo?.validatorStakes.get(precompileId) ?? null;
+        let validatorInfo: StakingValidator | null = null;
+
+        if (stakeBigInt === null) {
+          try {
+            validatorInfo = await this.getValidatorInfo(precompileId);
+            if (validatorInfo) {
+              stakeBigInt = validatorInfo.stake;
+            }
+          } catch (error) {
+            logger.warn(`Failed to fetch validator info for ${precompileId}:`, error);
+          }
+        }
+
+        const stakeString = this.normalizeBigIntLike(stakeBigInt ?? row.stake ?? '0');
+        const realTimeStakeString = this.normalizeBigIntLike(
+          validatorInfo?.stake ?? row.real_time_stake_wei ?? stakeString
+        );
+
+        const isConsensus = this.stakingInfo?.consensusValidators.has(precompileId) ?? false;
+
+        const preservedMetadata = this.preserveValidatorMetadata(row);
+
+        rowsToInsert.push({
+          validator_id: row.validator_id,
+          node_id: row.node_id || row.validator_id,
+          precompile_validator_id: precompileId,
+          epoch: epochValue > 0 ? epochValue : Number(row.epoch || 0),
+          stake: stakeString,
+          position: Number(row.position || 0),
+          is_active: isConsensus ? 1 : 0,
+          is_staking_active: isConsensus ? 1 : 0,
+          real_time_stake_wei: realTimeStakeString,
+          first_seen: this.formatDateTime(row.first_seen || now),
+          last_updated: nextTimestamp(),
+          ...preservedMetadata
+        });
+      }
+
+      if (rowsToInsert.length === 0) {
+        logger.info('✅ Validator registry already synchronized with staking data');
+        return;
+      }
+
+      await clickhouseClient.insertRows('validator_registry', rowsToInsert);
+      logger.info(`✅ Synchronized ${rowsToInsert.length} validator snapshots with staking data`);
+    } catch (error) {
+      logger.error('Failed to synchronize validator registry snapshots:', error);
+    }
+  }
+
   private normalizeSecpAddress(value: any): string | null {
     if (typeof value === 'string') {
       const trimmed = value.trim();
@@ -1012,7 +1177,8 @@ export class StakingService {
     clickhouseClient: any,
     epochValue: number,
     nextTimestampString: () => string,
-    isConsensus: boolean
+    isConsensus: boolean,
+    isActiveValidator: boolean
   ): Promise<any | null> {
     const cached = cache.get(validatorId);
     if (cached) {
@@ -1066,7 +1232,8 @@ export class StakingService {
         validatorInfo,
         epochValue,
         nextTimestampString,
-        isConsensus
+        isConsensus,
+        isActiveValidator
       );
 
       if (placeholder) {
@@ -1086,7 +1253,8 @@ export class StakingService {
     validatorInfo: StakingValidator,
     epochValue: number,
     nextTimestampString: () => string,
-    isConsensus: boolean
+    isConsensus: boolean,
+    isActiveValidator: boolean
   ): any | null {
     try {
       const timestamp = nextTimestampString();
@@ -1112,7 +1280,7 @@ export class StakingService {
         first_seen: timestamp,
         last_updated: timestamp,
         epoch: epochValue,
-        is_active: isConsensus ? 1 : 0,
+        is_active: isActiveValidator ? 1 : 0,
         is_staking_active: isConsensus ? 1 : 0,
         real_time_stake_wei: stakeString,
         __isPlaceholder: true

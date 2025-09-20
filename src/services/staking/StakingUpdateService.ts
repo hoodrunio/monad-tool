@@ -96,7 +96,7 @@ export class StakingUpdateService {
    */
   async forceUpdate(): Promise<void> {
     logger.info('🔄 Forcing staking update...');
-    await this.performUpdate();
+    await this.performUpdate({ skipEpochCheck: true });
   }
 
   /**
@@ -149,8 +149,8 @@ export class StakingUpdateService {
       // DATABASE-FIRST: Update validators incrementally
       await this.stakingService.updateValidatorsIncrementally(this.config.clickhouseClient);
 
-      // Ensure any legacy rows missing identifiers are backfilled
-      await this.stakingService.backfillMissingPrecompileIds(this.config.clickhouseClient);
+      // Ensure every validator snapshot is aligned with the latest staking state
+      await this.stakingService.synchronizeValidatorSnapshots(this.config.clickhouseClient);
       
       // Clear cache
       await this.clearValidatorCache();
