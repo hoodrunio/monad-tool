@@ -18,7 +18,9 @@ export class DomainExtractor {
     ['monad.testnet.0xmakase.co.jp', '0xmakase'],
     ['monad.testnet-2.pops.one', 'P-OPS Team'],
     ['monad-testnet-2.chorus.one', 'Chorus One'],
-    ['monad-testnet-2.tienthuattoan.com', 'TTT VN']
+    ['monad-testnet-2.tienthuattoan.com', 'TTT VN'],
+    ['ntt-monad.valnet.figment.io:8000', 'NTT Digital']
+
     // Add more custom mappings here as validators request them
   ]);
 
