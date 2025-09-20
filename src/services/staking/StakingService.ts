@@ -719,6 +719,32 @@ export class StakingService {
       logger.info('🔍 Checking for validators missing precompile IDs...');
 
       const missingRows = await clickhouseClient.executeRawQuery(`
+        WITH latest AS (
+          SELECT
+            validator_id,
+            node_id,
+            precompile_validator_id,
+            stake,
+            position,
+            dns_address,
+            dns_host,
+            dns_port,
+            validator_name,
+            keybase_id,
+            keybase_logo_url,
+            provider,
+            location,
+            country,
+            datacenter,
+            first_seen,
+            last_updated,
+            is_active,
+            is_staking_active,
+            real_time_stake_wei,
+            epoch,
+            ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) AS rn
+          FROM validator_registry
+        )
         SELECT
           validator_id,
           node_id,
@@ -740,33 +766,8 @@ export class StakingService {
           is_staking_active,
           real_time_stake_wei,
           epoch
-        FROM (
-          SELECT
-            validator_id,
-            argMax(node_id, last_updated) AS node_id,
-            argMax(precompile_validator_id, last_updated) AS precompile_validator_id,
-            argMax(stake, last_updated) AS stake,
-            argMax(position, last_updated) AS position,
-            COALESCE(argMaxIf(dns_address, last_updated, dns_address != ''), argMax(dns_address, last_updated)) AS dns_address,
-            COALESCE(argMaxIf(dns_host, last_updated, dns_host != ''), argMax(dns_host, last_updated)) AS dns_host,
-            COALESCE(argMaxIf(dns_port, last_updated, dns_port != 0), argMax(dns_port, last_updated)) AS dns_port,
-            COALESCE(argMaxIf(validator_name, last_updated, validator_name != '' AND validator_name != 'unknown'), argMax(validator_name, last_updated)) AS validator_name,
-            COALESCE(argMaxIf(keybase_id, last_updated, keybase_id != ''), argMax(keybase_id, last_updated)) AS keybase_id,
-            COALESCE(argMaxIf(keybase_logo_url, last_updated, keybase_logo_url != ''), argMax(keybase_logo_url, last_updated)) AS keybase_logo_url,
-            COALESCE(argMaxIf(provider, last_updated, provider != '' AND provider != 'unknown'), argMax(provider, last_updated)) AS provider,
-            COALESCE(argMaxIf(location, last_updated, location != '' AND location != 'unknown'), argMax(location, last_updated)) AS location,
-            COALESCE(argMaxIf(country, last_updated, country != '' AND country != 'unknown'), argMax(country, last_updated)) AS country,
-            COALESCE(argMaxIf(datacenter, last_updated, datacenter != '' AND datacenter != 'unknown'), argMax(datacenter, last_updated)) AS datacenter,
-            argMax(first_seen, last_updated) AS first_seen,
-            argMax(last_updated, last_updated) AS last_updated,
-            argMax(is_active, last_updated) AS is_active,
-            argMax(is_staking_active, last_updated) AS is_staking_active,
-            COALESCE(argMaxIf(real_time_stake_wei, last_updated, real_time_stake_wei != ''), argMax(real_time_stake_wei, last_updated)) AS real_time_stake_wei,
-            argMax(epoch, last_updated) AS epoch
-          FROM validator_registry
-          GROUP BY validator_id
-        )
-        WHERE precompile_validator_id = ''
+        FROM latest
+        WHERE rn = 1 AND (precompile_validator_id = '' OR precompile_validator_id IS NULL)
       `);
 
       if (!missingRows || missingRows.length === 0) {
