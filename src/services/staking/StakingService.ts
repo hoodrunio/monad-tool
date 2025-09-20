@@ -611,101 +611,96 @@ export class StakingService {
         return this.formatDateTime(timestamp);
       };
 
-      if (this.stakingInfo) {
-        for (const validatorId of allCurrentValidators) {
-          const isConsensus = consensusValidators.has(validatorId);
-          const isActiveValidator = isConsensus;
+      const validatorIdsToProcess = new Set<string>();
+      latestRowMap.forEach((_, key) => {
+        if (key) {
+          validatorIdsToProcess.add(key);
+        }
+      });
+      for (const validatorId of allCurrentValidators) {
+        validatorIdsToProcess.add(validatorId);
+      }
 
-          const baseRow = await this.getRegistryRowForValidator(
-            validatorId,
-            latestRowMap,
-            clickhouseClient,
-            epochValue,
-            nextTimestampString,
-            isConsensus,
-            isActiveValidator
-          );
+      for (const validatorId of validatorIdsToProcess) {
+        const isConsensus = consensusValidators.has(validatorId);
+        const isActiveValidator = isConsensus;
 
-          if (!baseRow) {
-            logger.warn(`No existing registry row found for validator ${validatorId} while updating stakes.`);
-            continue;
-          }
+        const baseRow = await this.getRegistryRowForValidator(
+          validatorId,
+          latestRowMap,
+          clickhouseClient,
+          epochValue,
+          nextTimestampString,
+          isConsensus,
+          isActiveValidator
+        );
 
-          if (baseRow.__isPlaceholder) {
-            newValidators++;
-            delete baseRow.__isPlaceholder;
-          }
-
-          const stake = this.stakingInfo.validatorStakes.get(validatorId) || BigInt(baseRow.stake || 0);
-          const stakeString = stake.toString();
-          const lastUpdated = nextTimestampString();
-          const firstSeen = baseRow.first_seen
-            ? this.formatDateTime(baseRow.first_seen)
-            : lastUpdated;
-
-          const preservedMetadata = this.preserveValidatorMetadata(baseRow);
-
-          validatorRowsToInsert.push({
-            validator_id: baseRow.validator_id,
-            node_id: baseRow.node_id || baseRow.validator_id,
-            epoch: epochValue,
-            stake: stakeString,
-            position: Number(baseRow.position || 0),
-            is_active: isActiveValidator ? 1 : 0,
-            is_staking_active: isConsensus ? 1 : 0,
-            real_time_stake_wei: stakeString,
-            precompile_validator_id: validatorId,
-            first_seen: firstSeen,
-            last_updated: lastUpdated,
-            ...preservedMetadata
-          });
-
-          baseRow.first_seen = firstSeen;
-          baseRow.last_updated = lastUpdated;
-          baseRow.is_active = isActiveValidator ? 1 : 0;
-          baseRow.is_staking_active = isConsensus ? 1 : 0;
-          baseRow.real_time_stake_wei = stakeString;
-          baseRow.stake = stakeString;
+        if (!baseRow) {
+          logger.warn(`No existing registry row found for validator ${validatorId} while updating stakes.`);
+          continue;
         }
 
-        // Mark validators that have left the consensus set as inactive
-        latestRowMap.forEach((row, validatorId) => {
-          if (allCurrentValidators.has(validatorId)) {
-            return;
+        if (baseRow.__isPlaceholder) {
+          newValidators++;
+          delete baseRow.__isPlaceholder;
+        }
+
+        let stakeBigInt = this.stakingInfo?.validatorStakes.get(validatorId) ?? null;
+        let validatorInfo: StakingValidator | null = null;
+
+        if (stakeBigInt === null) {
+          try {
+            validatorInfo = await this.getValidatorInfo(validatorId);
+            if (validatorInfo?.stake !== undefined) {
+              stakeBigInt = validatorInfo.stake;
+              if (this.stakingInfo) {
+                this.stakingInfo.validatorStakes.set(validatorId, validatorInfo.stake);
+              }
+            }
+          } catch (error) {
+            logger.warn(`Failed to refresh staking info for validator ${validatorId}:`, error);
           }
+        }
 
-          const lastUpdated = nextTimestampString();
-          const firstSeen = row.first_seen
-            ? this.formatDateTime(row.first_seen)
-            : lastUpdated;
+        const fallbackStakeSource = baseRow.real_time_stake_wei ?? baseRow.stake ?? '0';
+        const stakeString = this.normalizeBigIntLike(stakeBigInt ?? fallbackStakeSource);
+        const realTimeStakeString = this.normalizeBigIntLike(
+          validatorInfo?.stake ?? stakeBigInt ?? baseRow.real_time_stake_wei ?? fallbackStakeSource
+        );
+        const lastUpdated = nextTimestampString();
+        const firstSeen = baseRow.first_seen
+          ? this.formatDateTime(baseRow.first_seen)
+          : lastUpdated;
 
-          const preservedMetadata = this.preserveValidatorMetadata(row);
+        const preservedMetadata = this.preserveValidatorMetadata(baseRow);
 
-          validatorRowsToInsert.push({
-            validator_id: row.validator_id,
-            node_id: row.node_id || row.validator_id,
-            epoch: epochValue,
-            stake: String(row.stake || 0),
-            position: Number(row.position || 0),
-            is_active: 0,
-            is_staking_active: 0,
-            real_time_stake_wei: String(row.real_time_stake_wei || row.stake || 0),
-            precompile_validator_id: row.precompile_validator_id || validatorId,
-            first_seen: firstSeen,
-            last_updated: lastUpdated,
-            ...preservedMetadata
-          });
-
-          row.first_seen = firstSeen;
-          row.last_updated = lastUpdated;
-          row.is_active = 0;
-          row.is_staking_active = 0;
+        validatorRowsToInsert.push({
+          validator_id: baseRow.validator_id,
+          node_id: baseRow.node_id || baseRow.validator_id,
+          epoch: epochValue,
+          stake: stakeString,
+          position: Number(baseRow.position || 0),
+          is_active: isActiveValidator ? 1 : 0,
+          is_staking_active: isConsensus ? 1 : 0,
+          real_time_stake_wei: realTimeStakeString,
+          precompile_validator_id: validatorId,
+          first_seen: firstSeen,
+          last_updated: lastUpdated,
+          ...preservedMetadata
         });
 
-        if (validatorRowsToInsert.length > 0) {
-          await clickhouseClient.insertRows('validator_registry', validatorRowsToInsert);
-          logger.info(`✅ Updated staking snapshot for ${validatorRowsToInsert.length} validators`);
-        }
+        baseRow.first_seen = firstSeen;
+        baseRow.last_updated = lastUpdated;
+        baseRow.is_active = isActiveValidator ? 1 : 0;
+        baseRow.is_staking_active = isConsensus ? 1 : 0;
+        baseRow.real_time_stake_wei = realTimeStakeString;
+        baseRow.stake = stakeString;
+        latestRowMap.set(validatorId, baseRow);
+      }
+
+      if (validatorRowsToInsert.length > 0) {
+        await clickhouseClient.insertRows('validator_registry', validatorRowsToInsert);
+        logger.info(`✅ Updated staking snapshot for ${validatorRowsToInsert.length} validators`);
       }
 
       logger.info(`✅ Incremental update complete: ${newValidators} new validators added`);
