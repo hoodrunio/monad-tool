@@ -714,6 +714,223 @@ export class StakingService {
     }
   }
 
+  async backfillMissingPrecompileIds(clickhouseClient: any): Promise<void> {
+    try {
+      logger.info('🔍 Checking for validators missing precompile IDs...');
+
+      const missingRows = await clickhouseClient.executeRawQuery(`
+        SELECT
+          validator_id,
+          node_id,
+          stake,
+          position,
+          dns_address,
+          dns_host,
+          dns_port,
+          validator_name,
+          keybase_id,
+          keybase_logo_url,
+          provider,
+          location,
+          country,
+          datacenter,
+          first_seen,
+          last_updated,
+          is_active,
+          is_staking_active,
+          real_time_stake_wei,
+          epoch
+        FROM (
+          SELECT
+            validator_id,
+            argMax(node_id, last_updated) AS node_id,
+            argMax(precompile_validator_id, last_updated) AS precompile_validator_id,
+            argMax(stake, last_updated) AS stake,
+            argMax(position, last_updated) AS position,
+            COALESCE(argMaxIf(dns_address, last_updated, dns_address != ''), argMax(dns_address, last_updated)) AS dns_address,
+            COALESCE(argMaxIf(dns_host, last_updated, dns_host != ''), argMax(dns_host, last_updated)) AS dns_host,
+            COALESCE(argMaxIf(dns_port, last_updated, dns_port != 0), argMax(dns_port, last_updated)) AS dns_port,
+            COALESCE(argMaxIf(validator_name, last_updated, validator_name != '' AND validator_name != 'unknown'), argMax(validator_name, last_updated)) AS validator_name,
+            COALESCE(argMaxIf(keybase_id, last_updated, keybase_id != ''), argMax(keybase_id, last_updated)) AS keybase_id,
+            COALESCE(argMaxIf(keybase_logo_url, last_updated, keybase_logo_url != ''), argMax(keybase_logo_url, last_updated)) AS keybase_logo_url,
+            COALESCE(argMaxIf(provider, last_updated, provider != '' AND provider != 'unknown'), argMax(provider, last_updated)) AS provider,
+            COALESCE(argMaxIf(location, last_updated, location != '' AND location != 'unknown'), argMax(location, last_updated)) AS location,
+            COALESCE(argMaxIf(country, last_updated, country != '' AND country != 'unknown'), argMax(country, last_updated)) AS country,
+            COALESCE(argMaxIf(datacenter, last_updated, datacenter != '' AND datacenter != 'unknown'), argMax(datacenter, last_updated)) AS datacenter,
+            argMax(first_seen, last_updated) AS first_seen,
+            argMax(last_updated, last_updated) AS last_updated,
+            argMax(is_active, last_updated) AS is_active,
+            argMax(is_staking_active, last_updated) AS is_staking_active,
+            COALESCE(argMaxIf(real_time_stake_wei, last_updated, real_time_stake_wei != ''), argMax(real_time_stake_wei, last_updated)) AS real_time_stake_wei,
+            argMax(epoch, last_updated) AS epoch
+          FROM validator_registry
+          GROUP BY validator_id
+        )
+        WHERE precompile_validator_id = ''
+      `);
+
+      if (!missingRows || missingRows.length === 0) {
+        logger.info('✅ No validators require precompile backfill');
+        return;
+      }
+
+      logger.warn(`⚠️ Detected ${missingRows.length} validators without precompile IDs. Attempting backfill...`);
+
+      const targetSecpAddresses = new Set<string>();
+      for (const row of missingRows) {
+        const normalized = this.normalizeSecpAddress(row?.validator_id);
+        if (normalized) {
+          targetSecpAddresses.add(normalized);
+        }
+      }
+
+      if (targetSecpAddresses.size === 0) {
+        logger.warn('⚠️ Could not normalize any validator IDs for backfill');
+        return;
+      }
+
+      const maxIdResult = await clickhouseClient.executeRawQuery(`
+        SELECT max(toUInt32(precompile_validator_id)) AS max_id
+        FROM validator_registry
+        WHERE precompile_validator_id != ''
+      `);
+
+      const maxKnownId = Number(maxIdResult[0]?.max_id || 0);
+      const activeMaxId = this.stakingInfo
+        ? Math.max(0, ...Array.from(this.stakingInfo.validatorStakes.keys()).map(id => Number(id)).filter(n => !Number.isNaN(n)))
+        : 0;
+      const scanLimit = Math.max(maxKnownId, activeMaxId) + 200;
+
+      if (scanLimit <= 0) {
+        logger.warn('⚠️ Unable to determine precompile ID scan window; skipping backfill');
+        return;
+      }
+
+      const secpToPrecompile = await this.buildPrecompileIdMapping(targetSecpAddresses, scanLimit);
+
+      if (secpToPrecompile.size === 0) {
+        logger.warn('⚠️ Failed to resolve any precompile IDs for missing validators');
+        return;
+      }
+
+      const nowString = this.formatDateTime(new Date());
+      const currentEpoch = Number(this.stakingInfo?.currentEpoch ?? 0);
+      const rowsToInsert: Record<string, any>[] = [];
+
+      for (const row of missingRows) {
+        const normalized = this.normalizeSecpAddress(row?.validator_id);
+        if (!normalized) {
+          continue;
+        }
+
+        const precompileId = secpToPrecompile.get(normalized);
+        if (!precompileId) {
+          logger.warn(`⚠️ Unable to resolve precompile ID for validator ${row?.validator_id}`);
+          continue;
+        }
+
+        const stakeString = this.normalizeBigIntLike(row?.stake ?? row?.real_time_stake_wei ?? '0');
+        const realTimeStakeString = this.normalizeBigIntLike(row?.real_time_stake_wei ?? stakeString);
+        const preservedMetadata = this.preserveValidatorMetadata(row);
+
+        rowsToInsert.push({
+          validator_id: row.validator_id,
+          node_id: row.node_id || row.validator_id,
+          precompile_validator_id: precompileId,
+          epoch: currentEpoch > 0 ? currentEpoch : Number(row.epoch || 0),
+          stake: stakeString,
+          position: Number(row.position || 0),
+          is_active: Number(row.is_active || 0),
+          is_staking_active: Number(row.is_staking_active || 0),
+          real_time_stake_wei: realTimeStakeString,
+          first_seen: this.formatDateTime(row.first_seen || nowString),
+          last_updated: nowString,
+          ...preservedMetadata
+        });
+      }
+
+      if (rowsToInsert.length === 0) {
+        logger.warn('⚠️ Backfill attempted but no rows were eligible for insertion');
+        return;
+      }
+
+      await clickhouseClient.insertRows('validator_registry', rowsToInsert);
+      logger.info(`✅ Backfilled precompile IDs for ${rowsToInsert.length} validators`);
+    } catch (error) {
+      logger.error('Failed to backfill missing precompile IDs:', error);
+    }
+  }
+
+  private normalizeSecpAddress(value: any): string | null {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        return null;
+      }
+      return trimmed.toLowerCase().replace(/^0x/, '');
+    }
+
+    if (value instanceof Uint8Array) {
+      return ethers.hexlify(value).replace(/^0x/, '').toLowerCase();
+    }
+
+    return null;
+  }
+
+  private async buildPrecompileIdMapping(targetSecpAddresses: Set<string>, scanLimit: number): Promise<Map<string, string>> {
+    const mapping = new Map<string, string>();
+
+    for (let validatorId = 1; validatorId <= scanLimit; validatorId++) {
+      if (mapping.size === targetSecpAddresses.size) {
+        break;
+      }
+
+      try {
+        const validatorInfo = await this.getValidatorInfo(validatorId.toString());
+        if (!validatorInfo || !validatorInfo.secpPubkey) {
+          continue;
+        }
+
+        const normalizedSecp = this.normalizeSecpAddress(validatorInfo.secpPubkey);
+        if (!normalizedSecp) {
+          continue;
+        }
+
+        if (targetSecpAddresses.has(normalizedSecp) && !mapping.has(normalizedSecp)) {
+          mapping.set(normalizedSecp, validatorId.toString());
+        }
+      } catch (error) {
+        logger.debug(`Failed to fetch validator info for ID ${validatorId}:`, error);
+      }
+    }
+
+    return mapping;
+  }
+
+  private normalizeBigIntLike(value: any): string {
+    if (value === null || value === undefined) {
+      return '0';
+    }
+
+    if (typeof value === 'bigint') {
+      return value.toString();
+    }
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return '0';
+      }
+      return Math.trunc(value).toString();
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : '0';
+    }
+
+    return '0';
+  }
+
   private formatDateTime(value: string | Date): string {
     const toClickHouse = (date: Date): string => {
       const iso = date.toISOString();

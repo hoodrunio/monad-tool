@@ -100,9 +100,19 @@ export class StakingUpdateService {
   }
 
   /**
+   * Force a full synchronization regardless of epoch changes
+   */
+  async forceFullSync(): Promise<void> {
+    logger.info('🔁 Forcing full staking synchronization...');
+    await this.performUpdate({ skipEpochCheck: true });
+  }
+
+  /**
    * Main update logic - REFACTORED for database-first approach
    */
-  private async performUpdate(): Promise<void> {
+  private async performUpdate(options: { skipEpochCheck?: boolean } = {}): Promise<void> {
+    const { skipEpochCheck = false } = options;
+
     if (this.isUpdating) {
       logger.debug('Update already in progress, skipping...');
       return;
@@ -112,22 +122,35 @@ export class StakingUpdateService {
 
     try {
       logger.info('🔍 Checking for epoch changes every 30s...');
-      
-      // Check if epoch has changed
-      const epochChanged = await this.stakingService.hasEpochChanged();
-      
-      if (!epochChanged) {
-        logger.info('✅ No epoch change detected - current system is running correctly');
-        return;
+
+      let shouldUpdate = skipEpochCheck;
+
+      if (!shouldUpdate) {
+        // Check if epoch has changed
+        const epochChanged = await this.stakingService.hasEpochChanged();
+        shouldUpdate = epochChanged;
+
+        if (!epochChanged) {
+          logger.info('✅ No epoch change detected - current system is running correctly');
+        } else {
+          logger.info('📈 Epoch change detected, updating validator staking info...');
+        }
+      } else {
+        logger.info('⚙️ Skipping epoch change check - manual resynchronization requested');
       }
 
-      logger.info('📈 Epoch change detected, updating validator staking info...');
+      if (!shouldUpdate) {
+        return;
+      }
 
       // Refresh staking information from precompile
       await this.stakingService.refreshStakingInfo();
       
       // DATABASE-FIRST: Update validators incrementally
       await this.stakingService.updateValidatorsIncrementally(this.config.clickhouseClient);
+
+      // Ensure any legacy rows missing identifiers are backfilled
+      await this.stakingService.backfillMissingPrecompileIds(this.config.clickhouseClient);
       
       // Clear cache
       await this.clearValidatorCache();

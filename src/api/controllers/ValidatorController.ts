@@ -117,6 +117,34 @@ export class ValidatorController {
     }
   }
 
+  async forceFullStakingSync(req: Request, res: Response): Promise<void> {
+    try {
+      if (!this.stakingUpdateService) {
+        res.status(503).json({
+          error: 'Staking service not available',
+          message: 'Staking integration is not configured',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      logger.info('🔁 Force full staking synchronization requested via API');
+      await this.stakingUpdateService.forceFullSync();
+
+      res.json({
+        message: 'Full staking synchronization completed successfully',
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to force full staking synchronization:', error);
+      res.status(500).json({
+        error: 'Failed to force full staking synchronization',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
   // =============================================
   // VALIDATOR RANKINGS (Separate Metrics + Staking)
   // =============================================
@@ -678,111 +706,6 @@ export class ValidatorController {
       ) latest_validators
       ${statusFilter}
     `;
-  }
-
-  private async calculateValidatorRankings(timeWindow: string, limit: number, sortBy: string): Promise<any[]> {
-    const intervalClause = this.getIntervalClause(timeWindow);
-    
-    // Combined query to get both block proposal and QC participation metrics
-    // IMPORTANT: Only include validators from validator_registry with current is_staking_active = 1 when activeOnly is true
-    // Use aggregated snapshot per validator to keep the latest metadata and avoid duplicate rows
-    const activeValidatorsCTE = this.buildActiveValidatorsCTE(true);
-
-    const query = `
-      WITH 
-        active_validators AS (
-          ${activeValidatorsCTE}
-        ),
-        block_metrics AS (
-          SELECT 
-            bp.validator_id,
-            COUNT(*) as total_block_opportunities,
-            COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as blocks_proposed,
-            COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END) as blocks_skipped,
-            (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
-          FROM block_proposals bp
-          INNER JOIN active_validators av ON bp.validator_id = av.validator_id
-          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
-          GROUP BY bp.validator_id
-        ),
-        qc_metrics AS (
-          SELECT 
-            qc.validator_id,
-            COUNT(*) as total_qc_opportunities,
-            COUNT(CASE WHEN qc.participated = 1 THEN 1 END) as qc_participations,
-            (COUNT(CASE WHEN qc.participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
-          FROM qc_participation qc
-          INNER JOIN active_validators av ON qc.validator_id = av.validator_id
-          WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
-          GROUP BY qc.validator_id
-        )
-      SELECT 
-        av.validator_id as validator_id,
-        COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
-        COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
-        (COALESCE(b.block_proposal_ratio, 0) * 0.7 + COALESCE(q.qc_participation_rate, 0) * 0.3) as uptime_score,
-        COALESCE(b.total_block_opportunities, 0) as total_block_opportunities,
-        COALESCE(b.blocks_proposed, 0) as blocks_proposed,
-        COALESCE(b.blocks_skipped, 0) as blocks_skipped,
-        COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
-        COALESCE(q.qc_participations, 0) as qc_participations,
-        av.validator_name as validator_name,
-        av.provider as provider,
-        av.location as location,
-        av.stake as stake,
-        av.keybase_id as keybase_id,
-        av.keybase_logo_url as keybase_logo_url,
-        av.precompile_validator_id as precompile_validator_id,
-        av.is_staking_active as is_staking_active,
-        av.real_time_stake_wei as real_time_stake_wei
-      FROM active_validators av
-      LEFT JOIN block_metrics b ON av.validator_id = b.validator_id
-      LEFT JOIN qc_metrics q ON av.validator_id = q.validator_id
-      ORDER BY ${this.getSortByClause(sortBy)}
-      LIMIT ${limit}
-    `;
-
-    const result = await this.clickhouseClient.executeRawQuery(query);
-
-    const rankings = result;
-    
-    return rankings.map((r, index) => {
-      // DATABASE-FIRST: Staking information already available in query result
-      let stakingInfo = {
-        is_staking_active: Boolean(r.is_staking_active),
-        real_time_stake_mon: r.real_time_stake_wei ? 
-          (Number(r.real_time_stake_wei) / Math.pow(10, 18)).toFixed(4) : "0",
-        real_time_stake_wei: r.real_time_stake_wei || "0",
-        precompile_validator_id: r.precompile_validator_id || null
-      };
-
-      return {
-        rank: index + 1,
-        validator_id: r.validator_id,
-        staking: stakingInfo,
-        metrics: {
-          block_proposal_ratio: parseFloat(r.block_proposal_ratio || 0),
-          qc_participation_rate: parseFloat(r.qc_participation_rate || 0),
-          uptime_score: parseFloat(r.uptime_score || 0)
-        },
-        details: {
-          total_block_opportunities: parseInt(r.total_block_opportunities || 0),
-          total_qc_opportunities: parseInt(r.total_qc_opportunities || 0),
-          blocks_proposed: parseInt(r.blocks_proposed || 0),
-          blocks_skipped: parseInt(r.blocks_skipped || 0),
-          qc_participations: parseInt(r.qc_participations || 0)
-        },
-        infrastructure: {
-          validator_name: r.validator_name || 'unknown',
-          provider: r.provider || 'unknown',
-          location: r.location || 'unknown'
-        },
-        keybase: {
-          id: r.keybase_id || null,
-          logo_url: r.keybase_logo_url || null
-        }
-      };
-    });
   }
 
   private async getValidatorHourlyHistory(validatorId: string, hours: number): Promise<any[]> {

@@ -9,14 +9,17 @@ import { MonadClickHouseClient } from '../database/clickhouse-client';
 import { ValidatorService } from './unified-validator';
 import { ServiceContainer } from './service-container';
 import { logger } from '../utils/logger';
+import { ValidatorLocation } from './validator-location/types';
 
 export interface ValidatorDatabaseRecord {
   validator_id: string;
   node_id: string;
   epoch: number;
+  precompile_validator_id?: string;
   stake: number;
   position: number;
-  is_active: boolean;
+  is_active: number | boolean;
+  is_staking_active?: number | boolean;
   dns_address: string;
   dns_host: string;
   dns_port: number;
@@ -25,6 +28,9 @@ export interface ValidatorDatabaseRecord {
   location: string;
   country: string;
   datacenter: string;
+  real_time_stake_wei?: string;
+  keybase_id?: string;
+  keybase_logo_url?: string;
   first_seen: Date;
   last_updated: Date;
 }
@@ -288,47 +294,136 @@ export class DatabaseValidatorInitializer {
    */
   private async insertValidatorBatch(validators: any[]): Promise<void> {
     const now = new Date();
-    
-    const data = validators.map(validator => ({
-      validator_id: this.escapeString(validator.nodeId),
-      node_id: this.escapeString(validator.nodeId),
-      epoch: validator.epoch || 1,
-      stake: validator.stake,
-      position: validator.position,
-      is_active: 1,
-      dns_address: this.escapeString(validator.location?.dnsAddress || ''),
-      dns_host: this.escapeString(validator.location?.dnsAddress ? validator.location.dnsAddress.split(':')[0] || '' : ''),
-      dns_port: validator.location?.dnsAddress ? parseInt(validator.location.dnsAddress.split(':')[1] || '8000') : 8000,
-      validator_name: this.escapeString(validator.location?.validatorName || 'unknown'),
-      provider: this.escapeString(validator.location?.isp || 'unknown'),
-      location: this.escapeString(validator.location ? `${validator.location.city || 'unknown'}, ${validator.location.country || 'unknown'}` : 'unknown'),
-      country: this.escapeString(validator.location?.country || 'unknown'),
-      datacenter: this.escapeString(validator.location?.isp || 'unknown'),
-      first_seen: this.formatTimestamp(now),
-      last_updated: this.formatTimestamp(now)
-    }));
+    const nowFormatted = this.formatTimestamp(now);
+
+    const validatorIds = Array.from(new Set(
+      validators
+        .map(validator => this.getValidatorPrimaryId(validator))
+        .filter((id): id is string => Boolean(id))
+    ));
+
+    const existingRows = await this.fetchExistingRegistryRows(validatorIds);
+
+    const rowsToInsert: any[] = [];
+
+    for (const validator of validators) {
+      const validatorId = this.getValidatorPrimaryId(validator);
+      if (!validatorId) {
+        logger.warn('Skipping validator without nodeId/validator_id', validator);
+        continue;
+      }
+
+      const existing = existingRows.get(validatorId);
+      const location = validator.location as (ValidatorLocation | undefined);
+
+      const stakeValue = this.getStakeValue(validator, existing);
+      const realTimeStakeValue = this.getRealTimeStakeValue(validator, existing, stakeValue);
+
+      const row = {
+        validator_id: validatorId,
+        node_id: typeof validator.node_id === 'string' && validator.node_id.length > 0
+          ? validator.node_id
+          : validatorId,
+        precompile_validator_id: this.chooseString([
+          validator.precompile_validator_id,
+          existing?.precompile_validator_id
+        ]),
+        epoch: this.chooseNumber([
+          validator.epoch,
+          existing?.epoch
+        ], 1),
+        stake: stakeValue,
+        position: this.chooseNumber([
+          validator.position,
+          existing?.position
+        ], 0),
+        is_active: this.chooseNumber([
+          validator.isActive,
+          validator.is_active,
+          existing?.is_active
+        ], 1),
+        is_staking_active: this.chooseNumber([
+          validator.is_staking_active,
+          existing?.is_staking_active,
+          validator.isActive,
+          existing?.is_active
+        ], 0),
+        real_time_stake_wei: realTimeStakeValue,
+        dns_address: this.chooseString([
+          location?.dnsAddress,
+          validator.dns_address,
+          existing?.dns_address
+        ]),
+        dns_host: this.chooseString([
+          location?.hostname,
+          validator.dns_host,
+          existing?.dns_host,
+          this.deriveDnsHost(location?.dnsAddress)
+        ]),
+        dns_port: this.chooseNumber([
+          location?.port,
+          validator.dns_port,
+          existing?.dns_port
+        ], 8000),
+        validator_name: this.chooseString([
+          location?.validatorName,
+          validator.validator_name,
+          existing?.validator_name
+        ], 'unknown'),
+        keybase_id: this.chooseString([
+          validator.keybase_id,
+          existing?.keybase_id
+        ]),
+        keybase_logo_url: this.chooseString([
+          validator.keybase_logo_url,
+          existing?.keybase_logo_url
+        ]),
+        provider: this.chooseString([
+          location?.isp,
+          validator.provider,
+          existing?.provider
+        ], 'unknown'),
+        location: this.chooseString([
+          location ? this.buildLocationString(location) : undefined,
+          validator.location,
+          validator.location_string,
+          existing?.location
+        ], 'unknown'),
+        country: this.chooseString([
+          location?.country,
+          validator.country,
+          existing?.country
+        ], 'unknown'),
+        datacenter: this.chooseString([
+          location?.isp,
+          validator.datacenter,
+          existing?.datacenter
+        ], 'unknown'),
+        first_seen: this.normalizeTimestamp(
+          validator.first_seen || existing?.first_seen,
+          nowFormatted
+        ),
+        last_updated: this.normalizeTimestamp(
+          validator.last_updated || existing?.last_updated || now,
+          nowFormatted
+        )
+      };
+
+      rowsToInsert.push(row);
+    }
+
+    if (rowsToInsert.length === 0) {
+      logger.warn('No validators to insert into registry');
+      return;
+    }
 
     try {
-      // Use proper parameterized insertion with escaped values
-      const values = data.map(d => 
-        `('${d.validator_id}', '${d.node_id}', ${d.epoch}, ${d.stake}, ${d.position}, ${d.is_active}, ` +
-        `'${d.dns_address}', '${d.dns_host}', ${d.dns_port}, '${d.validator_name}', '${d.provider}', '${d.location}', ` +
-        `'${d.country}', '${d.datacenter}', '${d.first_seen}', '${d.last_updated}')`
-      ).join(',');
-
-      const insertQuery = `
-        INSERT INTO validator_registry 
-        (validator_id, node_id, epoch, stake, position, is_active, dns_address, dns_host, dns_port, 
-         validator_name, provider, location, country, datacenter, first_seen, last_updated)
-        VALUES ${values}
-      `;
-
-      logger.info(`💾 Inserting batch of ${data.length} validators...`);
-      await this.clickhouseClient.executeCommand(insertQuery);
-      logger.info(`✅ Successfully inserted ${data.length} validators into database`);
+      logger.info(`💾 Inserting batch of ${rowsToInsert.length} validators...`);
+      await this.clickhouseClient.insertRows('validator_registry', rowsToInsert);
+      logger.info(`✅ Successfully inserted ${rowsToInsert.length} validators into database`);
     } catch (error) {
       logger.error('❌ Failed to insert validator batch:', error);
-      logger.error('Query sample:', data.slice(0, 2)); // Log first 2 records for debugging
+      logger.error('Sample rows:', rowsToInsert.slice(0, 2));
       throw error;
     }
   }
@@ -429,4 +524,207 @@ export class DatabaseValidatorInitializer {
       .replace(/\n/g, '\\n')  // Escape newlines
       .replace(/\r/g, '\\r'); // Escape carriage returns
   }
-} 
+
+  private async fetchExistingRegistryRows(validatorIds: string[]): Promise<Map<string, any>> {
+    if (validatorIds.length === 0) {
+      return new Map();
+    }
+
+    const escapedList = Array.from(new Set(validatorIds)).map(id => `'${this.escapeString(id)}'`).join(',');
+    const query = `
+      SELECT
+        validator_id,
+        argMax(precompile_validator_id, last_updated) AS precompile_validator_id,
+        argMax(epoch, last_updated) AS epoch,
+        argMax(stake, last_updated) AS stake,
+        argMax(position, last_updated) AS position,
+        argMax(is_active, last_updated) AS is_active,
+        argMax(is_staking_active, last_updated) AS is_staking_active,
+        COALESCE(argMaxIf(real_time_stake_wei, last_updated, real_time_stake_wei != ''), argMax(real_time_stake_wei, last_updated)) AS real_time_stake_wei,
+        COALESCE(argMaxIf(dns_address, last_updated, dns_address != ''), argMax(dns_address, last_updated)) AS dns_address,
+        COALESCE(argMaxIf(dns_host, last_updated, dns_host != ''), argMax(dns_host, last_updated)) AS dns_host,
+        COALESCE(argMaxIf(dns_port, last_updated, dns_port != 0), argMax(dns_port, last_updated)) AS dns_port,
+        COALESCE(argMaxIf(validator_name, last_updated, validator_name != '' AND validator_name != 'unknown'), argMax(validator_name, last_updated)) AS validator_name,
+        COALESCE(argMaxIf(provider, last_updated, provider != '' AND provider != 'unknown'), argMax(provider, last_updated)) AS provider,
+        COALESCE(argMaxIf(location, last_updated, location != '' AND location != 'unknown'), argMax(location, last_updated)) AS location,
+        COALESCE(argMaxIf(country, last_updated, country != '' AND country != 'unknown'), argMax(country, last_updated)) AS country,
+        COALESCE(argMaxIf(datacenter, last_updated, datacenter != '' AND datacenter != 'unknown'), argMax(datacenter, last_updated)) AS datacenter,
+        COALESCE(argMaxIf(keybase_id, last_updated, keybase_id != ''), argMax(keybase_id, last_updated)) AS keybase_id,
+        COALESCE(argMaxIf(keybase_logo_url, last_updated, keybase_logo_url != ''), argMax(keybase_logo_url, last_updated)) AS keybase_logo_url,
+        argMax(first_seen, last_updated) AS first_seen,
+        argMax(last_updated, last_updated) AS last_updated
+      FROM validator_registry
+      WHERE validator_id IN (${escapedList})
+      GROUP BY validator_id
+    `;
+
+    const rows = await this.clickhouseClient.executeRawQuery(query);
+    const map = new Map<string, any>();
+
+    for (const row of rows) {
+      if (row?.validator_id) {
+        map.set(row.validator_id, row);
+      }
+    }
+
+    return map;
+  }
+
+  private getValidatorPrimaryId(validator: any): string | null {
+    const candidates = [validator?.nodeId, validator?.validator_id, validator?.node_id];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
+    return null;
+  }
+
+  private deriveDnsHost(dnsAddress?: string): string | undefined {
+    if (!dnsAddress || typeof dnsAddress !== 'string') {
+      return undefined;
+    }
+    return dnsAddress.split(':')[0] || undefined;
+  }
+
+  private buildLocationString(location?: ValidatorLocation): string | undefined {
+    if (!location) {
+      return undefined;
+    }
+
+    const city = location.city?.trim();
+    const country = location.country?.trim();
+
+    if (city && country) {
+      return `${city}, ${country}`;
+    }
+
+    return city || country || undefined;
+  }
+
+  private normalizeTimestamp(value: Date | string | null | undefined, fallback: string): string {
+    if (value instanceof Date) {
+      return this.formatTimestamp(value);
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        return fallback;
+      }
+
+      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(trimmed)) {
+        return trimmed;
+      }
+
+      const parsed = new Date(trimmed);
+      if (!Number.isNaN(parsed.getTime())) {
+        return this.formatTimestamp(parsed);
+      }
+    }
+
+    return fallback;
+  }
+
+  private chooseString(values: Array<string | undefined | null>, fallback = ''): string {
+    for (const value of values) {
+      if (typeof value !== 'string') {
+        continue;
+      }
+
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+
+      return trimmed;
+    }
+
+    return fallback;
+  }
+
+  private chooseNumber(values: Array<number | string | boolean | undefined>, fallback: number): number {
+    for (const value of values) {
+      if (value === null || value === undefined) {
+        continue;
+      }
+
+      if (typeof value === 'boolean') {
+        return value ? 1 : 0;
+      }
+
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (trimmed.length === 0) {
+          continue;
+        }
+
+        const numeric = Number(trimmed);
+        if (!Number.isNaN(numeric)) {
+          return numeric;
+        }
+        continue;
+      }
+
+      if (typeof value === 'number' && !Number.isNaN(value)) {
+        return value;
+      }
+    }
+
+    return fallback;
+  }
+
+  private getStakeValue(validator: any, existing: any): string {
+    const values = [
+      validator.stake,
+      validator.validator_stake,
+      existing?.stake,
+      existing?.real_time_stake_wei
+    ];
+
+    for (const value of values) {
+      if (value === null || value === undefined) {
+        continue;
+      }
+
+      if (typeof value === 'bigint') {
+        return value.toString();
+      }
+
+      if (typeof value === 'number') {
+        if (Number.isFinite(value)) {
+          return Math.trunc(value).toString();
+        }
+        continue;
+      }
+
+      if (typeof value === 'string' && value.trim().length > 0) {
+        return value.trim();
+      }
+    }
+
+    return '0';
+  }
+
+  private getRealTimeStakeValue(validator: any, existing: any, fallbackStake: string): string {
+    const values = [
+      validator.real_time_stake_wei,
+      existing?.real_time_stake_wei,
+      fallbackStake
+    ];
+
+    for (const value of values) {
+      if (typeof value === 'string' && value.trim().length > 0) {
+        return value.trim();
+      }
+      if (typeof value === 'number') {
+        return Math.trunc(value).toString();
+      }
+      if (typeof value === 'bigint') {
+        return value.toString();
+      }
+    }
+
+    return fallbackStake;
+  }
+}

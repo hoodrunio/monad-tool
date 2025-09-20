@@ -8,6 +8,7 @@ export function createValidatorRoutes(validatorController: ValidatorController):
   // Staking integration endpoints
   router.get('/api/validators/staking/info', validatorController.getStakingInfo.bind(validatorController));
   router.post('/api/validators/staking/update', validatorController.forceStakingUpdate.bind(validatorController));
+  router.post('/api/validators/staking/resync', validatorController.forceFullStakingSync.bind(validatorController));
 
   // Validator ranking and statistics
   router.get('/api/validators/rankings', validatorController.getValidatorRankings.bind(validatorController));
