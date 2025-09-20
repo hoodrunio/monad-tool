@@ -137,26 +137,52 @@ async function updateValidatorNames() {
       const batch = updates.slice(i, i + batchSize);
       
       console.log(`📦 Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(updates.length / batchSize)} (${batch.length} validators)...`);
-      
-      // Prepare batch update
-      const values = batch.map(update => 
-        `('${escapeString(update.validator_id)}', '${escapeString(update.validator_name)}', '${formatTimestamp(new Date())}')`
-      ).join(',');
-      
-      const updateQuery = `
-        INSERT INTO validator_registry 
-        (validator_id, validator_name, last_updated)
-        VALUES ${values}
-      `;
-      
-      try {
-        await clickhouseClient.executeCommand(updateQuery);
-        updateCount += batch.length;
-        console.log(`   ✅ Updated ${batch.length} validators`);
-      } catch (error) {
-        console.error(`   ❌ Failed to update batch:`, error);
-        throw error;
+
+      for (const update of batch) {
+        const nowTs = formatTimestamp(new Date());
+        const updateQuery = `
+          INSERT INTO validator_registry 
+          (validator_id, node_id, precompile_validator_id, epoch, stake, position, is_active, is_staking_active, real_time_stake_wei,
+           dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url,
+           first_seen, last_updated)
+          SELECT 
+            validator_id,
+            node_id,
+            precompile_validator_id,
+            epoch,
+            stake,
+            position,
+            is_active,
+            is_staking_active,
+            real_time_stake_wei,
+            dns_address,
+            dns_host,
+            dns_port,
+            '${escapeString(update.validator_name)}',
+            provider,
+            location,
+            country,
+            datacenter,
+            keybase_id,
+            keybase_logo_url,
+            first_seen,
+            '${nowTs}'
+          FROM validator_registry
+          WHERE validator_id = '${escapeString(update.validator_id)}'
+          ORDER BY last_updated DESC
+          LIMIT 1
+        `;
+
+        try {
+          await clickhouseClient.executeCommand(updateQuery);
+          updateCount++;
+        } catch (error) {
+          console.error(`   ❌ Failed to update validator ${update.validator_id}:`, error);
+          throw error;
+        }
       }
+
+      console.log(`   ✅ Updated ${batch.length} validators`);
     }
     
     console.log(`\n✅ Successfully updated ${updateCount} validators with validator names`);

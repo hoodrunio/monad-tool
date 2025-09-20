@@ -721,16 +721,19 @@ export class AdminController {
       // Update validator registry with keybase information using INSERT with ReplacingMergeTree
       const updateQuery = `
         INSERT INTO validator_registry 
-        (validator_id, node_id, epoch, stake, position, is_active, dns_address, dns_host, dns_port, 
-         validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url, 
+        (validator_id, node_id, precompile_validator_id, epoch, stake, position, is_active, is_staking_active, real_time_stake_wei,
+         dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url, 
          first_seen, last_updated)
         SELECT 
           validator_id,
           node_id,
+          precompile_validator_id,
           epoch,
           stake,
           position,
           is_active,
+          is_staking_active,
+          real_time_stake_wei,
           dns_address,
           dns_host,
           dns_port,
@@ -816,16 +819,19 @@ export class AdminController {
       // Remove keybase mapping by setting it to empty using INSERT with ReplacingMergeTree
       const removeQuery = `
         INSERT INTO validator_registry 
-        (validator_id, node_id, epoch, stake, position, is_active, dns_address, dns_host, dns_port, 
-         validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url, 
+        (validator_id, node_id, precompile_validator_id, epoch, stake, position, is_active, is_staking_active, real_time_stake_wei,
+         dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url, 
          first_seen, last_updated)
         SELECT 
           validator_id,
           node_id,
+          precompile_validator_id,
           epoch,
           stake,
           position,
           is_active,
+          is_staking_active,
+          real_time_stake_wei,
           dns_address,
           dns_host,
           dns_port,
@@ -973,16 +979,19 @@ export class AdminController {
                 // Update logo URL in database using INSERT with ReplacingMergeTree
                 const updateQuery = `
                   INSERT INTO validator_registry 
-                  (validator_id, node_id, epoch, stake, position, is_active, dns_address, dns_host, dns_port, 
-                   validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url, 
+                  (validator_id, node_id, precompile_validator_id, epoch, stake, position, is_active, is_staking_active, real_time_stake_wei,
+                   dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url, 
                    first_seen, last_updated)
                   SELECT 
                     validator_id,
                     node_id,
+                    precompile_validator_id,
                     epoch,
                     stake,
                     position,
                     is_active,
+                    is_staking_active,
+                    real_time_stake_wei,
                     dns_address,
                     dns_host,
                     dns_port,
