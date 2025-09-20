@@ -258,7 +258,7 @@ export class ValidatorController {
           MIN(b.timestamp) as first_seen,
           MAX(b.timestamp) as last_activity
         FROM block_proposals b
-        LEFT JOIN validator_registry vr ON vr.validator_id = b.validator_id AND vr.is_active = 1
+        LEFT JOIN validator_registry_latest vr ON vr.validator_id = b.validator_id
         WHERE b.validator_id = '${validatorId}'
           AND b.timestamp >= now() - INTERVAL ${timeWindow}
         GROUP BY b.validator_id, vr.validator_name, vr.provider, vr.location, vr.stake, vr.keybase_id, vr.keybase_logo_url
@@ -920,7 +920,7 @@ export class ValidatorController {
         COALESCE(vr.keybase_logo_url, '') as keybase_logo_url
       FROM block_metrics b
       FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
-      LEFT JOIN validator_registry vr ON vr.validator_id = COALESCE(b.validator_id, q.validator_id) AND vr.is_active = 1
+      LEFT JOIN validator_registry_latest vr ON vr.validator_id = COALESCE(b.validator_id, q.validator_id)
       ORDER BY uptime_score DESC
     `;
 

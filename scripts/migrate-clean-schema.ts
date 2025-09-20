@@ -216,7 +216,7 @@ async function migrateCleanSchema() {
         COALESCE(vr.location, 'unknown') as location,
         COALESCE(vr.validator_name, 'unknown') as validator_name
       FROM block_proposals bp
-      LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
+      LEFT JOIN validator_registry_latest vr ON bp.validator_id = vr.validator_id
       ORDER BY bp.timestamp DESC
       LIMIT 3
     `;

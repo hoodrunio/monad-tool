@@ -34,7 +34,7 @@ SELECT
     any(vr.location) as location
 
 FROM block_proposals bp
-LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+LEFT JOIN validator_registry_latest vr ON bp.validator_id = vr.validator_id
 GROUP BY hour, bp.validator_id;
 
 -- Aggregate QC participation metrics by hour  
@@ -65,7 +65,7 @@ SELECT
     any(vr.location) as location
 
 FROM qc_participation qc
-LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
+LEFT JOIN validator_registry_latest vr ON qc.validator_id = vr.validator_id
 GROUP BY hour, qc.validator_id;
 
 -- =============================================
@@ -208,7 +208,7 @@ SELECT
     AVG(qc.participation_rate) as avg_participation_efficiency
 
 FROM qc_participation qc
-LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
+LEFT JOIN validator_registry_latest vr ON qc.validator_id = vr.validator_id
 GROUP BY hour;
 
 -- Supplement network health with block proposal data
@@ -246,7 +246,7 @@ SELECT
     AVG(CASE WHEN bp.status = 'proposed' THEN 100.0 ELSE 0.0 END) as avg_participation_efficiency
 
 FROM block_proposals bp
-LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+LEFT JOIN validator_registry_latest vr ON bp.validator_id = vr.validator_id
 GROUP BY hour;
 
 -- =============================================
@@ -277,7 +277,7 @@ SELECT
     0 as total_qc_participations -- Will be filled by QC metrics
 
 FROM block_proposals bp
-LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+LEFT JOIN validator_registry_latest vr ON bp.validator_id = vr.validator_id
 WHERE vr.location != 'unknown' AND vr.location IS NOT NULL
 GROUP BY hour, vr.location, vr.provider;
 
@@ -302,7 +302,7 @@ SELECT
     COUNT(CASE WHEN qc.participated = 1 THEN 1 END) as total_qc_participations
 
 FROM qc_participation qc
-LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
+LEFT JOIN validator_registry_latest vr ON qc.validator_id = vr.validator_id
 WHERE vr.location != 'unknown' AND vr.location IS NOT NULL
 GROUP BY hour, vr.location, vr.provider;
 

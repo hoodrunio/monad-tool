@@ -277,11 +277,10 @@ export class ProviderPerformanceCacheService extends EventEmitter {
           COUNT(DISTINCT validator_id) as validator_count,
           arrayDistinct(groupArray(location)) as regions,
           COUNT(DISTINCT location) as unique_locations
-        FROM validator_registry
+        FROM validator_registry_latest
         WHERE provider IS NOT NULL 
           AND provider != '' 
           AND provider != 'unknown'
-          AND is_active = 1
         GROUP BY provider
       ),
       
@@ -296,7 +295,7 @@ export class ProviderPerformanceCacheService extends EventEmitter {
             ELSE 0 
           END as block_success_rate
         FROM block_proposals bp
-        JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+        JOIN validator_registry_latest vr ON bp.validator_id = vr.validator_id
         WHERE bp.timestamp >= '${dataWindowStart.toISOString().slice(0, 19).replace('T', ' ')}'
           AND bp.timestamp <= '${dataWindowEnd.toISOString().slice(0, 19).replace('T', ' ')}'
           AND vr.provider IS NOT NULL 
@@ -316,7 +315,7 @@ export class ProviderPerformanceCacheService extends EventEmitter {
             ELSE 0 
           END as qc_participation_rate
         FROM qc_participation qc
-        JOIN validator_registry vr ON qc.validator_id = vr.validator_id
+        JOIN validator_registry_latest vr ON qc.validator_id = vr.validator_id
         WHERE qc.timestamp >= '${dataWindowStart.toISOString().slice(0, 19).replace('T', ' ')}'
           AND qc.timestamp <= '${dataWindowEnd.toISOString().slice(0, 19).replace('T', ' ')}'
           AND vr.provider IS NOT NULL 

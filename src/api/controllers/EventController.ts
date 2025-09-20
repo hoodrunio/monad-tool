@@ -108,7 +108,7 @@ export class EventController {
             COALESCE(vr.provider, 'unknown') as provider,
             COALESCE(vr.location, 'unknown') as location
           FROM block_proposals bp
-          ANY LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
+          LEFT JOIN validator_registry_latest vr ON bp.validator_id = vr.validator_id
           ${blockWhereClause}
           ORDER BY bp.timestamp DESC 
           LIMIT ${Math.min(limit, 500)}
@@ -145,7 +145,7 @@ export class EventController {
             COALESCE(vr.provider, 'unknown') as provider,
             COALESCE(vr.location, 'unknown') as location
           FROM qc_participation qc
-          ANY LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id AND vr.is_active = 1
+          LEFT JOIN validator_registry_latest vr ON qc.validator_id = vr.validator_id
           ${qcWhereClause}
           ORDER BY qc.timestamp DESC 
           LIMIT ${Math.min(limit, 500)}
@@ -598,7 +598,7 @@ export class EventController {
             COALESCE(vr.provider, 'unknown') as provider,
             COALESCE(vr.location, 'unknown') as location
           FROM block_proposals bp
-          ANY LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
+          LEFT JOIN validator_registry_latest vr ON bp.validator_id = vr.validator_id
           ${blockWhereClause}
           ORDER BY bp.timestamp DESC
           LIMIT ${parseInt(limit as string)}
@@ -669,7 +669,7 @@ export class EventController {
             COALESCE(vr.provider, 'unknown') as provider,
             COALESCE(vr.location, 'unknown') as location
           FROM qc_participation qc
-          ANY LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id AND vr.is_active = 1
+          LEFT JOIN validator_registry_latest vr ON qc.validator_id = vr.validator_id
           ${qcWhereClause}
           ORDER BY qc.timestamp DESC
           LIMIT ${parseInt(limit as string)}

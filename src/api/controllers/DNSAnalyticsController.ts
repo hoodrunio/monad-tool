@@ -559,8 +559,7 @@ export class DNSAnalyticsController {
       // Get total ACTIVE validators from validator_registry only
       const totalValidatorsQuery = `
         SELECT COUNT(*) as total_validators
-        FROM validator_registry
-        WHERE is_active = 1
+        FROM validator_registry_latest
       `;
 
       // Get validators with location data - only active ones
@@ -569,9 +568,8 @@ export class DNSAnalyticsController {
           COUNT(DISTINCT vr.validator_id) as validators_with_location,
           COUNT(DISTINCT vr.location) as unique_locations,
           COUNT(DISTINCT vr.provider) as unique_providers
-        FROM validator_registry vr
-        WHERE vr.is_active = 1
-          AND vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'
+        FROM validator_registry_latest vr
+        WHERE vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'
           AND vr.provider IS NOT NULL AND vr.provider != '' AND vr.provider != 'unknown'
       `;
 
@@ -628,7 +626,7 @@ export class DNSAnalyticsController {
           FROM (
             SELECT DISTINCT bp.validator_id, vr.provider, vr.location 
             FROM block_proposals bp
-            JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+            JOIN validator_registry_latest vr ON bp.validator_id = vr.validator_id
             WHERE bp.timestamp >= now() - INTERVAL 7 DAY
               AND vr.provider IS NOT NULL AND vr.provider != '' AND vr.provider != 'unknown'
               AND vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'

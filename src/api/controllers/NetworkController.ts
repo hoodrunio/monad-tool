@@ -51,8 +51,7 @@ export class NetworkController {
       // Get total active validators directly from registry
       const activeValidatorsQuery = `
         SELECT COUNT(*) as total_active_validators
-        FROM validator_registry 
-        WHERE is_active = 1
+        FROM validator_registry_latest
       `;
 
       // Get block proposal summary - ONLY active validators
@@ -65,7 +64,7 @@ export class NetworkController {
           COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as successful_block_events,
           (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate
         FROM block_proposals bp
-        INNER JOIN validator_registry vr ON bp.validator_id = vr.validator_id AND vr.is_active = 1
+        INNER JOIN validator_registry_latest vr ON bp.validator_id = vr.validator_id
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
       `;
 
@@ -80,7 +79,7 @@ export class NetworkController {
           (COUNT(CASE WHEN qc.participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_success_rate,
           AVG(qc.participation_rate) as avg_network_participation_rate
         FROM qc_participation qc
-        INNER JOIN validator_registry vr ON qc.validator_id = vr.validator_id AND vr.is_active = 1
+        INNER JOIN validator_registry_latest vr ON qc.validator_id = vr.validator_id
         WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
       `;
 
@@ -351,7 +350,7 @@ export class NetworkController {
             COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as successful_blocks,
             COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END) as timeout_blocks
           FROM block_proposals bp
-          LEFT JOIN validator_registry vr ON bp.validator_id = vr.validator_id
+          LEFT JOIN validator_registry_latest vr ON bp.validator_id = vr.validator_id
           WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
             AND COALESCE(vr.location, 'unknown') != 'unknown' 
             AND COALESCE(vr.location, '') != ''
@@ -365,7 +364,7 @@ export class NetworkController {
             COUNT(CASE WHEN qc.participated = 1 THEN 1 END) as successful_qc,
             COUNT(CASE WHEN qc.participated = 0 THEN 1 END) as missed_qc
           FROM qc_participation qc
-          LEFT JOIN validator_registry vr ON qc.validator_id = vr.validator_id
+          LEFT JOIN validator_registry_latest vr ON qc.validator_id = vr.validator_id
           WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
             AND COALESCE(vr.location, 'unknown') != 'unknown' 
             AND COALESCE(vr.location, '') != ''
