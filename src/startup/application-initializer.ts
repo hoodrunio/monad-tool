@@ -98,6 +98,8 @@ export class ApplicationInitializer {
         const validatorService = this.serviceContainer.getValidatorService();
         const clickhouseClient = this.serviceContainer.getClickHouseClient();
 
+        await clickhouseClient.ensureValidatorRegistryAuthColumns();
+
         // 1. Determine and set the correct epoch
         const actualCurrentEpoch = await epochService.getCurrentEpoch();
         validatorService.setCurrentEpoch(actualCurrentEpoch);

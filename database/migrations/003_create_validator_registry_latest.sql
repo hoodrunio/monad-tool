@@ -6,6 +6,7 @@ DROP VIEW IF EXISTS validator_registry_latest_mv;
 
 CREATE TABLE IF NOT EXISTS validator_registry_latest (
     validator_id String,
+    auth_address String,
     validator_name LowCardinality(String),
     provider LowCardinality(String),
     location LowCardinality(String),
@@ -25,20 +26,22 @@ TO validator_registry_latest
 AS
 SELECT
     validator_id,
-    tupleElement(latest_record, 1) AS validator_name,
-    tupleElement(latest_record, 2) AS provider,
-    tupleElement(latest_record, 3) AS location,
-    tupleElement(latest_record, 4) AS country,
-    tupleElement(latest_record, 5) AS datacenter,
-    tupleElement(latest_record, 6) AS stake,
-    tupleElement(latest_record, 7) AS real_time_stake_wei,
-    tupleElement(latest_record, 8) AS keybase_id,
-    tupleElement(latest_record, 9) AS keybase_logo_url,
-    tupleElement(latest_record, 10) AS last_updated
+    tupleElement(latest_record, 1) AS auth_address,
+    tupleElement(latest_record, 2) AS validator_name,
+    tupleElement(latest_record, 3) AS provider,
+    tupleElement(latest_record, 4) AS location,
+    tupleElement(latest_record, 5) AS country,
+    tupleElement(latest_record, 6) AS datacenter,
+    tupleElement(latest_record, 7) AS stake,
+    tupleElement(latest_record, 8) AS real_time_stake_wei,
+    tupleElement(latest_record, 9) AS keybase_id,
+    tupleElement(latest_record, 10) AS keybase_logo_url,
+    tupleElement(latest_record, 11) AS last_updated
 FROM (
     SELECT
         validator_id,
         argMax((
+          auth_address,
           validator_name,
           provider,
           location,
@@ -60,20 +63,22 @@ TRUNCATE TABLE validator_registry_latest;
 INSERT INTO validator_registry_latest
 SELECT
     validator_id,
-    tupleElement(latest_record, 1) AS validator_name,
-    tupleElement(latest_record, 2) AS provider,
-    tupleElement(latest_record, 3) AS location,
-    tupleElement(latest_record, 4) AS country,
-    tupleElement(latest_record, 5) AS datacenter,
-    tupleElement(latest_record, 6) AS stake,
-    tupleElement(latest_record, 7) AS real_time_stake_wei,
-    tupleElement(latest_record, 8) AS keybase_id,
-    tupleElement(latest_record, 9) AS keybase_logo_url,
-    tupleElement(latest_record, 10) AS last_updated
+    tupleElement(latest_record, 1) AS auth_address,
+    tupleElement(latest_record, 2) AS validator_name,
+    tupleElement(latest_record, 3) AS provider,
+    tupleElement(latest_record, 4) AS location,
+    tupleElement(latest_record, 5) AS country,
+    tupleElement(latest_record, 6) AS datacenter,
+    tupleElement(latest_record, 7) AS stake,
+    tupleElement(latest_record, 8) AS real_time_stake_wei,
+    tupleElement(latest_record, 9) AS keybase_id,
+    tupleElement(latest_record, 10) AS keybase_logo_url,
+    tupleElement(latest_record, 11) AS last_updated
 FROM (
     SELECT
         validator_id,
         argMax((
+          auth_address,
           validator_name,
           provider,
           location,

@@ -37,6 +37,7 @@ SETTINGS index_granularity = 8192;
 CREATE TABLE validator_registry (
     validator_id String,
     node_id String,
+    auth_address String DEFAULT '' COMMENT 'Validator auth address from staking precompile',
     epoch UInt32,
     precompile_validator_id String DEFAULT '' COMMENT 'Precompile validator ID (1, 2, 3, ...)',
     
@@ -79,6 +80,7 @@ SETTINGS index_granularity = 8192;
 -- Consolidated latest validator registry snapshot
 CREATE TABLE validator_registry_latest (
     validator_id String,
+    auth_address String,
     validator_name LowCardinality(String),
     provider LowCardinality(String),
     location LowCardinality(String),
@@ -98,20 +100,22 @@ TO validator_registry_latest
 AS
 SELECT
     validator_id,
-    tupleElement(latest_record, 1) AS validator_name,
-    tupleElement(latest_record, 2) AS provider,
-    tupleElement(latest_record, 3) AS location,
-    tupleElement(latest_record, 4) AS country,
-    tupleElement(latest_record, 5) AS datacenter,
-    tupleElement(latest_record, 6) AS stake,
-    tupleElement(latest_record, 7) AS real_time_stake_wei,
-    tupleElement(latest_record, 8) AS keybase_id,
-    tupleElement(latest_record, 9) AS keybase_logo_url,
-    tupleElement(latest_record, 10) AS last_updated
+    tupleElement(latest_record, 1) AS auth_address,
+    tupleElement(latest_record, 2) AS validator_name,
+    tupleElement(latest_record, 3) AS provider,
+    tupleElement(latest_record, 4) AS location,
+    tupleElement(latest_record, 5) AS country,
+    tupleElement(latest_record, 6) AS datacenter,
+    tupleElement(latest_record, 7) AS stake,
+    tupleElement(latest_record, 8) AS real_time_stake_wei,
+    tupleElement(latest_record, 9) AS keybase_id,
+    tupleElement(latest_record, 10) AS keybase_logo_url,
+    tupleElement(latest_record, 11) AS last_updated
 FROM (
     SELECT
         validator_id,
         argMax((
+          auth_address,
           validator_name,
           provider,
           location,

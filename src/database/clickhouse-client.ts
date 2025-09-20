@@ -21,6 +21,7 @@ export interface ClickHouseConfig {
 export class MonadClickHouseClient {
   private client: ClickHouseClient;
   private config: ClickHouseConfig;
+  private authAddressColumnEnsured = false;
 
   constructor(config: ClickHouseConfig) {
     this.config = config;
@@ -587,6 +588,124 @@ export class MonadClickHouseClient {
     });
   }
 
+  /**
+   * Ensure validator_registry tables support auth_address column.
+   * Safe to call multiple times; heavy operations only occur when column is missing or view definition is outdated.
+   */
+  async ensureValidatorRegistryAuthColumns(): Promise<void> {
+    if (this.authAddressColumnEnsured) {
+      return;
+    }
+
+    const database = this.getDatabaseName();
+
+    try {
+      const hasAuthColumnResult = await this.executeRawQuery(`
+        SELECT count() AS count
+        FROM system.columns
+        WHERE database = '${database}'
+          AND table = 'validator_registry'
+          AND name = 'auth_address'
+      `);
+
+      const hasAuthColumn = Number(hasAuthColumnResult[0]?.count || 0) > 0;
+
+      if (!hasAuthColumn) {
+        logger.info('🔧 Adding auth_address column to validator_registry...');
+        await this.executeCommand(`ALTER TABLE ${database}.validator_registry ADD COLUMN IF NOT EXISTS auth_address String DEFAULT '' AFTER node_id`);
+      }
+
+      // Ensure latest snapshot table and materialized view are updated if they exist
+      const latestTableResult = await this.executeRawQuery(`
+        SELECT count() AS count
+        FROM system.tables
+        WHERE database = '${database}'
+          AND name = 'validator_registry_latest'
+      `);
+
+      const hasLatestTable = Number(latestTableResult[0]?.count || 0) > 0;
+
+      if (hasLatestTable) {
+        const latestHasAuthColumnResult = await this.executeRawQuery(`
+          SELECT count() AS count
+          FROM system.columns
+          WHERE database = '${database}'
+            AND table = 'validator_registry_latest'
+            AND name = 'auth_address'
+        `);
+
+        const latestHasAuthColumn = Number(latestHasAuthColumnResult[0]?.count || 0) > 0;
+
+        if (!latestHasAuthColumn) {
+          logger.info('🔧 Adding auth_address column to validator_registry_latest...');
+          await this.executeCommand(`ALTER TABLE ${database}.validator_registry_latest ADD COLUMN IF NOT EXISTS auth_address String DEFAULT '' AFTER validator_id`);
+        }
+
+        // Determine if materialized view needs to be rebuilt (missing or outdated definition)
+        const mvInfo = await this.executeRawQuery(`
+          SELECT create_table_query
+          FROM system.tables
+          WHERE database = '${database}'
+            AND name = 'validator_registry_latest_mv'
+            AND engine = 'MaterializedView'
+        `);
+
+        const mvDefinition = mvInfo[0]?.create_table_query as string | undefined;
+        const mvNeedsRebuild = !mvDefinition || !mvDefinition.toLowerCase().includes('auth_address');
+
+        if (mvNeedsRebuild) {
+          logger.info('🔄 Rebuilding validator_registry_latest materialized view to include auth_address...');
+          await this.executeCommand(`DROP VIEW IF EXISTS ${database}.validator_registry_latest_mv`);
+          await this.executeCommand(`TRUNCATE TABLE ${database}.validator_registry_latest`);
+          await this.executeCommand(`
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${database}.validator_registry_latest_mv
+TO ${database}.validator_registry_latest
+AS
+SELECT
+    validator_id,
+    tupleElement(latest_record, 1) AS auth_address,
+    tupleElement(latest_record, 2) AS validator_name,
+    tupleElement(latest_record, 3) AS provider,
+    tupleElement(latest_record, 4) AS location,
+    tupleElement(latest_record, 5) AS country,
+    tupleElement(latest_record, 6) AS datacenter,
+    tupleElement(latest_record, 7) AS stake,
+    tupleElement(latest_record, 8) AS real_time_stake_wei,
+    tupleElement(latest_record, 9) AS keybase_id,
+    tupleElement(latest_record, 10) AS keybase_logo_url,
+    tupleElement(latest_record, 11) AS last_updated
+FROM (
+    SELECT
+        validator_id,
+        argMax((
+          auth_address,
+          validator_name,
+          provider,
+          location,
+          country,
+          datacenter,
+          stake,
+          real_time_stake_wei,
+          keybase_id,
+          keybase_logo_url,
+          last_updated
+        ), last_updated) AS latest_record
+    FROM ${database}.validator_registry
+    WHERE is_active = 1
+    GROUP BY validator_id
+)
+POPULATE
+          `);
+        }
+      }
+
+      this.authAddressColumnEnsured = true;
+    } catch (error) {
+      logger.error('Failed to ensure auth_address column in validator registry tables:', error);
+      throw error;
+    }
+  }
+
   // =============================================
   // VALIDATOR REGISTRY SYNC
   // =============================================
@@ -602,6 +721,8 @@ export class MonadClickHouseClient {
       logger.warn('Validator list is empty, skipping registry update.');
       return;
     }
+
+    await this.ensureValidatorRegistryAuthColumns();
 
     const tableName = 'validator_registry';
     logger.info(`🚀 Starting smart sync for ${tableName} with ${validators.length} validators...`);
@@ -630,6 +751,7 @@ export class MonadClickHouseClient {
       const latestDataQuery = `
         SELECT 
           validator_id,
+          auth_address,
           stake,
           position,
           is_active,
@@ -662,6 +784,7 @@ export class MonadClickHouseClient {
       
       for (const v of validators) {
         const existingKeybase = keybaseMap.get(v.nodeId);
+        const existing = existingMap.get(v.nodeId);
         const newRecord = {
           validator_id: v.nodeId,
           node_id: v.nodeId,
@@ -669,6 +792,7 @@ export class MonadClickHouseClient {
           stake: v.stake,
           position: v.position,
           is_active: v.isActive ? 1 : 0,
+          auth_address: existing?.auth_address || '',
           dns_address: v.location?.dnsAddress || '',
           dns_host: v.location?.hostname || '',
           dns_port: v.location?.port || 8000,
@@ -682,9 +806,7 @@ export class MonadClickHouseClient {
           first_seen: v.lastUpdated.toISOString().slice(0, 19).replace('T', ' '),
           last_updated: v.lastUpdated.toISOString().slice(0, 19).replace('T', ' '),
         };
-
-        const existing = existingMap.get(v.nodeId);
-        
+      
         // Check if this is a new validator or if metadata has changed
         if (!existing || this.hasValidatorDataChanged(existing, newRecord)) {
           validatorsToUpdate.push(newRecord);
@@ -734,7 +856,7 @@ export class MonadClickHouseClient {
   private hasValidatorDataChanged(existing: any, newRecord: any): boolean {
     // Compare all meaningful fields (excluding epoch, timestamps, and keybase which is preserved separately)
     const fieldsToCompare = [
-      'stake', 'position', 'is_active', 'dns_address', 'dns_host', 'dns_port',
+      'stake', 'position', 'is_active', 'auth_address', 'dns_address', 'dns_host', 'dns_port',
       'validator_name', 'provider', 'location', 'country', 'datacenter'
     ];
 

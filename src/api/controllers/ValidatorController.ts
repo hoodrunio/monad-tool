@@ -280,6 +280,7 @@ export class ValidatorController {
           COALESCE(vr.validator_name, 'unknown') as validator_name,
           COALESCE(vr.provider, 'unknown') as provider,
           COALESCE(vr.location, 'unknown') as location,
+          COALESCE(vr.auth_address, '') as auth_address,
           COALESCE(vr.stake, 0) as stake,
           COALESCE(vr.keybase_id, '') as keybase_id,
           COALESCE(vr.keybase_logo_url, '') as keybase_logo_url,
@@ -289,7 +290,15 @@ export class ValidatorController {
         LEFT JOIN validator_registry_latest vr ON vr.validator_id = b.validator_id
         WHERE b.validator_id = '${validatorId}'
           AND b.timestamp >= now() - INTERVAL ${timeWindow}
-        GROUP BY b.validator_id, vr.validator_name, vr.provider, vr.location, vr.stake, vr.keybase_id, vr.keybase_logo_url
+        GROUP BY 
+          b.validator_id,
+          vr.validator_name,
+          vr.provider,
+          vr.location,
+          vr.auth_address,
+          vr.stake,
+          vr.keybase_id,
+          vr.keybase_logo_url
       `;
 
       // Get QC participation metrics
@@ -335,7 +344,8 @@ export class ValidatorController {
           SELECT 
             precompile_validator_id,
             is_staking_active,
-            real_time_stake_wei
+            real_time_stake_wei,
+            auth_address
           FROM validator_registry 
           WHERE validator_id = '${validatorId}'
           ORDER BY last_updated DESC 
@@ -345,6 +355,8 @@ export class ValidatorController {
         const stakingResult = await this.clickhouseClient.executeRawQuery(stakingQuery);
         const stakingData = stakingResult[0];
         
+        const authAddress = stakingData?.auth_address || blockData?.auth_address || null;
+
         if (stakingData) {
           // Convert wei to MON (1 MON = 10^18 wei)
           const realTimeStakeMON = stakingData.real_time_stake_wei 
@@ -355,7 +367,16 @@ export class ValidatorController {
             is_staking_active: Boolean(stakingData.is_staking_active),
             real_time_stake_mon: realTimeStakeMON,
             real_time_stake_wei: stakingData.real_time_stake_wei || "0",
-            precompile_validator_id: stakingData.precompile_validator_id || null
+            precompile_validator_id: stakingData.precompile_validator_id || null,
+            auth_address: authAddress
+          };
+        } else if (authAddress) {
+          stakingInfo = {
+            is_staking_active: null,
+            real_time_stake_mon: null,
+            real_time_stake_wei: null,
+            precompile_validator_id: null,
+            auth_address: authAddress
           };
         }
       } catch (error) {
@@ -838,6 +859,7 @@ export class ValidatorController {
         COALESCE(vr.validator_name, 'unknown') as validator_name,
         COALESCE(vr.provider, 'unknown') as provider,
         COALESCE(vr.location, 'unknown') as location,
+        COALESCE(vr.auth_address, '') as auth_address,
         COALESCE(vr.stake, 0) as stake,
         COALESCE(vr.keybase_id, '') as keybase_id,
         COALESCE(vr.keybase_logo_url, '') as keybase_logo_url
@@ -854,6 +876,9 @@ export class ValidatorController {
     return comparison.map(v => ({
       validator_id: v.validator_id,
       stake: parseInt(v.stake || 0),
+      staking: {
+        auth_address: v.auth_address || null
+      },
       metrics: {
         block_proposal_ratio: parseFloat(v.block_proposal_ratio || 0),
         qc_participation_rate: parseFloat(v.qc_participation_rate || 0),

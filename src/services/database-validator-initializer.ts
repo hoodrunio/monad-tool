@@ -14,6 +14,7 @@ import { ValidatorLocation } from './validator-location/types';
 export interface ValidatorDatabaseRecord {
   validator_id: string;
   node_id: string;
+  auth_address?: string;
   epoch: number;
   precompile_validator_id?: string;
   stake: number;
@@ -64,6 +65,8 @@ export class DatabaseValidatorInitializer {
     logger.info('🔍 Starting database validator initialization check...');
 
     try {
+      await this.clickhouseClient.ensureValidatorRegistryAuthColumns();
+
       // Step 1: Check current database state
       const currentStats = await this.getDatabaseValidatorStats();
       logger.info('📊 Current database validator stats:', currentStats);
@@ -324,6 +327,11 @@ export class DatabaseValidatorInitializer {
         node_id: typeof validator.node_id === 'string' && validator.node_id.length > 0
           ? validator.node_id
           : validatorId,
+        auth_address: this.chooseString([
+          (validator as any)?.auth_address,
+          (validator as any)?.authAddress,
+          existing?.auth_address
+        ]),
         precompile_validator_id: this.chooseString([
           validator.precompile_validator_id,
           existing?.precompile_validator_id
@@ -541,6 +549,7 @@ export class DatabaseValidatorInitializer {
         argMax(is_active, last_updated) AS is_active,
         argMax(is_staking_active, last_updated) AS is_staking_active,
         COALESCE(argMaxIf(real_time_stake_wei, last_updated, real_time_stake_wei != ''), argMax(real_time_stake_wei, last_updated)) AS real_time_stake_wei,
+        COALESCE(argMaxIf(auth_address, last_updated, auth_address != ''), argMax(auth_address, last_updated)) AS auth_address,
         COALESCE(argMaxIf(dns_address, last_updated, dns_address != ''), argMax(dns_address, last_updated)) AS dns_address,
         COALESCE(argMaxIf(dns_host, last_updated, dns_host != ''), argMax(dns_host, last_updated)) AS dns_host,
         COALESCE(argMaxIf(dns_port, last_updated, dns_port != 0), argMax(dns_port, last_updated)) AS dns_port,

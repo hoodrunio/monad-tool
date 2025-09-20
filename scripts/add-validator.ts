@@ -53,6 +53,8 @@ async function ensureValidator(args: string[]) {
   const stakingService = new StakingService(rpcUrl);
 
   try {
+    await clickhouseClient.ensureValidatorRegistryAuthColumns();
+
     console.log(`🔗 Connecting to staking precompile via ${rpcUrl}...`);
     await stakingService.initialize();
     await stakingService.refreshStakingInfo();
@@ -98,10 +100,17 @@ async function ensureValidator(args: string[]) {
 
     const stakeWei = validatorInfo.stake?.toString?.() || '0';
     const timestamp = formatDate(new Date());
+    const rawAuthAddress = typeof validatorInfo.authAddress === 'string'
+      ? validatorInfo.authAddress.trim().toLowerCase()
+      : '';
+    const authAddress = rawAuthAddress
+      ? (rawAuthAddress.startsWith('0x') ? rawAuthAddress : `0x${rawAuthAddress}`)
+      : '';
 
     const row = {
       validator_id: validatorAddress,
       node_id: validatorAddress,
+      auth_address: authAddress,
       precompile_validator_id: validatorIdInput,
       epoch: Number(currentEpoch),
       stake: stakeWei,

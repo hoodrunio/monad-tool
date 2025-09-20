@@ -403,6 +403,8 @@ export class StakingService {
             continue;
           }
 
+          const authAddress = this.normalizeAuthAddress(validatorInfo.authAddress);
+
           // Check if validator is currently active
           const isActive = this.stakingInfo?.activeValidators.has(validatorId.toString()) || false;
 
@@ -411,6 +413,7 @@ export class StakingService {
             INSERT INTO validator_registry (
               validator_id,
               node_id,
+              auth_address,
               precompile_validator_id,
               epoch,
               stake,
@@ -422,6 +425,7 @@ export class StakingService {
             ) VALUES (
               '${secpAddress}',
               '${secpAddress}',
+              '${authAddress}',
               '${validatorId}',
               ${currentEpoch},
               ${validatorInfo.stake.toString()},
@@ -543,6 +547,7 @@ export class StakingService {
         SELECT
           validator_id,
           node_id,
+          auth_address,
           precompile_validator_id,
           stake,
           position,
@@ -564,6 +569,7 @@ export class StakingService {
           SELECT
             validator_id,
             argMax(node_id, last_updated) AS node_id,
+            COALESCE(argMaxIf(auth_address, last_updated, auth_address != ''), argMax(auth_address, last_updated)) AS auth_address,
             argMax(precompile_validator_id, last_updated) AS precompile_validator_id,
             argMax(stake, last_updated) AS stake,
             argMax(position, last_updated) AS position,
@@ -648,10 +654,12 @@ export class StakingService {
         let stakeBigInt = this.stakingInfo?.validatorStakes.get(validatorId) ?? null;
         let validatorInfo: StakingValidator | null = null;
 
-        if (stakeBigInt === null) {
+        const needsValidatorInfo = stakeBigInt === null || !baseRow.auth_address;
+
+        if (needsValidatorInfo) {
           try {
             validatorInfo = await this.getValidatorInfo(validatorId);
-            if (validatorInfo?.stake !== undefined) {
+            if (validatorInfo?.stake !== undefined && stakeBigInt === null) {
               stakeBigInt = validatorInfo.stake;
               if (this.stakingInfo) {
                 this.stakingInfo.validatorStakes.set(validatorId, validatorInfo.stake);
@@ -672,6 +680,10 @@ export class StakingService {
           ? this.formatDateTime(baseRow.first_seen)
           : lastUpdated;
 
+        const resolvedAuthAddress = this.normalizeAuthAddress(
+          validatorInfo?.authAddress ?? baseRow.auth_address ?? ''
+        );
+
         const preservedMetadata = this.preserveValidatorMetadata(baseRow);
 
         validatorRowsToInsert.push({
@@ -686,7 +698,8 @@ export class StakingService {
           precompile_validator_id: validatorId,
           first_seen: firstSeen,
           last_updated: lastUpdated,
-          ...preservedMetadata
+          ...preservedMetadata,
+          auth_address: resolvedAuthAddress
         });
 
         baseRow.first_seen = firstSeen;
@@ -695,6 +708,7 @@ export class StakingService {
         baseRow.is_staking_active = isConsensus ? 1 : 0;
         baseRow.real_time_stake_wei = realTimeStakeString;
         baseRow.stake = stakeString;
+        baseRow.auth_address = resolvedAuthAddress;
         latestRowMap.set(validatorId, baseRow);
       }
 
@@ -720,6 +734,7 @@ export class StakingService {
           SELECT
             validator_id,
             node_id,
+            auth_address,
             precompile_validator_id,
             stake,
             position,
@@ -745,6 +760,7 @@ export class StakingService {
         SELECT
           validator_id,
           node_id,
+          auth_address,
           stake,
           position,
           dns_address,
@@ -827,8 +843,20 @@ export class StakingService {
           continue;
         }
 
+        let validatorInfo: StakingValidator | null = null;
+        if (!row.auth_address) {
+          try {
+            validatorInfo = await this.getValidatorInfo(precompileId);
+          } catch (error) {
+            logger.warn(`Failed to fetch validator info for ${precompileId} during backfill:`, error);
+          }
+        }
+
         const stakeString = this.normalizeBigIntLike(row?.stake ?? row?.real_time_stake_wei ?? '0');
         const realTimeStakeString = this.normalizeBigIntLike(row?.real_time_stake_wei ?? stakeString);
+        const resolvedAuthAddress = this.normalizeAuthAddress(
+          validatorInfo?.authAddress ?? row.auth_address ?? ''
+        );
         const preservedMetadata = this.preserveValidatorMetadata(row);
 
         rowsToInsert.push({
@@ -843,7 +871,8 @@ export class StakingService {
           real_time_stake_wei: realTimeStakeString,
           first_seen: this.formatDateTime(row.first_seen || nowString),
           last_updated: nowString,
-          ...preservedMetadata
+          ...preservedMetadata,
+          auth_address: resolvedAuthAddress
         });
       }
 
@@ -871,6 +900,7 @@ export class StakingService {
           SELECT
             validator_id,
             node_id,
+            auth_address,
             precompile_validator_id,
             stake,
             position,
@@ -896,6 +926,7 @@ export class StakingService {
         SELECT
           validator_id,
           node_id,
+          auth_address,
           precompile_validator_id,
           stake,
           position,
@@ -974,10 +1005,12 @@ export class StakingService {
         let stakeBigInt = this.stakingInfo?.validatorStakes.get(precompileId) ?? null;
         let validatorInfo: StakingValidator | null = null;
 
-        if (stakeBigInt === null) {
+        const needsValidatorInfo = stakeBigInt === null || !row.auth_address;
+
+        if (needsValidatorInfo) {
           try {
             validatorInfo = await this.getValidatorInfo(precompileId);
-            if (validatorInfo) {
+            if (validatorInfo && stakeBigInt === null) {
               stakeBigInt = validatorInfo.stake;
             }
           } catch (error) {
@@ -991,6 +1024,10 @@ export class StakingService {
         );
 
         const isConsensus = this.stakingInfo?.consensusValidators.has(precompileId) ?? false;
+
+        const resolvedAuthAddress = this.normalizeAuthAddress(
+          validatorInfo?.authAddress ?? row.auth_address ?? ''
+        );
 
         const preservedMetadata = this.preserveValidatorMetadata(row);
 
@@ -1006,7 +1043,8 @@ export class StakingService {
           real_time_stake_wei: realTimeStakeString,
           first_seen: this.formatDateTime(row.first_seen || now),
           last_updated: nextTimestamp(),
-          ...preservedMetadata
+          ...preservedMetadata,
+          auth_address: resolvedAuthAddress
         });
       }
 
@@ -1036,6 +1074,23 @@ export class StakingService {
     }
 
     return null;
+  }
+
+  private normalizeAuthAddress(value: any): string {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        return '';
+      }
+      const lower = trimmed.toLowerCase();
+      return lower.startsWith('0x') ? lower : `0x${lower}`;
+    }
+
+    if (value instanceof Uint8Array) {
+      return ethers.hexlify(value).toLowerCase();
+    }
+
+    return '';
   }
 
   private async buildPrecompileIdMapping(targetSecpAddresses: Set<string>, scanLimit: number): Promise<Map<string, string>> {
@@ -1131,6 +1186,7 @@ export class StakingService {
 
     const preserved: Record<string, any> = {};
     const stringFields = [
+      'auth_address',
       'dns_address',
       'dns_host',
       'validator_name',
@@ -1186,6 +1242,16 @@ export class StakingService {
       `precompile_validator_id = '${validatorId}'`
     );
     if (rowByPrecompile) {
+      if (!rowByPrecompile.auth_address) {
+        try {
+          const validatorInfo = await this.getValidatorInfo(validatorId);
+          if (validatorInfo?.authAddress) {
+            rowByPrecompile.auth_address = this.normalizeAuthAddress(validatorInfo.authAddress);
+          }
+        } catch (error) {
+          logger.debug(`Failed to backfill auth address for validator ${validatorId}:`, error);
+        }
+      }
       cache.set(validatorId, rowByPrecompile);
       return rowByPrecompile;
     }
@@ -1217,6 +1283,9 @@ export class StakingService {
 
       if (rowBySecp) {
         rowBySecp.precompile_validator_id = validatorId;
+        if ((!rowBySecp.auth_address || rowBySecp.auth_address.length === 0) && validatorInfo?.authAddress) {
+          rowBySecp.auth_address = this.normalizeAuthAddress(validatorInfo.authAddress);
+        }
         cache.set(validatorId, rowBySecp);
         return rowBySecp;
       }
@@ -1255,10 +1324,12 @@ export class StakingService {
       const timestamp = nextTimestampString();
       const stakeBigInt = this.stakingInfo?.validatorStakes.get(validatorId) ?? validatorInfo.stake;
       const stakeString = stakeBigInt?.toString() ?? '0';
+      const authAddress = this.normalizeAuthAddress(validatorInfo.authAddress);
 
       return {
         validator_id: secpAddress,
         node_id: secpAddress,
+        auth_address: authAddress,
         precompile_validator_id: validatorId,
         stake: stakeString,
         position: 0,
@@ -1294,6 +1365,7 @@ export class StakingService {
       SELECT
         validator_id,
         node_id,
+        auth_address,
         precompile_validator_id,
         stake,
         position,
