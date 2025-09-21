@@ -289,6 +289,10 @@ export class DatabaseValidatorInitializer {
       await this.insertValidatorBatch(batch);
     }
 
+    logger.info('🔄 Rebuilding validator_registry_latest snapshot to eliminate duplicates...');
+    await this.clickhouseClient.rebuildValidatorRegistryLatest();
+    logger.info('✅ validator_registry_latest snapshot rebuilt successfully');
+
     logger.info('✅ All validator batches processed successfully');
   }
 
@@ -428,6 +432,7 @@ export class DatabaseValidatorInitializer {
     try {
       logger.info(`💾 Inserting batch of ${rowsToInsert.length} validators...`);
       await this.clickhouseClient.insertRows('validator_registry', rowsToInsert);
+      await this.clickhouseClient.rebuildValidatorRegistryLatest(validatorIds);
       logger.info(`✅ Successfully inserted ${rowsToInsert.length} validators into database`);
     } catch (error) {
       logger.error('❌ Failed to insert validator batch:', error);

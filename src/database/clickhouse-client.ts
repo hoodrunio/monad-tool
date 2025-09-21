@@ -706,6 +706,62 @@ POPULATE
     }
   }
 
+  private buildValidatorRegistryLatestSelect(filter?: string): string {
+    const database = this.getDatabaseName();
+    const additionalFilter = filter ? `AND ${filter}` : '';
+    return `
+      SELECT
+        validator_id,
+        argMax(auth_address, last_updated) AS auth_address,
+        argMax(validator_name, last_updated) AS validator_name,
+        argMax(provider, last_updated) AS provider,
+        argMax(location, last_updated) AS location,
+        argMax(country, last_updated) AS country,
+        argMax(datacenter, last_updated) AS datacenter,
+        argMax(stake, last_updated) AS stake,
+        argMax(real_time_stake_wei, last_updated) AS real_time_stake_wei,
+        argMax(keybase_id, last_updated) AS keybase_id,
+        argMax(keybase_logo_url, last_updated) AS keybase_logo_url,
+        max(last_updated) AS last_updated
+      FROM ${database}.validator_registry
+      WHERE is_active = 1
+      ${additionalFilter}
+      GROUP BY validator_id
+    `;
+  }
+
+  private buildValidatorIdList(validatorIds: string[]): string {
+    return validatorIds
+      .map(id => `'${id.replace(/'/g, "''")}'`)
+      .join(', ');
+  }
+
+  async rebuildValidatorRegistryLatest(validatorIds?: string[]): Promise<void> {
+    const database = this.getDatabaseName();
+
+    if (validatorIds && validatorIds.length === 0) {
+      return;
+    }
+
+    const filter = validatorIds && validatorIds.length > 0
+      ? `validator_id IN (${this.buildValidatorIdList(validatorIds)})`
+      : undefined;
+
+    try {
+      if (!validatorIds || validatorIds.length === 0) {
+        await this.executeCommand(`TRUNCATE TABLE ${database}.validator_registry_latest`);
+      } else {
+        await this.executeCommand(`ALTER TABLE ${database}.validator_registry_latest DELETE WHERE validator_id IN (${this.buildValidatorIdList(validatorIds)})`);
+      }
+
+      const selectQuery = this.buildValidatorRegistryLatestSelect(filter);
+      await this.executeCommand(`INSERT INTO ${database}.validator_registry_latest ${selectQuery}`);
+    } catch (error) {
+      logger.error('Failed to rebuild validator_registry_latest snapshot:', error);
+      throw error;
+    }
+  }
+
   // =============================================
   // VALIDATOR REGISTRY SYNC
   // =============================================
@@ -835,6 +891,10 @@ POPULATE
             wait_end_of_query: 1,
           },
         });
+
+        await this.rebuildValidatorRegistryLatest(
+          validatorsToUpdate.map(v => v.validator_id)
+        );
 
         logger.info(`✅ Successfully updated ${validatorsToUpdate.length} validators in ${tableName} (preserved ${keybaseMap.size} keybase mappings, skipped ${unchangedCount} unchanged).`);
       } else {

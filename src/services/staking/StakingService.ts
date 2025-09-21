@@ -714,6 +714,9 @@ export class StakingService {
 
       if (validatorRowsToInsert.length > 0) {
         await clickhouseClient.insertRows('validator_registry', validatorRowsToInsert);
+        await clickhouseClient.rebuildValidatorRegistryLatest(
+          validatorRowsToInsert.map(row => row.validator_id)
+        );
         logger.info(`✅ Updated staking snapshot for ${validatorRowsToInsert.length} validators`);
       }
 
@@ -882,6 +885,9 @@ export class StakingService {
       }
 
       await clickhouseClient.insertRows('validator_registry', rowsToInsert);
+      await clickhouseClient.rebuildValidatorRegistryLatest(
+        rowsToInsert.map(row => row.validator_id)
+      );
       logger.info(`✅ Backfilled precompile IDs for ${rowsToInsert.length} validators`);
     } catch (error) {
       logger.error('Failed to backfill missing precompile IDs:', error);
@@ -1054,6 +1060,9 @@ export class StakingService {
       }
 
       await clickhouseClient.insertRows('validator_registry', rowsToInsert);
+      await clickhouseClient.rebuildValidatorRegistryLatest(
+        rowsToInsert.map(row => row.validator_id)
+      );
       logger.info(`✅ Synchronized ${rowsToInsert.length} validator snapshots with staking data`);
     } catch (error) {
       logger.error('Failed to synchronize validator registry snapshots:', error);
