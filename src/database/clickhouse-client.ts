@@ -710,23 +710,40 @@ POPULATE
     const database = this.getDatabaseName();
     const additionalFilter = filter ? `AND ${filter}` : '';
     return `
+      WITH ranked_validators AS (
+        SELECT
+          validator_id,
+          auth_address,
+          validator_name,
+          provider,
+          location,
+          country,
+          datacenter,
+          stake,
+          real_time_stake_wei,
+          keybase_id,
+          keybase_logo_url,
+          last_updated,
+          ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) AS rn
+        FROM ${database}.validator_registry
+        WHERE is_active = 1
+        ${additionalFilter}
+      )
       SELECT
         validator_id,
-        argMax(auth_address, last_updated) AS auth_address,
-        argMax(validator_name, last_updated) AS validator_name,
-        argMax(provider, last_updated) AS provider,
-        argMax(location, last_updated) AS location,
-        argMax(country, last_updated) AS country,
-        argMax(datacenter, last_updated) AS datacenter,
-        argMax(stake, last_updated) AS stake,
-        argMax(real_time_stake_wei, last_updated) AS real_time_stake_wei,
-        argMax(keybase_id, last_updated) AS keybase_id,
-        argMax(keybase_logo_url, last_updated) AS keybase_logo_url,
-        max(last_updated) AS last_updated
-      FROM ${database}.validator_registry
-      WHERE is_active = 1
-      ${additionalFilter}
-      GROUP BY validator_id
+        auth_address,
+        validator_name,
+        provider,
+        location,
+        country,
+        datacenter,
+        stake,
+        real_time_stake_wei,
+        keybase_id,
+        keybase_logo_url,
+        last_updated
+      FROM ranked_validators
+      WHERE rn = 1
     `;
   }
 
@@ -743,15 +760,19 @@ POPULATE
       return;
     }
 
-    const filter = validatorIds && validatorIds.length > 0
-      ? `validator_id IN (${this.buildValidatorIdList(validatorIds)})`
+    const uniqueValidatorIds = validatorIds && validatorIds.length > 0
+      ? Array.from(new Set(validatorIds))
+      : undefined;
+
+    const filter = uniqueValidatorIds && uniqueValidatorIds.length > 0
+      ? `validator_id IN (${this.buildValidatorIdList(uniqueValidatorIds)})`
       : undefined;
 
     try {
-      if (!validatorIds || validatorIds.length === 0) {
+      if (!uniqueValidatorIds || uniqueValidatorIds.length === 0) {
         await this.executeCommand(`TRUNCATE TABLE ${database}.validator_registry_latest`);
       } else {
-        await this.executeCommand(`ALTER TABLE ${database}.validator_registry_latest DELETE WHERE validator_id IN (${this.buildValidatorIdList(validatorIds)})`);
+        await this.executeCommand(`ALTER TABLE ${database}.validator_registry_latest DELETE WHERE validator_id IN (${this.buildValidatorIdList(uniqueValidatorIds)}) SETTINGS mutations_sync = 2`);
       }
 
       const selectQuery = this.buildValidatorRegistryLatestSelect(filter);
