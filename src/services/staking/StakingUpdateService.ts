@@ -1,4 +1,4 @@
-import { StakingService } from './StakingService';
+import { StakingService, ValidatorDelegatorsResult } from './StakingService';
 import { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { MonadRedisClient } from '../../cache/redis-client';
 import { logger } from '../../utils/logger';
@@ -262,5 +262,19 @@ export class StakingUpdateService {
       const validatorData = mapping.get(secpAddress);
       return validatorData?.isActive;
     });
+  }
+
+  /**
+   * Proxy to staking service for retrieving delegators via precompile
+   */
+  async getValidatorDelegators(
+    validatorId: string,
+    options: {
+      startDelegator?: string;
+      maxPages?: number;
+      fetchAll?: boolean;
+    } = {}
+  ): Promise<ValidatorDelegatorsResult> {
+    return this.stakingService.getValidatorDelegators(validatorId, options);
   }
 }

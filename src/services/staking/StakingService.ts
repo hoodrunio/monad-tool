@@ -9,6 +9,7 @@ const FUNCTION_SELECTORS = {
   getValidator: '0x2b6d639a',
   getConsensusValidatorSet: '0xfb29b729',
   getExecutionValidatorSet: '0x7cb074df',
+  getDelegators: '0xa0843a26',
   getEpoch: '0x757991a8'
 };
 
@@ -32,6 +33,21 @@ export interface ValidatorSetResult {
   done: boolean;
   nextIndex: number;
   validatorIds: bigint[];
+}
+
+export interface DelegatorsPageResult {
+  validatorId: string;
+  isDone: boolean;
+  nextDelegator: string;
+  delegators: string[];
+}
+
+export interface ValidatorDelegatorsResult {
+  validatorId: string;
+  delegators: string[];
+  isDone: boolean;
+  nextDelegator: string | null;
+  pagesFetched: number;
 }
 
 export interface StakingInfo {
@@ -355,6 +371,140 @@ export class StakingService {
       currentEpoch: this.stakingInfo.currentEpoch,
       lastUpdated: this.stakingInfo.lastUpdated
     };
+  }
+
+  /**
+   * Fetch delegators for a validator with pagination support
+   */
+  async getValidatorDelegators(
+    validatorId: string,
+    options: {
+      startDelegator?: string;
+      maxPages?: number;
+      fetchAll?: boolean;
+    } = {}
+  ): Promise<ValidatorDelegatorsResult> {
+    const { startDelegator, maxPages, fetchAll = false } = options;
+
+    const validatorIdBigInt = BigInt(validatorId);
+    const initialDelegator = this.normalizeAddress(startDelegator);
+    const MAX_AUTO_PAGES = 1024;
+    const pageLimit = fetchAll
+      ? MAX_AUTO_PAGES
+      : Math.min(Math.max(1, maxPages ?? 1), MAX_AUTO_PAGES);
+
+    const allDelegators: string[] = [];
+    const seenDelegators = new Set<string>();
+    const visitedStarts = new Set<string>();
+
+    let currentStart = initialDelegator;
+    let isDone = false;
+    let nextDelegator: string | null = null;
+    let pagesFetched = 0;
+
+    while (!isDone && pagesFetched < pageLimit) {
+      const page = await this.getDelegatorsPage(validatorIdBigInt, currentStart);
+      pagesFetched += 1;
+
+      for (const delegator of page.delegators) {
+        const key = delegator.toLowerCase();
+        if (!seenDelegators.has(key)) {
+          seenDelegators.add(key);
+          allDelegators.push(delegator);
+        }
+      }
+
+      isDone = page.isDone;
+      const pageNext = page.nextDelegator;
+      nextDelegator = pageNext;
+
+      if (isDone) {
+        nextDelegator = null;
+        break;
+      }
+
+      const normalizedNext = this.normalizeAddress(pageNext);
+
+      if (visitedStarts.has(normalizedNext.toLowerCase())) {
+        logger.warn(`Detected pagination loop while fetching delegators for validator ${validatorId}`);
+        nextDelegator = normalizedNext;
+        break;
+      }
+
+      visitedStarts.add(currentStart.toLowerCase());
+      currentStart = normalizedNext;
+    }
+
+    return {
+      validatorId,
+      delegators: allDelegators,
+      isDone,
+      nextDelegator,
+      pagesFetched
+    };
+  }
+
+  /**
+   * Retrieve a single page of delegators for a validator
+   */
+  private async getDelegatorsPage(validatorId: bigint, startDelegator: string): Promise<DelegatorsPageResult> {
+    try {
+      const encodedParams = ethers.AbiCoder.defaultAbiCoder().encode(
+        ['uint64', 'address'],
+        [validatorId, startDelegator]
+      );
+
+      const data = FUNCTION_SELECTORS.getDelegators + encodedParams.slice(2);
+
+      const result = await this.provider.call({
+        to: STAKING_CONTRACT_ADDRESS,
+        data
+      });
+
+      if (!result || result === '0x') {
+        return {
+          validatorId: validatorId.toString(),
+          isDone: true,
+          nextDelegator: ethers.ZeroAddress,
+          delegators: []
+        };
+      }
+
+      const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
+        ['bool', 'address', 'address[]'],
+        result
+      );
+
+      const isDone = Boolean(decoded[0]);
+      const nextDelegator = this.normalizeAddress(decoded[1]);
+      const delegators = (decoded[2] as string[]).map(addr => this.normalizeAddress(addr));
+
+      return {
+        validatorId: validatorId.toString(),
+        isDone,
+        nextDelegator,
+        delegators
+      };
+    } catch (error) {
+      logger.error(`Failed to fetch delegators for validator ${validatorId.toString()}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Normalize an address string, defaulting to the zero address when empty
+   */
+  private normalizeAddress(address?: string | null): string {
+    if (!address || address === '0' || address === '0x0') {
+      return ethers.ZeroAddress;
+    }
+
+    try {
+      return ethers.getAddress(address);
+    } catch (error) {
+      logger.error(`Invalid address provided: ${address}`);
+      throw new Error(`Invalid address: ${address}`);
+    }
   }
 
   // =============================================

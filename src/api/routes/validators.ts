@@ -14,6 +14,7 @@ export function createValidatorRoutes(validatorController: ValidatorController):
   router.get('/api/validators/rankings', validatorController.getValidatorRankings.bind(validatorController));
   
   // Individual validator endpoints
+  router.get('/api/validators/:id/delegators', validatorController.getValidatorDelegators.bind(validatorController));
   router.get('/api/validators/:id', validatorController.getValidatorDetails.bind(validatorController));
   router.get('/api/validators/:id/history', validatorController.getValidatorHistory.bind(validatorController));
   

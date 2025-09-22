@@ -1,6 +1,7 @@
 // Monad Validator Analytics - Refactored Validator Controller
 // Focus: Separate Validator Metrics (Block Proposals + QC Participation) + Staking Integration
 import { Request, Response } from 'express';
+import { ethers } from 'ethers';
 import { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { MonadRedisClient } from '../../cache/redis-client';
 import { StakingUpdateService } from '../../services/staking/StakingUpdateService';
@@ -139,6 +140,107 @@ export class ValidatorController {
       logger.error('Failed to force full staking synchronization:', error);
       res.status(500).json({
         error: 'Failed to force full staking synchronization',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async getValidatorDelegators(req: Request, res: Response): Promise<void> {
+    try {
+      if (!this.stakingUpdateService) {
+        res.status(503).json({
+          error: 'Staking service not available',
+          message: 'Staking integration is not configured',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const validatorId = (req.params.id || '').trim();
+
+      if (!/^[0-9]+$/.test(validatorId)) {
+        res.status(400).json({
+          error: 'Invalid validator ID',
+          message: 'Validator ID must be a positive integer',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const startDelegatorParam = (req.query.startDelegator as string | undefined)?.trim();
+      const fetchAllParam = (req.query.fetchAll as string | undefined)?.toLowerCase();
+      const maxPagesParam = (req.query.maxPages as string | undefined)?.trim();
+
+      let startDelegator: string | undefined;
+
+      if (startDelegatorParam && startDelegatorParam.length > 0) {
+        if (startDelegatorParam === '0' || startDelegatorParam === '0x0') {
+          startDelegator = ethers.ZeroAddress;
+        } else if (ethers.isAddress(startDelegatorParam)) {
+          startDelegator = ethers.getAddress(startDelegatorParam);
+        } else {
+          res.status(400).json({
+            error: 'Invalid startDelegator parameter',
+            message: 'startDelegator must be a valid Ethereum address or zero',
+            timestamp: new Date().toISOString()
+          });
+          return;
+        }
+      }
+
+      const fetchAll = fetchAllParam === 'true' || fetchAllParam === '1';
+
+      let maxPages: number | undefined;
+      if (!fetchAll && maxPagesParam) {
+        const parsed = Number(maxPagesParam);
+        if (!Number.isInteger(parsed) || parsed < 1) {
+          res.status(400).json({
+            error: 'Invalid maxPages parameter',
+            message: 'maxPages must be a positive integer when provided',
+            timestamp: new Date().toISOString()
+          });
+          return;
+        }
+        maxPages = parsed;
+      }
+
+      logger.info(`📋 Fetching delegators for validator ${validatorId} (fetchAll=${fetchAll}, maxPages=${maxPages ?? 1})`);
+
+      const result = await this.stakingUpdateService.getValidatorDelegators(validatorId, {
+        startDelegator,
+        maxPages,
+        fetchAll
+      });
+
+      const normalizedStartDelegator = startDelegator ?? ethers.ZeroAddress;
+
+      res.json({
+        validatorId: result.validatorId,
+        delegators: result.delegators,
+        pagination: {
+          startDelegator: normalizedStartDelegator,
+          nextDelegator: result.nextDelegator,
+          isDone: result.isDone,
+          pagesFetched: result.pagesFetched,
+          fetchAll,
+          maxPages: fetchAll ? null : (maxPages ?? 1)
+        },
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Invalid address')) {
+        res.status(400).json({
+          error: 'Invalid address provided',
+          message: error.message,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      logger.error('Failed to fetch validator delegators:', error);
+      res.status(500).json({
+        error: 'Failed to fetch validator delegators',
         message: error instanceof Error ? error.message : String(error),
         timestamp: new Date().toISOString()
       });
