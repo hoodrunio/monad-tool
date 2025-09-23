@@ -624,8 +624,8 @@ export class MonadClickHouseClient {
 
       await ensureColumn('validator_registry', 'auth_address', "String DEFAULT '' AFTER node_id", 'auth_address');
       await ensureColumn('validator_registry', 'commission', "String DEFAULT '0' AFTER real_time_stake_wei", 'commission');
-      await ensureColumn('validator_registry', 'consensus_commission', "String DEFAULT '0' AFTER commission", 'consensus_commission');
-      await ensureColumn('validator_registry', 'snapshot_commission', "String DEFAULT '0' AFTER consensus_commission", 'snapshot_commission');
+      await ensureColumn('validator_registry', 'consensus_commission', "String DEFAULT '0'", 'consensus_commission');
+      await ensureColumn('validator_registry', 'snapshot_commission', "String DEFAULT '0'", 'snapshot_commission');
 
       // Ensure latest snapshot table and materialized view are updated if they exist
       const latestTableResult = await this.executeRawQuery(`
@@ -640,8 +640,8 @@ export class MonadClickHouseClient {
       if (hasLatestTable) {
         await ensureColumn('validator_registry_latest', 'auth_address', "String DEFAULT '' AFTER validator_id", 'auth_address');
         await ensureColumn('validator_registry_latest', 'commission', "String DEFAULT '0' AFTER real_time_stake_wei", 'commission');
-        await ensureColumn('validator_registry_latest', 'consensus_commission', "String DEFAULT '0' AFTER commission", 'consensus_commission');
-        await ensureColumn('validator_registry_latest', 'snapshot_commission', "String DEFAULT '0' AFTER consensus_commission", 'snapshot_commission');
+        await ensureColumn('validator_registry_latest', 'consensus_commission', "String DEFAULT '0'", 'consensus_commission');
+        await ensureColumn('validator_registry_latest', 'snapshot_commission', "String DEFAULT '0'", 'snapshot_commission');
 
         // Determine if materialized view needs to be rebuilt (missing or outdated definition)
         const mvInfo = await this.executeRawQuery(`
