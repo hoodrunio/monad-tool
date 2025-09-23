@@ -555,6 +555,10 @@ export class StakingService {
 
           const authAddress = this.normalizeAuthAddress(validatorInfo.authAddress);
 
+          const commissionString = this.normalizeBigIntLike(validatorInfo.commission);
+          const consensusCommissionString = this.normalizeBigIntLike(validatorInfo.consensusCommission);
+          const snapshotCommissionString = this.normalizeBigIntLike(validatorInfo.snapshotCommission);
+
           // Check if validator is currently active
           const isActive = this.stakingInfo?.activeValidators.has(validatorId.toString()) || false;
 
@@ -570,6 +574,9 @@ export class StakingService {
               is_active,
               is_staking_active,
               real_time_stake_wei,
+              commission,
+              consensus_commission,
+              snapshot_commission,
               first_seen,
               last_updated
             ) VALUES (
@@ -582,6 +589,9 @@ export class StakingService {
               ${isActive ? 1 : 0},
               ${isActive ? 1 : 0},
               '${validatorInfo.stake.toString()}',
+              '${commissionString}',
+              '${consensusCommissionString}',
+              '${snapshotCommissionString}',
               now(),
               now()
             )
@@ -657,29 +667,41 @@ export class StakingService {
           if (!secpAddress) continue;
 
           const isConsensus = consensusValidators.has(validatorId.toString());
+          const authAddress = this.normalizeAuthAddress(validatorInfo.authAddress);
+          const commissionString = this.normalizeBigIntLike(validatorInfo.commission);
+          const consensusCommissionString = this.normalizeBigIntLike(validatorInfo.consensusCommission);
+          const snapshotCommissionString = this.normalizeBigIntLike(validatorInfo.snapshotCommission);
 
           // Insert new validator
           await clickhouseClient.executeCommand(`
             INSERT INTO validator_registry (
               validator_id,
               node_id,
+              auth_address,
               precompile_validator_id,
               epoch,
               stake,
               is_active,
               is_staking_active,
               real_time_stake_wei,
+              commission,
+              consensus_commission,
+              snapshot_commission,
               first_seen,
               last_updated
             ) VALUES (
               '${secpAddress}',
               '${secpAddress}',
+              '${authAddress}',
               '${validatorId}',
               ${currentEpoch},
               ${validatorInfo.stake.toString()},
               ${isConsensus ? 1 : 0},
               ${isConsensus ? 1 : 0},
               '${validatorInfo.stake.toString()}',
+              '${commissionString}',
+              '${consensusCommissionString}',
+              '${snapshotCommissionString}',
               now(),
               now()
             )
@@ -714,7 +736,10 @@ export class StakingService {
           first_seen,
           is_active,
           is_staking_active,
-          real_time_stake_wei
+          real_time_stake_wei,
+          commission,
+          consensus_commission,
+          snapshot_commission
         FROM (
           SELECT
             validator_id,
@@ -736,7 +761,10 @@ export class StakingService {
             argMax(first_seen, last_updated) AS first_seen,
             argMax(is_active, last_updated) AS is_active,
             argMax(is_staking_active, last_updated) AS is_staking_active,
-            COALESCE(argMaxIf(real_time_stake_wei, last_updated, real_time_stake_wei != '' AND real_time_stake_wei != '0'), argMax(real_time_stake_wei, last_updated)) AS real_time_stake_wei
+            COALESCE(argMaxIf(real_time_stake_wei, last_updated, real_time_stake_wei != '' AND real_time_stake_wei != '0'), argMax(real_time_stake_wei, last_updated)) AS real_time_stake_wei,
+            COALESCE(argMaxIf(commission, last_updated, commission != '' AND commission != '0'), argMax(commission, last_updated)) AS commission,
+            COALESCE(argMaxIf(consensus_commission, last_updated, consensus_commission != '' AND consensus_commission != '0'), argMax(consensus_commission, last_updated)) AS consensus_commission,
+            COALESCE(argMaxIf(snapshot_commission, last_updated, snapshot_commission != '' AND snapshot_commission != '0'), argMax(snapshot_commission, last_updated)) AS snapshot_commission
           FROM validator_registry
           GROUP BY validator_id
         ) latest
@@ -825,6 +853,15 @@ export class StakingService {
         const realTimeStakeString = this.normalizeBigIntLike(
           validatorInfo?.stake ?? stakeBigInt ?? baseRow.real_time_stake_wei ?? fallbackStakeSource
         );
+        const commissionString = this.normalizeBigIntLike(
+          validatorInfo?.commission ?? baseRow.commission ?? '0'
+        );
+        const consensusCommissionString = this.normalizeBigIntLike(
+          validatorInfo?.consensusCommission ?? baseRow.consensus_commission ?? '0'
+        );
+        const snapshotCommissionString = this.normalizeBigIntLike(
+          validatorInfo?.snapshotCommission ?? baseRow.snapshot_commission ?? '0'
+        );
         const lastUpdated = nextTimestampString();
         const firstSeen = baseRow.first_seen
           ? this.formatDateTime(baseRow.first_seen)
@@ -845,6 +882,9 @@ export class StakingService {
           is_active: isActiveValidator ? 1 : 0,
           is_staking_active: isConsensus ? 1 : 0,
           real_time_stake_wei: realTimeStakeString,
+          commission: commissionString,
+          consensus_commission: consensusCommissionString,
+          snapshot_commission: snapshotCommissionString,
           precompile_validator_id: validatorId,
           first_seen: firstSeen,
           last_updated: lastUpdated,
@@ -858,6 +898,9 @@ export class StakingService {
         baseRow.is_staking_active = isConsensus ? 1 : 0;
         baseRow.real_time_stake_wei = realTimeStakeString;
         baseRow.stake = stakeString;
+        baseRow.commission = commissionString;
+        baseRow.consensus_commission = consensusCommissionString;
+        baseRow.snapshot_commission = snapshotCommissionString;
         baseRow.auth_address = resolvedAuthAddress;
         latestRowMap.set(validatorId, baseRow);
       }
@@ -906,6 +949,9 @@ export class StakingService {
             is_active,
             is_staking_active,
             real_time_stake_wei,
+            commission,
+            consensus_commission,
+            snapshot_commission,
             epoch,
             ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) AS rn
           FROM validator_registry
@@ -931,6 +977,9 @@ export class StakingService {
           is_active,
           is_staking_active,
           real_time_stake_wei,
+          commission,
+          consensus_commission,
+          snapshot_commission,
           epoch
         FROM latest
         WHERE rn = 1 AND (precompile_validator_id = '' OR precompile_validator_id IS NULL)
@@ -1011,6 +1060,15 @@ export class StakingService {
           validatorInfo?.authAddress ?? row.auth_address ?? ''
         );
         const preservedMetadata = this.preserveValidatorMetadata(row);
+        const commissionString = this.normalizeBigIntLike(
+          validatorInfo?.commission ?? row.commission ?? '0'
+        );
+        const consensusCommissionString = this.normalizeBigIntLike(
+          validatorInfo?.consensusCommission ?? row.consensus_commission ?? '0'
+        );
+        const snapshotCommissionString = this.normalizeBigIntLike(
+          validatorInfo?.snapshotCommission ?? row.snapshot_commission ?? '0'
+        );
 
         rowsToInsert.push({
           validator_id: row.validator_id,
@@ -1022,6 +1080,9 @@ export class StakingService {
           is_active: Number(row.is_active || 0),
           is_staking_active: Number(row.is_staking_active || 0),
           real_time_stake_wei: realTimeStakeString,
+          commission: commissionString,
+          consensus_commission: consensusCommissionString,
+          snapshot_commission: snapshotCommissionString,
           first_seen: this.formatDateTime(row.first_seen || nowString),
           last_updated: nowString,
           ...preservedMetadata,
@@ -1075,6 +1136,9 @@ export class StakingService {
             is_active,
             is_staking_active,
             real_time_stake_wei,
+            commission,
+            consensus_commission,
+            snapshot_commission,
             epoch,
             ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) AS rn
           FROM validator_registry
@@ -1101,6 +1165,9 @@ export class StakingService {
           is_active,
           is_staking_active,
           real_time_stake_wei,
+          commission,
+          consensus_commission,
+          snapshot_commission,
           epoch
         FROM latest
         WHERE rn = 1
@@ -1178,6 +1245,15 @@ export class StakingService {
         const realTimeStakeString = this.normalizeBigIntLike(
           validatorInfo?.stake ?? row.real_time_stake_wei ?? stakeString
         );
+        const commissionString = this.normalizeBigIntLike(
+          validatorInfo?.commission ?? row.commission ?? '0'
+        );
+        const consensusCommissionString = this.normalizeBigIntLike(
+          validatorInfo?.consensusCommission ?? row.consensus_commission ?? '0'
+        );
+        const snapshotCommissionString = this.normalizeBigIntLike(
+          validatorInfo?.snapshotCommission ?? row.snapshot_commission ?? '0'
+        );
 
         const isConsensus = this.stakingInfo?.consensusValidators.has(precompileId) ?? false;
 
@@ -1197,6 +1273,9 @@ export class StakingService {
           is_active: isConsensus ? 1 : 0,
           is_staking_active: isConsensus ? 1 : 0,
           real_time_stake_wei: realTimeStakeString,
+          commission: commissionString,
+          consensus_commission: consensusCommissionString,
+          snapshot_commission: snapshotCommissionString,
           first_seen: this.formatDateTime(row.first_seen || now),
           last_updated: nextTimestamp(),
           ...preservedMetadata,
@@ -1508,6 +1587,9 @@ export class StakingService {
         is_active: isActiveValidator ? 1 : 0,
         is_staking_active: isConsensus ? 1 : 0,
         real_time_stake_wei: stakeString,
+        commission: this.normalizeBigIntLike(validatorInfo.commission),
+        consensus_commission: this.normalizeBigIntLike(validatorInfo.consensusCommission),
+        snapshot_commission: this.normalizeBigIntLike(validatorInfo.snapshotCommission),
         __isPlaceholder: true
       };
     } catch (error) {
@@ -1542,6 +1624,9 @@ export class StakingService {
         is_active,
         is_staking_active,
         real_time_stake_wei,
+        commission,
+        consensus_commission,
+        snapshot_commission,
         last_updated
       FROM validator_registry
       WHERE ${whereClause}

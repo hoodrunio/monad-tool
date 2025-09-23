@@ -600,20 +600,32 @@ export class MonadClickHouseClient {
     const database = this.getDatabaseName();
 
     try {
-      const hasAuthColumnResult = await this.executeRawQuery(`
-        SELECT count() AS count
-        FROM system.columns
-        WHERE database = '${database}'
-          AND table = 'validator_registry'
-          AND name = 'auth_address'
-      `);
+      const ensureColumn = async (
+        table: string,
+        columnName: string,
+        definition: string,
+        description: string
+      ): Promise<void> => {
+        const result = await this.executeRawQuery(`
+          SELECT count() AS count
+          FROM system.columns
+          WHERE database = '${database}'
+            AND table = '${table}'
+            AND name = '${columnName}'
+        `);
 
-      const hasAuthColumn = Number(hasAuthColumnResult[0]?.count || 0) > 0;
+        const hasColumn = Number(result[0]?.count || 0) > 0;
 
-      if (!hasAuthColumn) {
-        logger.info('🔧 Adding auth_address column to validator_registry...');
-        await this.executeCommand(`ALTER TABLE ${database}.validator_registry ADD COLUMN IF NOT EXISTS auth_address String DEFAULT '' AFTER node_id`);
-      }
+        if (!hasColumn) {
+          logger.info(`🔧 Adding ${description} column to ${table}...`);
+          await this.executeCommand(`ALTER TABLE ${database}.${table} ADD COLUMN IF NOT EXISTS ${columnName} ${definition}`);
+        }
+      };
+
+      await ensureColumn('validator_registry', 'auth_address', "String DEFAULT '' AFTER node_id", 'auth_address');
+      await ensureColumn('validator_registry', 'commission', "String DEFAULT '0' AFTER real_time_stake_wei", 'commission');
+      await ensureColumn('validator_registry', 'consensus_commission', "String DEFAULT '0' AFTER commission", 'consensus_commission');
+      await ensureColumn('validator_registry', 'snapshot_commission', "String DEFAULT '0' AFTER consensus_commission", 'snapshot_commission');
 
       // Ensure latest snapshot table and materialized view are updated if they exist
       const latestTableResult = await this.executeRawQuery(`
@@ -626,20 +638,10 @@ export class MonadClickHouseClient {
       const hasLatestTable = Number(latestTableResult[0]?.count || 0) > 0;
 
       if (hasLatestTable) {
-        const latestHasAuthColumnResult = await this.executeRawQuery(`
-          SELECT count() AS count
-          FROM system.columns
-          WHERE database = '${database}'
-            AND table = 'validator_registry_latest'
-            AND name = 'auth_address'
-        `);
-
-        const latestHasAuthColumn = Number(latestHasAuthColumnResult[0]?.count || 0) > 0;
-
-        if (!latestHasAuthColumn) {
-          logger.info('🔧 Adding auth_address column to validator_registry_latest...');
-          await this.executeCommand(`ALTER TABLE ${database}.validator_registry_latest ADD COLUMN IF NOT EXISTS auth_address String DEFAULT '' AFTER validator_id`);
-        }
+        await ensureColumn('validator_registry_latest', 'auth_address', "String DEFAULT '' AFTER validator_id", 'auth_address');
+        await ensureColumn('validator_registry_latest', 'commission', "String DEFAULT '0' AFTER real_time_stake_wei", 'commission');
+        await ensureColumn('validator_registry_latest', 'consensus_commission', "String DEFAULT '0' AFTER commission", 'consensus_commission');
+        await ensureColumn('validator_registry_latest', 'snapshot_commission', "String DEFAULT '0' AFTER consensus_commission", 'snapshot_commission');
 
         // Determine if materialized view needs to be rebuilt (missing or outdated definition)
         const mvInfo = await this.executeRawQuery(`
@@ -651,10 +653,12 @@ export class MonadClickHouseClient {
         `);
 
         const mvDefinition = mvInfo[0]?.create_table_query as string | undefined;
-        const mvNeedsRebuild = !mvDefinition || !mvDefinition.toLowerCase().includes('auth_address');
+        const mvNeedsRebuild = !mvDefinition
+          || !['auth_address', 'commission', 'consensus_commission', 'snapshot_commission']
+            .every(token => mvDefinition.toLowerCase().includes(token));
 
         if (mvNeedsRebuild) {
-          logger.info('🔄 Rebuilding validator_registry_latest materialized view to include auth_address...');
+          logger.info('🔄 Rebuilding validator_registry_latest materialized view to include latest staking columns...');
           await this.executeCommand(`DROP VIEW IF EXISTS ${database}.validator_registry_latest_mv`);
           await this.executeCommand(`TRUNCATE TABLE ${database}.validator_registry_latest`);
           await this.executeCommand(`
@@ -671,9 +675,12 @@ SELECT
     tupleElement(latest_record, 6) AS datacenter,
     tupleElement(latest_record, 7) AS stake,
     tupleElement(latest_record, 8) AS real_time_stake_wei,
-    tupleElement(latest_record, 9) AS keybase_id,
-    tupleElement(latest_record, 10) AS keybase_logo_url,
-    tupleElement(latest_record, 11) AS last_updated
+    tupleElement(latest_record, 9) AS commission,
+    tupleElement(latest_record, 10) AS consensus_commission,
+    tupleElement(latest_record, 11) AS snapshot_commission,
+    tupleElement(latest_record, 12) AS keybase_id,
+    tupleElement(latest_record, 13) AS keybase_logo_url,
+    tupleElement(latest_record, 14) AS last_updated
 FROM (
     SELECT
         validator_id,
@@ -686,6 +693,9 @@ FROM (
           datacenter,
           stake,
           real_time_stake_wei,
+          commission,
+          consensus_commission,
+          snapshot_commission,
           keybase_id,
           keybase_logo_url,
           last_updated
@@ -721,6 +731,9 @@ POPULATE
           datacenter,
           stake,
           real_time_stake_wei,
+          commission,
+          consensus_commission,
+          snapshot_commission,
           keybase_id,
           keybase_logo_url,
           last_updated,
@@ -739,6 +752,9 @@ POPULATE
         datacenter,
         stake,
         real_time_stake_wei,
+        commission,
+        consensus_commission,
+        snapshot_commission,
         keybase_id,
         keybase_logo_url,
         last_updated
@@ -839,7 +855,11 @@ POPULATE
           provider,
           location,
           country,
-          datacenter
+          datacenter,
+          real_time_stake_wei,
+          commission,
+          consensus_commission,
+          snapshot_commission
         FROM (
           SELECT *,
                  ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) as rn
@@ -858,7 +878,27 @@ POPULATE
       // Step 3: Compare new data against existing and identify changes
       const validatorsToUpdate: any[] = [];
       let unchangedCount = 0;
-      
+
+      const preserveNumericString = (value: any): string => {
+        if (value === null || value === undefined) {
+          return '0';
+        }
+        if (typeof value === 'string') {
+          const trimmed = value.trim();
+          return trimmed.length > 0 ? trimmed : '0';
+        }
+        if (typeof value === 'number') {
+          if (!Number.isFinite(value)) {
+            return '0';
+          }
+          return Math.trunc(value).toString();
+        }
+        if (typeof value === 'bigint') {
+          return value.toString();
+        }
+        return '0';
+      };
+
       for (const v of validators) {
         const existingKeybase = keybaseMap.get(v.nodeId);
         const existing = existingMap.get(v.nodeId);
@@ -869,6 +909,10 @@ POPULATE
           stake: v.stake,
           position: v.position,
           is_active: v.isActive ? 1 : 0,
+          real_time_stake_wei: preserveNumericString(existing?.real_time_stake_wei),
+          commission: preserveNumericString(existing?.commission),
+          consensus_commission: preserveNumericString(existing?.consensus_commission),
+          snapshot_commission: preserveNumericString(existing?.snapshot_commission),
           auth_address: existing?.auth_address || '',
           dns_address: v.location?.dnsAddress || '',
           dns_host: v.location?.hostname || '',

@@ -47,7 +47,10 @@ CREATE TABLE validator_registry (
     is_active UInt8 DEFAULT 1,
     is_staking_active UInt8 DEFAULT 0 COMMENT 'Whether validator is currently active in consensus/execution sets',
     real_time_stake_wei String DEFAULT '0' COMMENT 'Current stake amount in wei from precompile',
-    
+    commission String DEFAULT '0' COMMENT 'Current validator commission (raw uint256)',
+    consensus_commission String DEFAULT '0' COMMENT 'Consensus commission from precompile',
+    snapshot_commission String DEFAULT '0' COMMENT 'Snapshot commission from precompile',
+
     -- DNS and infrastructure mapping
     dns_address String DEFAULT '',
     dns_host String DEFAULT '',
@@ -88,6 +91,9 @@ CREATE TABLE validator_registry_latest (
     datacenter LowCardinality(String),
     stake UInt64,
     real_time_stake_wei String,
+    commission String,
+    consensus_commission String,
+    snapshot_commission String,
     keybase_id LowCardinality(String),
     keybase_logo_url String,
     last_updated DateTime64(3, 'UTC')
@@ -108,9 +114,12 @@ SELECT
     tupleElement(latest_record, 6) AS datacenter,
     tupleElement(latest_record, 7) AS stake,
     tupleElement(latest_record, 8) AS real_time_stake_wei,
-    tupleElement(latest_record, 9) AS keybase_id,
-    tupleElement(latest_record, 10) AS keybase_logo_url,
-    tupleElement(latest_record, 11) AS last_updated
+    tupleElement(latest_record, 9) AS commission,
+    tupleElement(latest_record, 10) AS consensus_commission,
+    tupleElement(latest_record, 11) AS snapshot_commission,
+    tupleElement(latest_record, 12) AS keybase_id,
+    tupleElement(latest_record, 13) AS keybase_logo_url,
+    tupleElement(latest_record, 14) AS last_updated
 FROM (
     SELECT
         validator_id,
@@ -123,6 +132,9 @@ FROM (
           datacenter,
           stake,
           real_time_stake_wei,
+          commission,
+          consensus_commission,
+          snapshot_commission,
           keybase_id,
           keybase_logo_url,
           last_updated

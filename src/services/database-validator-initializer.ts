@@ -30,6 +30,9 @@ export interface ValidatorDatabaseRecord {
   country: string;
   datacenter: string;
   real_time_stake_wei?: string;
+  commission?: string;
+  consensus_commission?: string;
+  snapshot_commission?: string;
   keybase_id?: string;
   keybase_logo_url?: string;
   first_seen: Date;
@@ -325,6 +328,15 @@ export class DatabaseValidatorInitializer {
 
       const stakeValue = this.getStakeValue(validator, existing);
       const realTimeStakeValue = this.getRealTimeStakeValue(validator, existing, stakeValue);
+      const commissionValue = this.normalizeNumericString(
+        (validator as any)?.commission ?? existing?.commission
+      );
+      const consensusCommissionValue = this.normalizeNumericString(
+        (validator as any)?.consensus_commission ?? existing?.consensus_commission
+      );
+      const snapshotCommissionValue = this.normalizeNumericString(
+        (validator as any)?.snapshot_commission ?? existing?.snapshot_commission
+      );
 
       const row = {
         validator_id: validatorId,
@@ -361,6 +373,9 @@ export class DatabaseValidatorInitializer {
           existing?.is_active
         ], 0),
         real_time_stake_wei: realTimeStakeValue,
+        commission: commissionValue,
+        consensus_commission: consensusCommissionValue,
+        snapshot_commission: snapshotCommissionValue,
         dns_address: this.chooseString([
           location?.dnsAddress,
           validator.dns_address,
@@ -554,6 +569,9 @@ export class DatabaseValidatorInitializer {
         argMax(is_active, last_updated) AS is_active,
         argMax(is_staking_active, last_updated) AS is_staking_active,
         COALESCE(argMaxIf(real_time_stake_wei, last_updated, real_time_stake_wei != ''), argMax(real_time_stake_wei, last_updated)) AS real_time_stake_wei,
+        COALESCE(argMaxIf(commission, last_updated, commission != '' AND commission != '0'), argMax(commission, last_updated)) AS commission,
+        COALESCE(argMaxIf(consensus_commission, last_updated, consensus_commission != '' AND consensus_commission != '0'), argMax(consensus_commission, last_updated)) AS consensus_commission,
+        COALESCE(argMaxIf(snapshot_commission, last_updated, snapshot_commission != '' AND snapshot_commission != '0'), argMax(snapshot_commission, last_updated)) AS snapshot_commission,
         COALESCE(argMaxIf(auth_address, last_updated, auth_address != ''), argMax(auth_address, last_updated)) AS auth_address,
         COALESCE(argMaxIf(dns_address, last_updated, dns_address != ''), argMax(dns_address, last_updated)) AS dns_address,
         COALESCE(argMaxIf(dns_host, last_updated, dns_host != ''), argMax(dns_host, last_updated)) AS dns_host,
@@ -635,6 +653,30 @@ export class DatabaseValidatorInitializer {
       if (!Number.isNaN(parsed.getTime())) {
         return this.formatTimestamp(parsed);
       }
+    }
+
+    return fallback;
+  }
+
+  private normalizeNumericString(value: any, fallback = '0'): string {
+    if (value === null || value === undefined) {
+      return fallback;
+    }
+
+    if (typeof value === 'bigint') {
+      return value.toString();
+    }
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return fallback;
+      }
+      return Math.trunc(value).toString();
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : fallback;
     }
 
     return fallback;
