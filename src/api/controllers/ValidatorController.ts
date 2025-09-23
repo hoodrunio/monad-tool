@@ -384,6 +384,9 @@ export class ValidatorController {
           COALESCE(vr.location, 'unknown') as location,
           COALESCE(vr.auth_address, '') as auth_address,
           COALESCE(vr.stake, 0) as stake,
+          COALESCE(vr.commission, '0') as commission,
+          COALESCE(vr.consensus_commission, '0') as consensus_commission,
+          COALESCE(vr.snapshot_commission, '0') as snapshot_commission,
           COALESCE(vr.keybase_id, '') as keybase_id,
           COALESCE(vr.keybase_logo_url, '') as keybase_logo_url,
           MIN(b.timestamp) as first_seen,
@@ -399,6 +402,9 @@ export class ValidatorController {
           vr.location,
           vr.auth_address,
           vr.stake,
+          vr.commission,
+          vr.consensus_commission,
+          vr.snapshot_commission,
           vr.keybase_id,
           vr.keybase_logo_url
       `;
@@ -441,13 +447,25 @@ export class ValidatorController {
 
       // DATABASE-FIRST: Get staking information from database
       let stakingInfo = null;
+      const commissionSource: {
+        commission?: any;
+        consensus_commission?: any;
+        snapshot_commission?: any;
+      } = {
+        commission: blockData?.commission,
+        consensus_commission: blockData?.consensus_commission,
+        snapshot_commission: blockData?.snapshot_commission
+      };
       try {
         const stakingQuery = `
           SELECT 
             precompile_validator_id,
             is_staking_active,
             real_time_stake_wei,
-            auth_address
+            auth_address,
+            commission,
+            consensus_commission,
+            snapshot_commission
           FROM validator_registry 
           WHERE validator_id = '${validatorId}'
           ORDER BY last_updated DESC 
@@ -460,6 +478,9 @@ export class ValidatorController {
         const authAddress = stakingData?.auth_address || blockData?.auth_address || null;
 
         if (stakingData) {
+          commissionSource.commission = stakingData.commission ?? commissionSource.commission;
+          commissionSource.consensus_commission = stakingData.consensus_commission ?? commissionSource.consensus_commission;
+          commissionSource.snapshot_commission = stakingData.snapshot_commission ?? commissionSource.snapshot_commission;
           // Convert wei to MON (1 MON = 10^18 wei)
           const realTimeStakeMON = stakingData.real_time_stake_wei 
             ? (Number(stakingData.real_time_stake_wei) / Math.pow(10, 18)).toFixed(4)
@@ -483,6 +504,15 @@ export class ValidatorController {
         }
       } catch (error) {
         logger.warn(`Failed to get staking info for validator ${validatorId}:`, error);
+      }
+
+      const commissionSummary = this.buildCommissionBundle(commissionSource);
+
+      if (stakingInfo) {
+        stakingInfo = {
+          ...stakingInfo,
+          ...commissionSummary
+        };
       }
 
       // Format response with separate metrics
@@ -722,7 +752,10 @@ export class ValidatorController {
         av.keybase_logo_url as keybase_logo_url,
         av.precompile_validator_id as precompile_validator_id,
         av.is_staking_active as is_staking_active,
-        av.real_time_stake_wei as real_time_stake_wei
+        av.real_time_stake_wei as real_time_stake_wei,
+        av.commission as commission,
+        av.consensus_commission as consensus_commission,
+        av.snapshot_commission as snapshot_commission
       FROM active_validators av
       LEFT JOIN block_metrics b ON av.validator_id = b.validator_id
       LEFT JOIN qc_metrics q ON av.validator_id = q.validator_id
@@ -739,6 +772,11 @@ export class ValidatorController {
     const totalPages = Math.ceil(totalCount / limit);
     
     const rankings = dataResult.map((r, index) => {
+      const commissionSummary = this.buildCommissionBundle({
+        commission: r.commission,
+        consensus_commission: r.consensus_commission,
+        snapshot_commission: r.snapshot_commission
+      });
       // DATABASE-FIRST: Staking information is already in validator_registry table
       let stakingInfo = {
         is_staking_active: Boolean(r.is_staking_active),
@@ -746,6 +784,11 @@ export class ValidatorController {
           (Number(r.real_time_stake_wei) / Math.pow(10, 18)).toFixed(4) : "0",
         real_time_stake_wei: r.real_time_stake_wei || "0",
         precompile_validator_id: r.precompile_validator_id || null
+      };
+
+      stakingInfo = {
+        ...stakingInfo,
+        ...commissionSummary
       };
 
       return {
@@ -823,7 +866,19 @@ export class ValidatorController {
           COALESCE(
             argMaxIf(real_time_stake_wei, last_updated, real_time_stake_wei != '' AND real_time_stake_wei != '0'),
             argMax(real_time_stake_wei, last_updated)
-          ) AS real_time_stake_wei
+          ) AS real_time_stake_wei,
+          COALESCE(
+            argMaxIf(commission, last_updated, commission != ''),
+            argMax(commission, last_updated)
+          ) AS commission,
+          COALESCE(
+            argMaxIf(consensus_commission, last_updated, consensus_commission != ''),
+            argMax(consensus_commission, last_updated)
+          ) AS consensus_commission,
+          COALESCE(
+            argMaxIf(snapshot_commission, last_updated, snapshot_commission != ''),
+            argMax(snapshot_commission, last_updated)
+          ) AS snapshot_commission
         FROM validator_registry
         GROUP BY validator_id
       ) latest_validators
@@ -1003,6 +1058,72 @@ export class ValidatorController {
         logo_url: v.keybase_logo_url || null
       }
     }));
+  }
+
+  private buildCommissionBundle(source: {
+    commission?: any;
+    consensus_commission?: any;
+    snapshot_commission?: any;
+  }): {
+    commission: { raw: string; ratio: string; percentage: string };
+    consensus_commission: { raw: string; ratio: string; percentage: string };
+    snapshot_commission: { raw: string; ratio: string; percentage: string };
+  } {
+    return {
+      commission: this.formatCommissionValue(source?.commission),
+      consensus_commission: this.formatCommissionValue(source?.consensus_commission),
+      snapshot_commission: this.formatCommissionValue(source?.snapshot_commission)
+    };
+  }
+
+  private formatCommissionValue(value: any): { raw: string; ratio: string; percentage: string } {
+    const raw = this.normalizeCommissionRaw(value);
+    if (raw === '0') {
+      return { raw, ratio: '0', percentage: '0' };
+    }
+
+    try {
+      const ratio = ethers.formatUnits(BigInt(raw), 18);
+      const numeric = parseFloat(ratio);
+      const percentage = Number.isNaN(numeric) ? '0' : (numeric * 100).toFixed(4);
+      return { raw, ratio, percentage };
+    } catch (error) {
+      logger.debug('Failed to format commission value', { value, error });
+      return { raw, ratio: '0', percentage: '0' };
+    }
+  }
+
+  private normalizeCommissionRaw(value: any): string {
+    if (value === null || value === undefined) {
+      return '0';
+    }
+
+    if (typeof value === 'bigint') {
+      return value.toString();
+    }
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return '0';
+      }
+      return Math.trunc(value).toString();
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        return '0';
+      }
+
+      try {
+        return BigInt(trimmed).toString();
+      } catch (error) {
+        logger.debug('Unable to normalize commission string', { value: trimmed, error });
+        return '0';
+      }
+    }
+
+    return '0';
   }
 
   private getIntervalClause(timeWindow: string): string {
