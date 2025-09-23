@@ -792,7 +792,27 @@ POPULATE
       }
 
       const selectQuery = this.buildValidatorRegistryLatestSelect(filter);
-      await this.executeCommand(`INSERT INTO ${database}.validator_registry_latest ${selectQuery}`);
+      const columnList = [
+        'validator_id',
+        'auth_address',
+        'validator_name',
+        'provider',
+        'location',
+        'country',
+        'datacenter',
+        'stake',
+        'real_time_stake_wei',
+        'commission',
+        'consensus_commission',
+        'snapshot_commission',
+        'keybase_id',
+        'keybase_logo_url',
+        'last_updated'
+      ].join(', ');
+
+      await this.executeCommand(
+        `INSERT INTO ${database}.validator_registry_latest (${columnList}) ${selectQuery}`
+      );
     } catch (error) {
       logger.error('Failed to rebuild validator_registry_latest snapshot:', error);
       throw error;
