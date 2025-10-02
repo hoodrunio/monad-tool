@@ -183,21 +183,64 @@ async function testEpochFix() {
 
     // Check delay period
     if (epochInfo.inEpochDelayPeriod) {
-      const delayValid =
-        epochInfo.delayConfig.elapsedDelayRounds !== null &&
-        epochInfo.delayConfig.elapsedDelayRounds >= 0 &&
-        epochInfo.delayConfig.remainingDelayRounds !== null &&
-        epochInfo.delayConfig.remainingDelayRounds >= -100; // Allow small negative for edge cases
+      console.log('\n📍 DELAY PERIOD ACTIVE - Detailed validation:\n');
 
-      if (delayValid) {
-        console.log('✅ SUCCESS: Delay period calculations are reasonable');
-        console.log(`   Elapsed: ${epochInfo.delayConfig.elapsedDelayRounds}`);
-        console.log(`   Remaining: ${epochInfo.delayConfig.remainingDelayRounds}`);
-      } else {
-        console.log('❌ FAILED: Delay period calculations seem wrong');
-        console.log(`   Elapsed: ${epochInfo.delayConfig.elapsedDelayRounds}`);
-        console.log(`   Remaining: ${epochInfo.delayConfig.remainingDelayRounds}`);
+      // Get the boundary calculation details
+      const epochBoundaryBlock = epochInfo.epochId * 5000;
+
+      const boundaryCheckQuery = `
+        SELECT round, seq_num
+        FROM monad_analytics.block_proposals
+        WHERE seq_num <= ${epochBoundaryBlock}
+        ORDER BY seq_num DESC
+        LIMIT 1
+      `;
+
+      const boundaryCheckResult = await clickhouse.query({
+        query: boundaryCheckQuery,
+        format: 'JSONEachRow',
+      });
+
+      const boundaryCheck = await boundaryCheckResult.json() as Array<{
+        round: string;
+        seq_num: string;
+      }>;
+
+      if (boundaryCheck.length > 0) {
+        const boundaryRound = parseInt(boundaryCheck[0].round);
+        const boundarySeqNum = parseInt(boundaryCheck[0].seq_num);
+
+        console.log('Boundary calculation:');
+        console.log(`  Epoch ${epochInfo.epochId} boundary block: ${epochBoundaryBlock}`);
+        console.log(`  Round at boundary (from DB): ${boundaryRound}`);
+        console.log(`  Seq_num at boundary: ${boundarySeqNum}`);
+        console.log(`  Current round: ${epochInfo.progress.currentRound}`);
+
+        const calculatedElapsed = epochInfo.progress.currentRound! - boundaryRound;
+        console.log(`  Calculated elapsed: ${calculatedElapsed} rounds`);
+        console.log(`  Reported elapsed: ${epochInfo.delayConfig.elapsedDelayRounds} rounds`);
+
+        const delayValid =
+          epochInfo.delayConfig.elapsedDelayRounds !== null &&
+          epochInfo.delayConfig.elapsedDelayRounds >= 0 &&
+          epochInfo.delayConfig.remainingDelayRounds !== null &&
+          epochInfo.delayConfig.remainingDelayRounds >= -100 && // Allow small negative for edge cases
+          Math.abs(calculatedElapsed - (epochInfo.delayConfig.elapsedDelayRounds || 0)) < 10; // Should match
+
+        if (delayValid) {
+          console.log('\n✅ SUCCESS: Delay period calculations are correct!');
+          console.log(`   Elapsed: ${epochInfo.delayConfig.elapsedDelayRounds} rounds`);
+          console.log(`   Remaining: ${epochInfo.delayConfig.remainingDelayRounds} rounds`);
+          console.log(`   Progress: ${epochInfo.delayConfig.delayProgressPercentage?.toFixed(2)}%`);
+        } else {
+          console.log('\n❌ FAILED: Delay period calculations are incorrect');
+          console.log(`   Expected elapsed: ${calculatedElapsed}`);
+          console.log(`   Actual elapsed: ${epochInfo.delayConfig.elapsedDelayRounds}`);
+          console.log(`   Remaining: ${epochInfo.delayConfig.remainingDelayRounds}`);
+        }
       }
+    } else {
+      console.log('\n📍 Normal epoch phase (not in delay period)');
     }
 
     console.log('\n' + '='.repeat(60));
