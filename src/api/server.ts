@@ -7,6 +7,7 @@ import rateLimit from 'express-rate-limit';
 import { DataIngestionService } from '../services/data-ingestion';
 import { MonadClickHouseClient } from '../database/clickhouse-client';
 import { MonadRedisClient } from '../cache/redis-client';
+import { NodeRpcClient } from '../services/blockchain/NodeRpcClient';
 import { logger } from '../utils/logger';
 
 // Import Controllers
@@ -17,6 +18,7 @@ import { EventController } from './controllers/EventController';
 import { AdminController } from './controllers/AdminController';
 import { QueryPerformanceController } from './controllers/QueryPerformanceController';
 import { EpochController } from './controllers/EpochController';
+import { EnhancedEpochController } from './controllers/EnhancedEpochController';
 import { TransactionAnalyticsController } from './controllers/TransactionAnalyticsController';
 
 // Import Staking Services
@@ -31,6 +33,7 @@ import { createAdminRoutes } from './routes/admin';
 import { createQueryPerformanceRoutes } from './routes/query-performance';
 import { createDNSAnalyticsRoutes } from './routes/dns-analytics';
 import { createEpochRoutes } from './routes/epoch';
+import { createEnhancedEpochRoutes } from './routes/enhanced-epoch';
 import { createTransactionAnalyticsRoutes } from './routes/transaction-analytics';
 
 export interface APIServerConfig {
@@ -64,6 +67,7 @@ export class AnalyticsAPIServer {
   private adminController!: AdminController;
   private queryPerformanceController!: QueryPerformanceController;
   private epochController!: EpochController;
+  private enhancedEpochController!: EnhancedEpochController;
   private transactionAnalyticsController!: TransactionAnalyticsController;
 
   constructor(config: APIServerConfig, ingestionService: DataIngestionService) {
@@ -176,6 +180,19 @@ export class AnalyticsAPIServer {
       this.redisClient
     );
 
+    // Initialize enhanced epoch controller with RPC client
+    const rpcUrl = process.env.RPC_URL || 'http://localhost:8080';
+    const rpcTimeout = parseInt(process.env.RPC_TIMEOUT || '10000');
+    const rpcClient = new NodeRpcClient(rpcUrl, rpcTimeout);
+    const epochInterval = parseInt(process.env.EPOCH_INTERVAL || '5000');
+    
+    this.enhancedEpochController = new EnhancedEpochController(
+      this.redisClient,
+      this.clickhouseClient,
+      rpcClient,
+      epochInterval
+    );
+
     this.transactionAnalyticsController = new TransactionAnalyticsController(
       this.clickhouseClient,
       this.redisClient
@@ -250,6 +267,7 @@ export class AnalyticsAPIServer {
     this.app.use('/', createQueryPerformanceRoutes(this.queryPerformanceController));
     this.app.use('/', createDNSAnalyticsRoutes(this.clickhouseClient, this.redisClient));
     this.app.use('/', createEpochRoutes(this.epochController));
+    this.app.use('/', createEnhancedEpochRoutes(this.enhancedEpochController));
     this.app.use('/api/transaction-analytics', createTransactionAnalyticsRoutes(this.transactionAnalyticsController));
 
     // API documentation endpoint
@@ -341,6 +359,15 @@ export class AnalyticsAPIServer {
           'GET /api/epoch/block/:blockNumber': 'Get epoch information for specific block',
           'GET /api/epoch/:epochNumber/blocks': 'Get block range for specific epoch',
           'GET /api/epoch/config': 'Epoch configuration settings'
+        },
+        epochV2: {
+          'GET /api/v2/epoch/info': 'Protocol-accurate epoch info with precompile, delay period, ABT, staleness',
+          'GET /api/v2/epoch/current': 'Current epoch ID and delay status (lightweight)',
+          'GET /api/v2/epoch/progress': 'Epoch progress with phase tracking (normal/delay/stale)',
+          'GET /api/v2/epoch/abt': 'Average Block Time with outlier statistics',
+          'GET /api/v2/epoch/staleness': 'Indexer staleness information',
+          'POST /api/v2/epoch/abt/recompute': 'Force recomputation of ABT',
+          'GET /api/v2/epoch/health': 'Health check for epoch tracking system'
         },
         transactionAnalytics: {
           'GET /api/transaction-analytics/validator/:id': 'Comprehensive transaction metrics for specific validator',

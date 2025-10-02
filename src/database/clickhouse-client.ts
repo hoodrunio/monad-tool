@@ -43,6 +43,10 @@ export class MonadClickHouseClient {
     return this.config.database;
   }
 
+  getClient(): ClickHouseClient {
+    return this.client;
+  }
+
   // =============================================
   // SCHEMA INITIALIZATION
   // =============================================
