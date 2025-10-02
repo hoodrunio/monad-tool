@@ -134,11 +134,14 @@ export class StalenessDetector {
    * Get the latest indexed block from the database
    */
   private async getLatestIndexedBlock(): Promise<{ latestBlock: number; latestTimestamp: Date }> {
+    // Timestamp'e göre en son kaydı al - bu en güncel veri
     const query = `
       SELECT 
-        max(seq_num) as latest_block,
-        argMax(timestamp, seq_num) as latest_timestamp
+        seq_num as latest_block,
+        timestamp as latest_timestamp
       FROM monad_analytics.block_proposals
+      ORDER BY timestamp DESC
+      LIMIT 1
     `;
 
     const result = await this.clickhouse.query({
