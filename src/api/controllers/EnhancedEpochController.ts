@@ -72,13 +72,14 @@ export class EnhancedEpochController {
       try {
         epochInfo = await this.epochService.getEpochInfo();
         
-        // Eğer stale ise veya precompile yoksa, fallback'e geç
-        if (epochInfo.staleness.isStale || !epochInfo.precompileAvailable) {
-          logger.warn('Enhanced service degraded, using fallback', {
+        // Sadece gerçekten stale ise fallback'e geç
+        // precompile yoksa da enhanced service DB'den epoch bulur, sorun değil
+        if (epochInfo.staleness.isStale) {
+          logger.warn('Enhanced service degraded (stale), using fallback', {
             isStale: epochInfo.staleness.isStale,
-            precompileAvailable: epochInfo.precompileAvailable,
+            reason: epochInfo.staleness.reason,
           });
-          throw new Error('Enhanced service degraded');
+          throw new Error('Enhanced service degraded - stale data');
         }
       } catch (enhancedError) {
         // Fallback: Basit block-based hesaplama
@@ -134,53 +135,40 @@ export class EnhancedEpochController {
         };
       }
       
-      // Format response
+      // Format response - v1 compatible format
       const responseData = {
-        epochId: epochInfo.epochId,
-        inEpochDelayPeriod: epochInfo.inEpochDelayPeriod,
+        currentEpoch: epochInfo.epochId,
+        previousEpoch: epochInfo.epochId - 1,
+        nextEpoch: epochInfo.epochId + 1,
+        epochInterval: this.epochService.getEpochInterval(),
+        currentBlock: epochInfo.staleness.latestIndexedBlock,
         
         progress: {
-          phase: epochInfo.progress.phase,
-          value: epochInfo.progress.value,
-          percentage: epochInfo.progress.percentage,
-          explanation: epochInfo.progress.explanation,
+          currentEpoch: epochInfo.epochId,
+          currentBlock: epochInfo.staleness.latestIndexedBlock,
+          epochStartBlock: (epochInfo.epochId - 1) * this.epochService.getEpochInterval(),
+          epochEndBlock: epochInfo.epochId * this.epochService.getEpochInterval() - 1,
+          blocksCompleted: epochInfo.progress.roundsCompleted || 0,
+          blocksRemaining: epochInfo.progress.roundsToNextEpoch || 0,
+          progressPercentage: epochInfo.progress.percentage || 0,
+          estimatedTimeToNextEpoch: epochInfo.abt ? {
+            hours: Math.floor((epochInfo.progress.roundsToNextEpoch || 0) * epochInfo.abt.averageBlockTimeSeconds / 3600),
+            minutes: Math.floor(((epochInfo.progress.roundsToNextEpoch || 0) * epochInfo.abt.averageBlockTimeSeconds % 3600) / 60),
+            seconds: Math.floor((epochInfo.progress.roundsToNextEpoch || 0) * epochInfo.abt.averageBlockTimeSeconds % 60)
+          } : undefined
+        },
+        
+        // NEW: Delay period info
+        inEpochDelayPeriod: epochInfo.inEpochDelayPeriod,
+        delayPeriod: epochInfo.inEpochDelayPeriod ? {
           currentRound: epochInfo.progress.currentRound,
-          epochStartRound: epochInfo.progress.epochStartRound,
-          epochBoundaryRound: epochInfo.progress.epochBoundaryRound,
-          roundsCompleted: epochInfo.progress.roundsCompleted,
-          roundsToNextEpoch: epochInfo.progress.roundsToNextEpoch,
-        },
-        
-        delayConfig: {
-          configuredDelayRounds: epochInfo.delayConfig.configuredDelayRounds,
-          elapsedDelayRounds: epochInfo.delayConfig.elapsedDelayRounds,
-          remainingDelayRounds: epochInfo.delayConfig.remainingDelayRounds,
-          delayProgressPercentage: epochInfo.delayConfig.delayProgressPercentage,
-        },
-        
-        abt: epochInfo.abt ? {
-          averageBlockTimeSeconds: epochInfo.abt.averageBlockTimeSeconds,
-          medianBlockTimeSeconds: epochInfo.abt.medianBlockTimeSeconds,
-          sampleSize: epochInfo.abt.sampleSize,
-          effectiveSampleSize: epochInfo.abt.effectiveSampleSize,
-          outlierCount: epochInfo.abt.outlierCount,
-          outlierRate: epochInfo.abt.outlierRate,
-          method: epochInfo.abt.method,
-          computedAt: epochInfo.abt.computedAt,
+          roundsElapsed: epochInfo.delayConfig.elapsedDelayRounds,
+          roundsRemaining: epochInfo.delayConfig.remainingDelayRounds,
+          progressPercentage: epochInfo.delayConfig.delayProgressPercentage,
+          totalDelayRounds: epochInfo.delayConfig.configuredDelayRounds
         } : null,
         
-        staleness: {
-          isStale: epochInfo.staleness.isStale,
-          latestIndexedBlock: epochInfo.staleness.latestIndexedBlock,
-          latestIndexedTimestamp: epochInfo.staleness.latestIndexedTimestamp,
-          ageSeconds: epochInfo.staleness.ageSeconds,
-          chainHeadBlock: epochInfo.staleness.chainHeadBlock,
-          blockLag: epochInfo.staleness.blockLag,
-          reason: epochInfo.staleness.reason,
-        },
-        
-        precompileAvailable: epochInfo.precompileAvailable,
-        timestamp: epochInfo.timestamp,
+        timestamp: new Date().toISOString()
       };
 
       // Cache the result
@@ -235,8 +223,9 @@ export class EnhancedEpochController {
       
       try {
         epochInfo = await this.epochService.getEpochInfo();
-        if (epochInfo.staleness.isStale || !epochInfo.precompileAvailable) {
-          throw new Error('Enhanced service degraded');
+        // Sadece stale ise fallback
+        if (epochInfo.staleness.isStale) {
+          throw new Error('Enhanced service degraded - stale data');
         }
       } catch (enhancedError) {
         usingFallback = true;
