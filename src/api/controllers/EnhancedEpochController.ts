@@ -136,25 +136,34 @@ export class EnhancedEpochController {
       }
       
       // Format response - v1 compatible format
+      const epochInterval = this.epochService.getEpochInterval();
+      const currentBlock = epochInfo.staleness.latestIndexedBlock;
+      const epochStartBlock = (epochInfo.epochId - 1) * epochInterval;
+      const epochEndBlock = epochInfo.epochId * epochInterval - 1;
+      
+      // Calculate blocks correctly
+      const blocksCompleted = currentBlock - epochStartBlock;
+      const blocksRemaining = epochEndBlock - currentBlock;
+      
       const responseData = {
         currentEpoch: epochInfo.epochId,
         previousEpoch: epochInfo.epochId - 1,
         nextEpoch: epochInfo.epochId + 1,
-        epochInterval: this.epochService.getEpochInterval(),
-        currentBlock: epochInfo.staleness.latestIndexedBlock,
+        epochInterval: epochInterval,
+        currentBlock: currentBlock,
         
         progress: {
           currentEpoch: epochInfo.epochId,
-          currentBlock: epochInfo.staleness.latestIndexedBlock,
-          epochStartBlock: (epochInfo.epochId - 1) * this.epochService.getEpochInterval(),
-          epochEndBlock: epochInfo.epochId * this.epochService.getEpochInterval() - 1,
-          blocksCompleted: epochInfo.progress.roundsCompleted || 0,
-          blocksRemaining: epochInfo.progress.roundsToNextEpoch || 0,
+          currentBlock: currentBlock,
+          epochStartBlock: epochStartBlock,
+          epochEndBlock: epochEndBlock,
+          blocksCompleted: blocksCompleted,
+          blocksRemaining: blocksRemaining,
           progressPercentage: epochInfo.progress.percentage || 0,
           estimatedTimeToNextEpoch: epochInfo.abt ? {
-            hours: Math.floor((epochInfo.progress.roundsToNextEpoch || 0) * epochInfo.abt.averageBlockTimeSeconds / 3600),
-            minutes: Math.floor(((epochInfo.progress.roundsToNextEpoch || 0) * epochInfo.abt.averageBlockTimeSeconds % 3600) / 60),
-            seconds: Math.floor((epochInfo.progress.roundsToNextEpoch || 0) * epochInfo.abt.averageBlockTimeSeconds % 60)
+            hours: Math.floor(blocksRemaining * epochInfo.abt.averageBlockTimeSeconds / 3600),
+            minutes: Math.floor((blocksRemaining * epochInfo.abt.averageBlockTimeSeconds % 3600) / 60),
+            seconds: Math.floor(blocksRemaining * epochInfo.abt.averageBlockTimeSeconds % 60)
           } : undefined
         },
         
