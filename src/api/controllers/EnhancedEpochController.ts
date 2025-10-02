@@ -137,13 +137,13 @@ export class EnhancedEpochController {
       
       // Format response - v1 compatible format
       const epochInterval = this.epochService.getEpochInterval();
-      const currentBlock = epochInfo.staleness.latestIndexedBlock;
       const epochStartBlock = (epochInfo.epochId - 1) * epochInterval;
       const epochEndBlock = epochInfo.epochId * epochInterval - 1;
-      
-      // Calculate blocks correctly
-      const blocksCompleted = currentBlock - epochStartBlock;
-      const blocksRemaining = epochEndBlock - currentBlock;
+
+      // to ensure consistency between progress percentage and blocks completed/remaining
+      const currentBlock = epochInfo.staleness.latestIndexedBlock;
+      const blocksCompleted = epochInfo.progress.roundsCompleted ?? (currentBlock - epochStartBlock);
+      const blocksRemaining = epochInfo.progress.roundsToNextEpoch ?? (epochEndBlock - currentBlock);
       
       const responseData = {
         currentEpoch: epochInfo.epochId,
