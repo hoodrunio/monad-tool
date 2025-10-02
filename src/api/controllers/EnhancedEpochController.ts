@@ -14,10 +14,13 @@ import { MonadRedisClient } from '../../cache/redis-client';
 import { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { NodeRpcClient } from '../../services/blockchain/NodeRpcClient';
 import { EnhancedEpochService } from '../../services/epoch/EnhancedEpochService';
+import { EpochService } from '../../services/epoch/EpochService';
 import { logger } from '../../utils/logger';
 
 export class EnhancedEpochController {
   private epochService: EnhancedEpochService;
+  private fallbackEpochService: EpochService;
+  private useFallback: boolean = false;
 
   constructor(
     private redisClient: MonadRedisClient,
@@ -27,8 +30,13 @@ export class EnhancedEpochController {
   ) {
     this.epochService = new EnhancedEpochService(clickhouse.getClient(), rpcClient, epochInterval);
     
-    logger.info('EnhancedEpochController initialized', {
+    // Fallback: Basit block-based epoch hesaplama (0.5s ABT ile)
+    this.fallbackEpochService = new EpochService(rpcClient, epochInterval);
+    this.fallbackEpochService.setAverageBlockTime(0.5); // Monad default
+    
+    logger.info('EnhancedEpochController initialized with fallback', {
       epochInterval,
+      fallbackEnabled: true,
     });
   }
 
@@ -57,8 +65,74 @@ export class EnhancedEpochController {
         return;
       }
 
-      // Fetch fresh data
-      const epochInfo = await this.epochService.getEpochInfo();
+      // Try enhanced service first
+      let epochInfo;
+      let usingFallback = false;
+      
+      try {
+        epochInfo = await this.epochService.getEpochInfo();
+        
+        // Eğer stale ise veya precompile yoksa, fallback'e geç
+        if (epochInfo.staleness.isStale || !epochInfo.precompileAvailable) {
+          logger.warn('Enhanced service degraded, using fallback', {
+            isStale: epochInfo.staleness.isStale,
+            precompileAvailable: epochInfo.precompileAvailable,
+          });
+          throw new Error('Enhanced service degraded');
+        }
+      } catch (enhancedError) {
+        // Fallback: Basit block-based hesaplama
+        logger.warn('Enhanced epoch service failed, using simple fallback', {
+          error: enhancedError instanceof Error ? enhancedError.message : String(enhancedError),
+        });
+        
+        usingFallback = true;
+        const fallbackInfo = await this.fallbackEpochService.getEpochInfo();
+        
+        // Convert to enhanced format
+        epochInfo = {
+          epochId: fallbackInfo.currentEpoch,
+          inEpochDelayPeriod: false,
+          progress: {
+            phase: 'normal' as const,
+            value: fallbackInfo.progress.progressPercentage / 100,
+            percentage: fallbackInfo.progress.progressPercentage,
+            explanation: `Fallback mode: ${fallbackInfo.progress.blocksCompleted} of ${this.fallbackEpochService.getEpochInterval()} blocks completed`,
+            currentRound: null,
+            epochStartRound: null,
+            epochBoundaryRound: null,
+            roundsCompleted: fallbackInfo.progress.blocksCompleted,
+            roundsToNextEpoch: fallbackInfo.progress.blocksRemaining,
+          },
+          delayConfig: {
+            configuredDelayRounds: 500,
+            elapsedDelayRounds: null,
+            remainingDelayRounds: null,
+            delayProgressPercentage: null,
+          },
+          abt: {
+            averageBlockTimeSeconds: 0.5,
+            medianBlockTimeSeconds: 0.5,
+            sampleSize: 0,
+            effectiveSampleSize: 0,
+            outlierCount: 0,
+            outlierRate: 0,
+            method: 'hardcap' as const,
+            computedAt: new Date(),
+          },
+          staleness: {
+            isStale: false,
+            latestIndexedBlock: fallbackInfo.currentBlock,
+            latestIndexedTimestamp: new Date(),
+            ageSeconds: 0,
+            chainHeadBlock: fallbackInfo.currentBlock,
+            blockLag: 0,
+            reason: null,
+          },
+          precompileAvailable: false,
+          timestamp: new Date(),
+        };
+      }
       
       // Format response
       const responseData = {
@@ -117,8 +191,10 @@ export class EnhancedEpochController {
         data: responseData,
         metadata: {
           source: 'computed',
-          version: 'v2-protocol-accurate',
+          version: usingFallback ? 'v2-fallback-simple' : 'v2-protocol-accurate',
+          mode: usingFallback ? 'fallback' : 'enhanced',
           epochInterval: this.epochService.getEpochInterval(),
+          warning: usingFallback ? 'Using simple block-based calculation (0.5s ABT) due to enhanced service unavailability' : undefined,
         },
         timestamp: new Date().toISOString(),
       });
@@ -154,7 +230,26 @@ export class EnhancedEpochController {
         return;
       }
 
-      const epochInfo = await this.epochService.getEpochInfo();
+      let epochInfo;
+      let usingFallback = false;
+      
+      try {
+        epochInfo = await this.epochService.getEpochInfo();
+        if (epochInfo.staleness.isStale || !epochInfo.precompileAvailable) {
+          throw new Error('Enhanced service degraded');
+        }
+      } catch (enhancedError) {
+        usingFallback = true;
+        const fallbackInfo = await this.fallbackEpochService.getEpochInfo();
+        epochInfo = {
+          epochId: fallbackInfo.currentEpoch,
+          inEpochDelayPeriod: false,
+          progress: { phase: 'normal' as const },
+          precompileAvailable: false,
+          staleness: { isStale: false },
+          timestamp: new Date(),
+        } as any;
+      }
       
       const responseData = {
         epochId: epochInfo.epochId,
@@ -163,6 +258,7 @@ export class EnhancedEpochController {
         precompileAvailable: epochInfo.precompileAvailable,
         isStale: epochInfo.staleness.isStale,
         timestamp: epochInfo.timestamp,
+        mode: usingFallback ? 'fallback' : 'enhanced',
       };
 
       await this.redisClient['client'].setex(cacheKey, cacheTtl, JSON.stringify(responseData));
@@ -170,7 +266,11 @@ export class EnhancedEpochController {
       res.json({
         success: true,
         data: responseData,
-        metadata: { source: 'computed', version: 'v2-protocol-accurate' },
+        metadata: { 
+          source: 'computed', 
+          version: usingFallback ? 'v2-fallback-simple' : 'v2-protocol-accurate',
+          mode: usingFallback ? 'fallback' : 'enhanced',
+        },
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
