@@ -311,6 +311,7 @@ export class EnhancedEpochService {
       SELECT 
         round
       FROM monad_analytics.block_proposals
+      WHERE epoch > 0
       ORDER BY timestamp DESC
       LIMIT 1
     `;
@@ -376,6 +377,7 @@ export class EnhancedEpochService {
         timestamp,
         epoch
       FROM monad_analytics.block_proposals
+      WHERE epoch > 0
       ORDER BY seq_num DESC
       LIMIT 1
     `;
