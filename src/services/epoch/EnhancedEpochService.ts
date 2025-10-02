@@ -307,7 +307,7 @@ export class EnhancedEpochService {
    */
   private async getEpochRoundRange(epochId: number): Promise<{ minRound: number; maxRound: number }> {
     // Get latest round by timestamp (rounds progress independently of epoch)
-    const query = `
+    const maxQuery = `
       SELECT 
         round
       FROM monad_analytics.block_proposals
@@ -315,25 +315,49 @@ export class EnhancedEpochService {
       LIMIT 1
     `;
 
-    const result = await this.clickhouse.query({
-      query,
+    const maxResult = await this.clickhouse.query({
+      query: maxQuery,
       format: 'JSONEachRow',
     });
 
-    const rows = await result.json() as Array<{
+    const maxRows = await maxResult.json() as Array<{
       round: string;
     }>;
 
     let maxRound: number;
-    if (rows.length === 0) {
+    if (maxRows.length === 0) {
       // Fallback: use block-based calculation
       maxRound = epochId * this.epochInterval - 1;
     } else {
-      maxRound = parseInt(rows[0].round);
+      maxRound = parseInt(maxRows[0].round);
     }
 
-    // Calculate minRound based on epoch boundary
-    const minRound = (epochId - 1) * this.epochInterval;
+    // Get minRound for this epoch (for display purposes)
+    const minQuery = `
+      SELECT 
+        round
+      FROM monad_analytics.block_proposals
+      WHERE epoch = ${epochId}
+      ORDER BY timestamp ASC
+      LIMIT 1
+    `;
+
+    const minResult = await this.clickhouse.query({
+      query: minQuery,
+      format: 'JSONEachRow',
+    });
+
+    const minRows = await minResult.json() as Array<{
+      round: string;
+    }>;
+
+    let minRound: number;
+    if (minRows.length === 0) {
+      // Fallback: use block-based calculation
+      minRound = (epochId - 1) * this.epochInterval;
+    } else {
+      minRound = parseInt(minRows[0].round);
+    }
 
     return {
       minRound,
