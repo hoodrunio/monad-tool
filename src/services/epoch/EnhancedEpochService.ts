@@ -277,7 +277,7 @@ export class EnhancedEpochService {
    */
   private async buildDelayConfig(inDelay: boolean, currentRound: RoundBlockInfo | null): Promise<DelayConfig> {
     const configuredDelayRounds = this.config.getDelayPeriodRounds();
-    
+
     if (!inDelay || !currentRound) {
       return {
         configuredDelayRounds,
@@ -287,18 +287,20 @@ export class EnhancedEpochService {
       };
     }
 
-    const epochId = await this.estimateEpochFromDb();
-    const boundary = this.calculateEpochBoundary(epochId);
-    
-    const elapsedDelayRounds = currentRound.round - boundary.delayStartRound;
-    const remainingDelayRounds = boundary.delayEndRound - currentRound.round;
+    // Use the epoch from currentRound instead of estimating
+    const epochId = currentRound.epoch;
+    const epochRoundRange = await this.getEpochRoundRange(epochId);
+    const boundaryRound = epochRoundRange.maxRound;
+
+    const elapsedDelayRounds = currentRound.round - boundaryRound;
+    const remainingDelayRounds = configuredDelayRounds - elapsedDelayRounds;
     const delayProgressPercentage = (elapsedDelayRounds / configuredDelayRounds) * 100;
 
     return {
       configuredDelayRounds,
-      elapsedDelayRounds,
-      remainingDelayRounds,
-      delayProgressPercentage,
+      elapsedDelayRounds: Math.max(0, elapsedDelayRounds),
+      remainingDelayRounds: Math.max(0, remainingDelayRounds),
+      delayProgressPercentage: Math.min(100, Math.max(0, delayProgressPercentage)),
     };
   }
 
@@ -370,15 +372,41 @@ export class EnhancedEpochService {
    * Get current round information from DB
    */
   private async getCurrentRoundInfo(): Promise<RoundBlockInfo> {
+    // First, get the latest epoch to filter out stale data from old testnets
+    const latestEpochQuery = `
+      SELECT
+        epoch
+      FROM monad_analytics.block_proposals
+      WHERE epoch > 0
+      ORDER BY timestamp DESC
+      LIMIT 1
+    `;
+
+    const latestEpochResult = await this.clickhouse.query({
+      query: latestEpochQuery,
+      format: 'JSONEachRow',
+    });
+
+    const latestEpochRows = await latestEpochResult.json() as Array<{
+      epoch: string;
+    }>;
+
+    if (latestEpochRows.length === 0) {
+      throw new Error('No epoch data available in database');
+    }
+
+    const currentEpoch = parseInt(latestEpochRows[0].epoch);
+
+    // This prevents picking up stale high-round values from old datas
     const query = `
-      SELECT 
+      SELECT
         round,
         seq_num,
         timestamp,
         epoch
       FROM monad_analytics.block_proposals
-      WHERE epoch > 0
-      ORDER BY seq_num DESC
+      WHERE epoch >= ${Math.max(1, currentEpoch - 2)}
+      ORDER BY timestamp DESC
       LIMIT 1
     `;
 
