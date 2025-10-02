@@ -57,10 +57,10 @@ export class EpochConfig {
       abtRecomputeInterval: parseInt(process.env.ABT_RECOMPUTE_INTERVAL || '1000'),
       
       // Staleness: consider stale if latest block is > 60 seconds old
-      stalenessThresholdSeconds: parseInt(process.env.STALENESS_THRESHOLD_SECONDS || '60'),
+      stalenessThresholdSeconds: parseInt(process.env.STALENESS_THRESHOLD_SECONDS || '160'),
       
       // Or if indexer is lagging by > 100 blocks
-      stalenessBlockLagThreshold: parseInt(process.env.STALENESS_BLOCK_LAG || '100'),
+      stalenessBlockLagThreshold: parseInt(process.env.STALENESS_BLOCK_LAG || '200'),
       
       // Staking precompile
       stakingPrecompileAddress: process.env.STAKING_PRECOMPILE_ADDRESS || '0x0000000000000000000000000000000000001000',
