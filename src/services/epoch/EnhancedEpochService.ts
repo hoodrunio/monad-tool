@@ -195,15 +195,15 @@ export class EnhancedEpochService {
   private async buildDelayPhaseProgress(epochId: number, currentRound: RoundBlockInfo): Promise<EpochProgressInfo> {
     const delayRounds = this.config.getDelayPeriodRounds();
 
-    // Epoch boundary is determined by block count (seq_num), not round
-    const epochBoundaryBlock = epochId * this.epochInterval;
+    // Epoch boundary = last block of the epoch (e.g., epoch 645 ends at block 3,224,999)
+    const epochBoundaryBlock = (epochId * this.epochInterval) - 1;
 
-    // Get the round number at the epoch boundary from DB
+    // Get the round number at the exact epoch boundary block
+    // This is a FIXED value - it won't change as new blocks are indexed
     const boundaryQuery = `
       SELECT round
       FROM monad_analytics.block_proposals
-      WHERE seq_num <= ${epochBoundaryBlock}
-      ORDER BY seq_num DESC
+      WHERE seq_num = ${epochBoundaryBlock}
       LIMIT 1
     `;
 
@@ -216,8 +216,28 @@ export class EnhancedEpochService {
 
     let boundaryRound: number;
     if (boundaryRows.length === 0) {
-      // Fallback: use block number as approximation
-      boundaryRound = epochBoundaryBlock;
+      // Fallback: if exact block not found, get closest one
+      const fallbackQuery = `
+        SELECT round
+        FROM monad_analytics.block_proposals
+        WHERE seq_num <= ${epochBoundaryBlock}
+        ORDER BY seq_num DESC
+        LIMIT 1
+      `;
+
+      const fallbackResult = await this.clickhouse.query({
+        query: fallbackQuery,
+        format: 'JSONEachRow',
+      });
+
+      const fallbackRows = await fallbackResult.json() as Array<{ round: string }>;
+
+      if (fallbackRows.length === 0) {
+        // Last fallback: use block number
+        boundaryRound = epochBoundaryBlock;
+      } else {
+        boundaryRound = parseInt(fallbackRows[0].round);
+      }
     } else {
       boundaryRound = parseInt(boundaryRows[0].round);
     }
@@ -316,15 +336,14 @@ export class EnhancedEpochService {
     // Use the epoch from currentRound
     const epochId = currentRound.epoch;
 
-    // Epoch boundary is determined by block count (seq_num), not round
-    const epochBoundaryBlock = epochId * this.epochInterval;
+    // Epoch boundary = last block of the epoch
+    const epochBoundaryBlock = (epochId * this.epochInterval) - 1;
 
-    // Get the round number at the epoch boundary from DB
+    // Get the round number at the exact epoch boundary block
     const boundaryQuery = `
       SELECT round
       FROM monad_analytics.block_proposals
-      WHERE seq_num <= ${epochBoundaryBlock}
-      ORDER BY seq_num DESC
+      WHERE seq_num = ${epochBoundaryBlock}
       LIMIT 1
     `;
 
@@ -337,8 +356,28 @@ export class EnhancedEpochService {
 
     let boundaryRound: number;
     if (boundaryRows.length === 0) {
-      // Fallback: use block number as approximation
-      boundaryRound = epochBoundaryBlock;
+      // Fallback: if exact block not found, get closest one
+      const fallbackQuery = `
+        SELECT round
+        FROM monad_analytics.block_proposals
+        WHERE seq_num <= ${epochBoundaryBlock}
+        ORDER BY seq_num DESC
+        LIMIT 1
+      `;
+
+      const fallbackResult = await this.clickhouse.query({
+        query: fallbackQuery,
+        format: 'JSONEachRow',
+      });
+
+      const fallbackRows = await fallbackResult.json() as Array<{ round: string }>;
+
+      if (fallbackRows.length === 0) {
+        // Last fallback: use block number
+        boundaryRound = epochBoundaryBlock;
+      } else {
+        boundaryRound = parseInt(fallbackRows[0].round);
+      }
     } else {
       boundaryRound = parseInt(boundaryRows[0].round);
     }
