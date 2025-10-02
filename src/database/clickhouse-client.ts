@@ -4,7 +4,6 @@
 import { createClient, ClickHouseClient } from '@clickhouse/client';
 import { ConsensusEvent, LedgerEvent, QCParticipationData, ValidatorInfrastructure, BlockProposalEvent, QCParticipationEvent } from '../log-processor/types';
 import { CompleteValidator } from '../services/unified-validator';
-import { ValidatorLocation } from '../services/validator-location/types';
 import { logger } from '../utils/logger';
 
 export interface ClickHouseConfig {
