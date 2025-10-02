@@ -175,7 +175,7 @@ export class EnhancedEpochController {
           roundsRemaining: epochInfo.delayConfig.remainingDelayRounds,
           progressPercentage: epochInfo.delayConfig.delayProgressPercentage,
           totalDelayRounds: epochInfo.delayConfig.configuredDelayRounds
-        } : null,
+        } : false,
         
         timestamp: new Date().toISOString()
       };
