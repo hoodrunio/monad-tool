@@ -161,38 +161,46 @@ export class EnhancedEpochService {
 
   /**
    * Build progress for NORMAL phase (before boundary)
+   * Uses block numbers for progress calculation
    */
   private async buildNormalPhaseProgress(epochId: number, currentRound: RoundBlockInfo): Promise<EpochProgressInfo> {
-    const boundary = this.calculateEpochBoundary(epochId);
+    // Normal phase: block-based calculation
+    const epochStartBlock = (epochId - 1) * this.epochInterval;
+    const epochEndBlock = epochId * this.epochInterval - 1;
+    const currentBlock = currentRound.seq_num;
     
-    const roundsCompleted = currentRound.round - boundary.boundaryRound + this.epochInterval;
-    const roundsToNextEpoch = boundary.boundaryRound - currentRound.round;
+    const blocksCompleted = currentBlock - epochStartBlock;
+    const blocksRemaining = epochEndBlock - currentBlock;
     
-    const progressValue = roundsCompleted / this.epochInterval;
+    const progressValue = blocksCompleted / this.epochInterval;
     const progressPercentage = progressValue * 100;
 
     return {
       phase: 'normal',
       value: Math.min(1, Math.max(0, progressValue)),
       percentage: Math.min(100, Math.max(0, progressPercentage)),
-      explanation: `Epoch ${epochId} in progress: ${roundsCompleted} of ${this.epochInterval} rounds completed`,
-      currentRound: currentRound.round,
-      epochStartRound: boundary.boundaryRound - this.epochInterval,
-      epochBoundaryRound: boundary.boundaryRound,
-      roundsCompleted,
-      roundsToNextEpoch,
+      explanation: `Epoch ${epochId} in progress: ${blocksCompleted} of ${this.epochInterval} blocks completed`,
+      currentRound: currentRound.round, // Show round for info
+      epochStartRound: epochStartBlock,
+      epochBoundaryRound: epochEndBlock,
+      roundsCompleted: blocksCompleted,
+      roundsToNextEpoch: blocksRemaining,
     };
   }
 
   /**
    * Build progress for DELAY phase (after boundary, before new epoch)
+   * Uses rounds for delay period tracking
    */
   private async buildDelayPhaseProgress(epochId: number, currentRound: RoundBlockInfo): Promise<EpochProgressInfo> {
-    const boundary = this.calculateEpochBoundary(epochId);
     const delayRounds = this.config.getDelayPeriodRounds();
     
-    const elapsedDelayRounds = currentRound.round - boundary.delayStartRound;
-    const remainingDelayRounds = boundary.delayEndRound - currentRound.round;
+    // Get the round range for current epoch to find boundary
+    const epochRoundRange = await this.getEpochRoundRange(epochId);
+    const boundaryRound = epochRoundRange.maxRound; // Last round of epoch
+    
+    const elapsedDelayRounds = currentRound.round - boundaryRound;
+    const remainingDelayRounds = delayRounds - elapsedDelayRounds;
     
     const progressValue = elapsedDelayRounds / delayRounds;
     const progressPercentage = progressValue * 100;
@@ -203,8 +211,8 @@ export class EnhancedEpochService {
       percentage: Math.min(100, Math.max(0, progressPercentage)),
       explanation: `In delay period: ${elapsedDelayRounds} of ${delayRounds} rounds elapsed, waiting for epoch ${epochId + 1}`,
       currentRound: currentRound.round,
-      epochStartRound: boundary.boundaryRound - this.epochInterval,
-      epochBoundaryRound: boundary.boundaryRound,
+      epochStartRound: epochRoundRange.minRound,
+      epochBoundaryRound: boundaryRound,
       roundsCompleted: elapsedDelayRounds,
       roundsToNextEpoch: remainingDelayRounds,
     };
@@ -291,6 +299,42 @@ export class EnhancedEpochService {
       elapsedDelayRounds,
       remainingDelayRounds,
       delayProgressPercentage,
+    };
+  }
+
+  /**
+   * Get epoch round range from DB
+   */
+  private async getEpochRoundRange(epochId: number): Promise<{ minRound: number; maxRound: number }> {
+    const query = `
+      SELECT 
+        min(round) as min_round,
+        max(round) as max_round
+      FROM monad_analytics.block_proposals
+      WHERE epoch = ${epochId}
+    `;
+
+    const result = await this.clickhouse.query({
+      query,
+      format: 'JSONEachRow',
+    });
+
+    const rows = await result.json() as Array<{
+      min_round: string;
+      max_round: string;
+    }>;
+
+    if (rows.length === 0 || !rows[0].min_round) {
+      // Fallback: use block-based calculation
+      return {
+        minRound: (epochId - 1) * this.epochInterval,
+        maxRound: epochId * this.epochInterval - 1,
+      };
+    }
+
+    return {
+      minRound: parseInt(rows[0].min_round),
+      maxRound: parseInt(rows[0].max_round),
     };
   }
 
