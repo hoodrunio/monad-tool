@@ -1,6 +1,9 @@
 import { createClient } from '@clickhouse/client';
 import { NodeRpcClient } from './src/services/blockchain/NodeRpcClient';
 import { EnhancedEpochService } from './src/services/epoch/EnhancedEpochService';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 async function testEpochFix() {
   const clickhouse = createClient({
