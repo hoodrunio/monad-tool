@@ -194,16 +194,42 @@ export class EnhancedEpochService {
    */
   private async buildDelayPhaseProgress(epochId: number, currentRound: RoundBlockInfo): Promise<EpochProgressInfo> {
     const delayRounds = this.config.getDelayPeriodRounds();
-    
-    // Get the round range for current epoch to find boundary
-    const epochRoundRange = await this.getEpochRoundRange(epochId);
-    const boundaryRound = epochRoundRange.maxRound; // Last round of epoch
-    
+
+    // Epoch boundary is determined by block count (seq_num), not round
+    const epochBoundaryBlock = epochId * this.epochInterval;
+
+    // Get the round number at the epoch boundary from DB
+    const boundaryQuery = `
+      SELECT round
+      FROM monad_analytics.block_proposals
+      WHERE seq_num <= ${epochBoundaryBlock}
+      ORDER BY seq_num DESC
+      LIMIT 1
+    `;
+
+    const boundaryResult = await this.clickhouse.query({
+      query: boundaryQuery,
+      format: 'JSONEachRow',
+    });
+
+    const boundaryRows = await boundaryResult.json() as Array<{ round: string }>;
+
+    let boundaryRound: number;
+    if (boundaryRows.length === 0) {
+      // Fallback: use block number as approximation
+      boundaryRound = epochBoundaryBlock;
+    } else {
+      boundaryRound = parseInt(boundaryRows[0].round);
+    }
+
     const elapsedDelayRounds = currentRound.round - boundaryRound;
     const remainingDelayRounds = delayRounds - elapsedDelayRounds;
-    
+
     const progressValue = elapsedDelayRounds / delayRounds;
     const progressPercentage = progressValue * 100;
+
+    // Get epoch start for display
+    const epochRoundRange = await this.getEpochRoundRange(epochId);
 
     return {
       phase: 'delay',
@@ -287,10 +313,35 @@ export class EnhancedEpochService {
       };
     }
 
-    // Use the epoch from currentRound instead of estimating
+    // Use the epoch from currentRound
     const epochId = currentRound.epoch;
-    const epochRoundRange = await this.getEpochRoundRange(epochId);
-    const boundaryRound = epochRoundRange.maxRound;
+
+    // Epoch boundary is determined by block count (seq_num), not round
+    const epochBoundaryBlock = epochId * this.epochInterval;
+
+    // Get the round number at the epoch boundary from DB
+    const boundaryQuery = `
+      SELECT round
+      FROM monad_analytics.block_proposals
+      WHERE seq_num <= ${epochBoundaryBlock}
+      ORDER BY seq_num DESC
+      LIMIT 1
+    `;
+
+    const boundaryResult = await this.clickhouse.query({
+      query: boundaryQuery,
+      format: 'JSONEachRow',
+    });
+
+    const boundaryRows = await boundaryResult.json() as Array<{ round: string }>;
+
+    let boundaryRound: number;
+    if (boundaryRows.length === 0) {
+      // Fallback: use block number as approximation
+      boundaryRound = epochBoundaryBlock;
+    } else {
+      boundaryRound = parseInt(boundaryRows[0].round);
+    }
 
     const elapsedDelayRounds = currentRound.round - boundaryRound;
     const remainingDelayRounds = configuredDelayRounds - elapsedDelayRounds;
@@ -308,63 +359,36 @@ export class EnhancedEpochService {
    * Get epoch round range from DB
    */
   private async getEpochRoundRange(epochId: number): Promise<{ minRound: number; maxRound: number }> {
-    // Get latest round by timestamp (rounds progress independently of epoch)
-    const maxQuery = `
-      SELECT 
-        round
-      FROM monad_analytics.block_proposals
-      WHERE epoch > 0
-      ORDER BY timestamp DESC
-      LIMIT 1
-    `;
-
-    const maxResult = await this.clickhouse.query({
-      query: maxQuery,
-      format: 'JSONEachRow',
-    });
-
-    const maxRows = await maxResult.json() as Array<{
-      round: string;
-    }>;
-
-    let maxRound: number;
-    if (maxRows.length === 0) {
-      // Fallback: use block-based calculation
-      maxRound = epochId * this.epochInterval - 1;
-    } else {
-      maxRound = parseInt(maxRows[0].round);
-    }
-
-    // Get minRound for this epoch (for display purposes)
-    const minQuery = `
-      SELECT 
-        round
+    // Get the actual round range for THIS specific epoch
+    const query = `
+      SELECT
+        min(round) as minRound,
+        max(round) as maxRound
       FROM monad_analytics.block_proposals
       WHERE epoch = ${epochId}
-      ORDER BY timestamp ASC
-      LIMIT 1
     `;
 
-    const minResult = await this.clickhouse.query({
-      query: minQuery,
+    const result = await this.clickhouse.query({
+      query,
       format: 'JSONEachRow',
     });
 
-    const minRows = await minResult.json() as Array<{
-      round: string;
+    const rows = await result.json() as Array<{
+      minRound: string;
+      maxRound: string;
     }>;
 
-    let minRound: number;
-    if (minRows.length === 0) {
-      // Fallback: use block-based calculation
-      minRound = (epochId - 1) * this.epochInterval;
-    } else {
-      minRound = parseInt(minRows[0].round);
+    if (rows.length === 0 || rows[0].minRound === '0') {
+      // Fallback: use block-based calculation if no data for this epoch
+      return {
+        minRound: (epochId - 1) * this.epochInterval,
+        maxRound: epochId * this.epochInterval - 1,
+      };
     }
 
     return {
-      minRound,
-      maxRound,
+      minRound: parseInt(rows[0].minRound),
+      maxRound: parseInt(rows[0].maxRound),
     };
   }
 
