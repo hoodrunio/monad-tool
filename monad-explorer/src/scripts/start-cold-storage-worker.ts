@@ -1,17 +1,35 @@
 import 'dotenv/config';
-import { ApplicationBootstrapper } from '../bootstrap/ApplicationBootstrapper';
-import { ColdStorageIngestionWorker } from '../services/cold-storage/ColdStorageIngestionWorker';
 import { logger } from '../utils/logger';
+import dotenv from 'dotenv';
+import type { ApplicationBootstrapper } from '../bootstrap/ApplicationBootstrapper';
+import type { ColdStorageIngestionWorker } from '../services/cold-storage/ColdStorageIngestionWorker';
+
+dotenv.config();
 
 class ColdStorageWorkerApp {
-  private readonly bootstrapper = new ApplicationBootstrapper();
-  private readonly worker = new ColdStorageIngestionWorker();
+  private bootstrapper: ApplicationBootstrapper | null = null;
+  private worker: ColdStorageIngestionWorker | null = null;
   private isShuttingDown = false;
   private keepAliveTimer: NodeJS.Timeout | null = null;
 
   public async start(): Promise<void> {
     try {
       logger.info('Starting Cold Storage Ingestion Worker...');
+      const redisHost = process.env.INTERNAL_REDIS_HOST || process.env.REDIS_HOST;
+      const redisPort = process.env.INTERNAL_REDIS_PORT || process.env.REDIS_PORT;
+      if (redisHost) {
+        process.env.REDIS_HOST = redisHost;
+      }
+      if (redisPort) {
+        process.env.REDIS_PORT = redisPort;
+      }
+
+      // Initialize after env overrides so config picks up correct values
+      const { ApplicationBootstrapper } = await import('../bootstrap/ApplicationBootstrapper');
+      const { ColdStorageIngestionWorker } = await import('../services/cold-storage/ColdStorageIngestionWorker');
+      this.bootstrapper = new ApplicationBootstrapper();
+      this.worker = new ColdStorageIngestionWorker();
+
       await this.bootstrapper.initialize();
       await this.worker.start();
       this.setupShutdownHandlers();
@@ -77,8 +95,12 @@ class ColdStorageWorkerApp {
 
     try {
       this.stopKeepAlive();
-      await this.worker.stop();
-      await this.bootstrapper.shutdown();
+      if (this.worker) {
+        await this.worker.stop();
+      }
+      if (this.bootstrapper) {
+        await this.bootstrapper.shutdown();
+      }
       logger.info('Cold Storage Ingestion Worker shutdown complete');
     } catch (error) {
       logger.error('Error during Cold Storage Ingestion Worker shutdown', {

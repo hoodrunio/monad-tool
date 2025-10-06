@@ -104,8 +104,10 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
       RABBITMQ_URL: amqp://rabbitmq:5672
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      INTERNAL_REDIS_HOST: redis
+      INTERNAL_REDIS_PORT: 6379
+      REDIS_HOST: ${INTERNAL_REDIS_HOST:-redis}
+      REDIS_PORT: ${INTERNAL_REDIS_PORT:-6379}
     depends_on:
       - rabbitmq
       - clickhouse
@@ -129,8 +131,10 @@ services:
       DB_USER: ${DB_USER:-squid_user}
       DB_PASS: ${DB_PASS:-postgres}
       DB_NAME: ${DB_NAME:-squid}
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      INTERNAL_REDIS_HOST: redis
+      INTERNAL_REDIS_PORT: 6379
+      REDIS_HOST: ${INTERNAL_REDIS_HOST:-redis}
+      REDIS_PORT: ${INTERNAL_REDIS_PORT:-6379}
     depends_on:
       - db
     restart: unless-stopped

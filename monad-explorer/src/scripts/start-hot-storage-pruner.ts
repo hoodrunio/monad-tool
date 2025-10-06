@@ -1,11 +1,10 @@
 import 'dotenv/config';
-import { ApplicationBootstrapper } from '../bootstrap/ApplicationBootstrapper';
-import { appConfig } from '../config/AppConfig';
-import { HotStoragePruner } from '../services/pruning/HotStoragePruner';
 import { logger } from '../utils/logger';
+import type { ApplicationBootstrapper } from '../bootstrap/ApplicationBootstrapper';
+import type { HotStoragePruner } from '../services/pruning/HotStoragePruner';
 
 class HotStoragePrunerApp {
-  private readonly bootstrapper = new ApplicationBootstrapper();
+  private bootstrapper: ApplicationBootstrapper | null = null;
   private pruner?: HotStoragePruner;
   private intervalHandle: NodeJS.Timeout | null = null;
   private keepAliveTimer: NodeJS.Timeout | null = null;
@@ -14,6 +13,20 @@ class HotStoragePrunerApp {
   public async start(): Promise<void> {
     try {
       logger.info('Starting Hot Storage Pruner...');
+      const redisHost = process.env.INTERNAL_REDIS_HOST || process.env.REDIS_HOST;
+      const redisPort = process.env.INTERNAL_REDIS_PORT || process.env.REDIS_PORT;
+      if (redisHost) {
+        process.env.REDIS_HOST = redisHost;
+      }
+      if (redisPort) {
+        process.env.REDIS_PORT = redisPort;
+      }
+
+      // Initialize after env overrides so config reads correct values
+      const { ApplicationBootstrapper } = await import('../bootstrap/ApplicationBootstrapper');
+      const { appConfig } = await import('../config/AppConfig');
+      const { HotStoragePruner } = await import('../services/pruning/HotStoragePruner');
+      this.bootstrapper = new ApplicationBootstrapper();
       await this.bootstrapper.initialize();
 
       const config = appConfig.getConfig();
@@ -132,7 +145,9 @@ class HotStoragePrunerApp {
         await this.pruner.dispose();
       }
 
-      await this.bootstrapper.shutdown();
+      if (this.bootstrapper) {
+        await this.bootstrapper.shutdown();
+      }
       logger.info('Hot Storage Pruner shutdown complete');
     } catch (error) {
       logger.error('Error during Hot Storage Pruner shutdown', {
