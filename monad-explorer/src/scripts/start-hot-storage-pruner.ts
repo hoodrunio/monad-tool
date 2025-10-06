@@ -15,11 +15,15 @@ class HotStoragePrunerApp {
       logger.info('Starting Hot Storage Pruner...');
       const redisHost = process.env.INTERNAL_REDIS_HOST || process.env.REDIS_HOST;
       const redisPort = process.env.INTERNAL_REDIS_PORT || process.env.REDIS_PORT;
+      const rabbitUrl = process.env.INTERNAL_RABBITMQ_URL || process.env.RABBITMQ_URL;
       if (redisHost) {
         process.env.REDIS_HOST = redisHost;
       }
       if (redisPort) {
         process.env.REDIS_PORT = redisPort;
+      }
+      if (rabbitUrl) {
+        process.env.RABBITMQ_URL = rabbitUrl;
       }
 
       // Initialize after env overrides so config reads correct values
