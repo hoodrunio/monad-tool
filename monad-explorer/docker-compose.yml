@@ -45,8 +45,6 @@ services:
     image: redis:7-alpine
     container_name: monad-explorer-redis
     command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     restart: unless-stopped
