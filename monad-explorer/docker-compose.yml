@@ -41,6 +41,18 @@ services:
       #retries: 3
       #start_period: 30s
 
+  redis:
+    image: redis:7-alpine
+    container_name: monad-explorer-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - monad-explorer-network
+
   rabbitmq:
     image: rabbitmq:3.12-management
     container_name: monad-explorer-rabbitmq
@@ -125,6 +137,8 @@ services:
 
 volumes:
   postgres_secure_data:
+    driver: local
+  redis_data:
     driver: local
   rabbitmq_data:
     driver: local
