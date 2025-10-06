@@ -25,8 +25,12 @@ export interface QueueConfig {
   exchange: string;
   queues: {
     tokenEnrichment: string;
+    contractEnrichment: string;
+    transactionEnrichment: string;
+    dailyStats: string;
     //internalTransactions: string;
     deadLetter: string;
+    coldStorage: string;
   };
   maxRetries: number;
   retryDelay: number;
@@ -62,6 +66,44 @@ export interface CacheConfig {
   };
 }
 
+export type StorageRoutingMode = 'hot-only' | 'dual-write' | 'cold-primary';
+
+export interface StorageConfig {
+  enableColdStorage: boolean;
+  enableColdReads: boolean;
+  enableHotPruning: boolean;
+  routingMode: StorageRoutingMode;
+  hotBlockWindow: number;
+  hotRetentionDays: number;
+  coldQueue: string;
+  coldBatchSize: number;
+  coldReadOffsetThreshold: number;
+  ingestion: {
+    workerConcurrency: number;
+    queuePrefetch: number;
+  };
+  clickHouse: {
+    url: string;
+    database: string;
+    username: string;
+    password?: string;
+    compression: boolean;
+    requestTimeoutMs: number;
+    maxInsertBatchSize: number;
+    tables: {
+      blocks: string;
+      transactions: string;
+      logs: string;
+    };
+      };
+  pruner: {
+    dryRun: boolean;
+    batchSize: number;
+    runIntervalMinutes: number;
+    safetyBufferHours: number;
+  };
+}
+
 export interface AppConfig {
   database: DatabaseConfig;
   rpc: RpcConfig;
@@ -69,6 +111,7 @@ export interface AppConfig {
   queue: QueueConfig;
   worker: WorkerConfig;
   cache: CacheConfig;
+  storage: StorageConfig;
   isDevelopment: boolean;
   isProduction: boolean;
 }
@@ -124,8 +167,12 @@ class ConfigManager {
         exchange: this.getStringEnv('QUEUE_EXCHANGE', 'monad-explorer'),
         queues: {
           tokenEnrichment: this.getStringEnv('QUEUE_TOKEN_ENRICHMENT', 'token-enrichment'),
+          contractEnrichment: this.getStringEnv('QUEUE_CONTRACT_ENRICHMENT', 'contract-enrichment'),
+          transactionEnrichment: this.getStringEnv('QUEUE_TRANSACTION_ENRICHMENT', 'transaction-enrichment'),
+          dailyStats: this.getStringEnv('QUEUE_DAILY_STATS', 'daily-stats'),
           //internalTransactions: this.getStringEnv('QUEUE_INTERNAL_TRANSACTIONS', 'internal-transactions'),
           deadLetter: this.getStringEnv('QUEUE_DEAD_LETTER', 'dead-letter'),
+          coldStorage: this.getStringEnv('QUEUE_COLD_STORAGE', 'cold-storage-ingest'),
         },
         maxRetries: this.getNumberEnv('QUEUE_MAX_RETRIES', 3),
         retryDelay: this.getNumberEnv('QUEUE_RETRY_DELAY', 30000),
@@ -156,6 +203,41 @@ class ConfigManager {
           enableReadyCheck: this.getBooleanEnv('REDIS_ENABLE_READY_CHECK', true),
           connectTimeout: this.getNumberEnv('REDIS_CONNECT_TIMEOUT', 10000),
           commandTimeout: this.getNumberEnv('REDIS_COMMAND_TIMEOUT', 5000),
+        },
+      },
+      storage: {
+        enableColdStorage: this.getBooleanEnv('ENABLE_COLD_STORAGE', false),
+        enableColdReads: this.getBooleanEnv('ENABLE_COLD_READS', false),
+        enableHotPruning: this.getBooleanEnv('ENABLE_HOT_PRUNING', false),
+        routingMode: this.getStorageRoutingMode('STORAGE_ROUTING_MODE', 'hot-only'),
+        hotBlockWindow: this.getNumberEnv('HOT_BLOCK_WINDOW', 4096),
+        hotRetentionDays: this.getNumberEnv('HOT_RETENTION_DAYS', 7),
+        coldQueue: this.getStringEnv('COLD_STORAGE_QUEUE', 'cold-storage-ingest'),
+        coldBatchSize: this.getNumberEnv('COLD_STORAGE_BATCH_SIZE', 5000),
+        coldReadOffsetThreshold: this.getNumberEnv('COLD_READ_OFFSET_THRESHOLD', 50000),
+        ingestion: {
+          workerConcurrency: this.getNumberEnv('COLD_STORAGE_WORKER_CONCURRENCY', 4),
+          queuePrefetch: this.getNumberEnv('COLD_STORAGE_QUEUE_PREFETCH', 8),
+        },
+        clickHouse: {
+          url: this.getStringEnv('CLICKHOUSE_URL', 'http://localhost:8123'),
+          database: this.getStringEnv('CLICKHOUSE_DATABASE', 'monad_explorer'),
+          username: this.getStringEnv('CLICKHOUSE_USER', 'default'),
+          password: process.env.CLICKHOUSE_PASSWORD,
+          compression: this.getBooleanEnv('CLICKHOUSE_COMPRESSION', true),
+          requestTimeoutMs: this.getNumberEnv('CLICKHOUSE_REQUEST_TIMEOUT_MS', 30000),
+          maxInsertBatchSize: this.getNumberEnv('CLICKHOUSE_MAX_INSERT_BATCH_SIZE', 10000),
+          tables: {
+            blocks: this.getStringEnv('CLICKHOUSE_BLOCKS_TABLE', 'blocks_cold'),
+            transactions: this.getStringEnv('CLICKHOUSE_TRANSACTIONS_TABLE', 'transactions_cold'),
+            logs: this.getStringEnv('CLICKHOUSE_LOGS_TABLE', 'logs_cold'),
+          },
+        },
+        pruner: {
+          dryRun: this.getBooleanEnv('HOT_PRUNER_DRY_RUN', true),
+          batchSize: this.getNumberEnv('HOT_PRUNER_BATCH_SIZE', 5000),
+          runIntervalMinutes: this.getNumberEnv('HOT_PRUNER_RUN_INTERVAL_MINUTES', 30),
+          safetyBufferHours: this.getNumberEnv('HOT_PRUNER_SAFETY_BUFFER_HOURS', 6),
         },
       },
       isDevelopment,
@@ -199,6 +281,21 @@ class ConfigManager {
     return value.toLowerCase() === 'true';
   }
 
+  private getStorageRoutingMode(key: string, defaultValue: StorageRoutingMode): StorageRoutingMode {
+    const value = process.env[key];
+    if (!value) {
+      return defaultValue;
+    }
+
+    const normalized = value.toLowerCase();
+    if (normalized === 'hot-only' || normalized === 'dual-write' || normalized === 'cold-primary') {
+      return normalized;
+    }
+
+    logger.warn(`Invalid storage routing mode value for ${key}: ${value}, using default: ${defaultValue}`);
+    return defaultValue;
+  }
+
   private validateConfig(config: AppConfig): void {
     // Validate RPC URL
     try {
@@ -226,6 +323,68 @@ class ConfigManager {
       throw new Error('All queue names must be non-empty strings');
     }
 
+    const allowedRoutingModes: StorageRoutingMode[] = ['hot-only', 'dual-write', 'cold-primary'];
+    if (!allowedRoutingModes.includes(config.storage.routingMode)) {
+      throw new Error(`Invalid storage routing mode: ${config.storage.routingMode}`);
+    }
+
+    if (config.storage.hotBlockWindow <= 0) {
+      throw new Error('Hot block window must be positive');
+    }
+
+    if (config.storage.coldReadOffsetThreshold < 0) {
+      throw new Error('Cold read offset threshold must be non-negative');
+    }
+
+    if (config.storage.hotRetentionDays <= 0) {
+      throw new Error('Hot retention days must be positive');
+    }
+
+    if (config.storage.coldBatchSize <= 0) {
+      throw new Error('Cold storage batch size must be positive');
+    }
+
+    if (!config.storage.coldQueue || config.storage.coldQueue.trim().length === 0) {
+      throw new Error('Cold storage queue name must be specified');
+    }
+
+    if (config.storage.pruner.batchSize <= 0) {
+      throw new Error('Hot storage pruner batch size must be positive');
+    }
+
+    if (config.storage.pruner.runIntervalMinutes <= 0) {
+      throw new Error('Hot storage pruner run interval must be positive');
+    }
+
+    if (config.storage.pruner.safetyBufferHours < 0) {
+      throw new Error('Hot storage pruner safety buffer cannot be negative');
+    }
+
+    if (config.storage.ingestion.workerConcurrency <= 0) {
+      throw new Error('Cold storage worker concurrency must be positive');
+    }
+
+    if (config.storage.ingestion.queuePrefetch <= 0) {
+      throw new Error('Cold storage queue prefetch must be positive');
+    }
+
+    if (!config.storage.clickHouse.url) {
+      throw new Error('ClickHouse URL must be specified');
+    }
+
+    if (!config.storage.clickHouse.database) {
+      throw new Error('ClickHouse database must be specified');
+    }
+
+    if (config.storage.clickHouse.maxInsertBatchSize <= 0) {
+      throw new Error('ClickHouse max insert batch size must be positive');
+    }
+
+    const clickHouseTables = config.storage.clickHouse.tables;
+    if (!clickHouseTables.blocks || !clickHouseTables.transactions || !clickHouseTables.logs) {
+      throw new Error('ClickHouse table names must be specified');
+    }
+
     logger.info('Configuration validation completed successfully');
   }
 
@@ -240,6 +399,17 @@ class ConfigManager {
       rpc: {
         ...config.rpc,
         url: config.rpc.url.includes('localhost') ? config.rpc.url : this.maskSensitiveUrl(config.rpc.url),
+      },
+      storage: {
+        ...config.storage,
+        clickHouse: {
+          ...config.storage.clickHouse,
+          password: config.storage.clickHouse.password ? '***masked***' : undefined,
+        },
+        pruner: {
+          ...config.storage.pruner,
+          dryRun: config.storage.pruner.dryRun,
+        },
       },
     };
 

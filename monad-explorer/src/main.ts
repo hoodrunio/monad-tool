@@ -77,23 +77,27 @@ class MainApplication {
       const result = await this.blockProcessor.processBlocks(ctx.blocks, ctx.store);
 
       // Persist entities using dedicated persister
-      await this.entityPersister.persistEntities(ctx.store, result);
+      const routing = await this.entityPersister.persistEntities(ctx.store, result);
 
       // Log success metrics
       const duration = Date.now() - startTime;
-      const stats = this.entityPersister.getPersistenceStats(result);
+      const stats = this.entityPersister.getPersistenceStats(routing);
       
       logger.info('Block batch processed successfully', {
         startBlock,
         endBlock,
         blockCount,
         duration,
-        ...stats.entityBreakdown,
-        totalEntities: stats.totalEntities
+        routingMode: routing.metadata.routingMode,
+        hotEntities: stats.hot.totalEntities,
+        coldEntities: stats.cold?.totalEntities || 0,
+        hotBreakdown: stats.hot.entityBreakdown,
+        coldBreakdown: stats.cold?.entityBreakdown,
       });
 
       // Log processing summary to context logger
-      ctx.log.info(`Processed blocks ${startBlock} to ${endBlock}: ${blockCount} blocks, ${stats.totalEntities} total entities`);
+      const coldSummary = stats.cold ? `, ${stats.cold.totalEntities} cold entities` : '';
+      ctx.log.info(`Processed blocks ${startBlock} to ${endBlock}: ${blockCount} blocks, ${stats.hot.totalEntities} hot entities${coldSummary}`);
 
     } catch (error) {
       const duration = Date.now() - startTime;
@@ -132,5 +136,4 @@ main().catch((error) => {
   });
   process.exit(1);
 });
-
 

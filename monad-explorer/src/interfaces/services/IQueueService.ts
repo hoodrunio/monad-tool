@@ -152,6 +152,14 @@ export interface IQueueService {
   ): Promise<void>;
 
   /**
+   * Consume cold storage batches
+   */
+  consumeColdStorage(
+    handler: MessageHandler<ColdStorageMessage>,
+    options?: ConsumeOptions
+  ): Promise<void>;
+
+  /**
    * Consume from specific queue
    */
   consume<T>(
@@ -185,3 +193,5 @@ export interface IQueueService {
     lastError?: string;
   }>;
 } 
+import { ColdStorageMessage } from '../storage/IStorageRouter';
+export { ColdStorageMessage } from '../storage/IStorageRouter';

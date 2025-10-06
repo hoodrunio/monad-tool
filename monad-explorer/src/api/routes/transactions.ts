@@ -2,12 +2,72 @@ import { Router, Request, Response } from 'express';
 import { ServiceContainer } from '../../services/core/ServiceContainer';
 import { StoreAdapter } from '../adapters/StoreAdapter';
 import { Transaction } from '../../model/generated';
-import { ITransactionService } from '../../interfaces/services/ITransactionService';
+import { ITransactionService, EnrichedTransaction } from '../../interfaces/services/ITransactionService';
 import { asyncHandler, ApiErrorResponse, successResponse } from '../middleware/errorHandlers';
 import { validateTransactionHash, validatePaginationParams } from '../validators/common';
 import { prepareForApiResponse } from '../../utils/bigint-serializer';
 import { ICacheService } from '../../interfaces/cache/ICacheService';
 import { LessThan } from 'typeorm';
+import { appConfig } from '../../config/AppConfig';
+import { ColdStorageQueryService } from '../../services/cold-storage/ColdStorageQueryService';
+import { logger } from '../../utils/logger';
+
+const parseBigIntSafe = (value: string | number | bigint | null | undefined): bigint => {
+  if (typeof value === 'bigint') {
+    return value;
+  }
+
+  if (value === null || value === undefined) {
+    return 0n;
+  }
+
+  try {
+    return BigInt(value);
+  } catch {
+    return 0n;
+  }
+};
+
+const mapColdResultToEnriched = (coldResult: { transaction: any; logs: any[] }): EnrichedTransaction => {
+  const tx = coldResult.transaction;
+  const gasPrice = parseBigIntSafe(tx.gasPrice);
+  const gasUsed = parseBigIntSafe(tx.gasUsed);
+
+  return {
+    id: tx.hash,
+    hash: tx.hash,
+    blockNumber: tx.blockNumber,
+    transactionIndex: tx.transactionIndex ?? 0,
+    fromAddress: tx.fromAddress,
+    toAddress: tx.toAddress ?? null,
+    value: parseBigIntSafe(tx.value),
+    gas: parseBigIntSafe(tx.gas),
+    gasPrice,
+    gasUsed,
+    status: typeof tx.status === 'number' ? tx.status : 1,
+    error: null,
+    revertReason: null,
+    timestamp: tx.blockTimestamp instanceof Date ? tx.blockTimestamp : new Date(tx.blockTimestamp),
+    input: tx.input ?? '0x',
+    tokenTransfers: [],
+    decodedLogs: coldResult.logs.map(log => ({
+      logIndex: log.logIndex,
+      address: log.address,
+      decodedData: {
+        topics: log.topics,
+        data: log.data,
+      },
+    })),
+    internalTransactions: [],
+    methodName: tx.methodName ?? undefined,
+    methodID: tx.methodId ?? undefined,
+    isContractInteraction: Boolean(tx.isContractInteraction),
+    isContractCreation: Boolean(tx.isContractCreation),
+    effectiveGasPrice: gasPrice,
+    transactionFee: gasPrice * gasUsed,
+    contractAddress: tx.contractAddress ?? null,
+  };
+};
 
 /**
  * Create transaction routes using logs-first architecture with optimized queries
@@ -21,22 +81,57 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
    */
   router.get('/', asyncHandler(async (req: Request, res: Response) => {
     const { limit, offset } = validatePaginationParams(req.query);
+    const sourceParam = typeof req.query.source === 'string' ? (req.query.source as string).toLowerCase() : 'auto';
 
-    // Get services
+    const config = appConfig.getConfig();
+    const coldReadsEnabled = config.storage.enableColdReads;
+    const shouldAttemptCold = coldReadsEnabled && (
+      sourceParam === 'cold' ||
+      (sourceParam === 'auto' && offset >= config.storage.coldReadOffsetThreshold) ||
+      (config.storage.routingMode === 'cold-primary' && sourceParam !== 'hot')
+    );
+
+    if (shouldAttemptCold) {
+      try {
+        const coldStorageService = await serviceContainer.resolve<ColdStorageQueryService>('coldStorageQueryService');
+        const coldResult = await coldStorageService.getTransactions(limit, offset);
+
+        const apiResponse = prepareForApiResponse({
+          transactions: coldResult.transactions,
+          pagination: {
+            limit,
+            offset,
+            total: coldResult.total,
+            hasMore: coldResult.hasMore,
+          }
+        });
+
+        return successResponse(res, apiResponse, 'Transactions retrieved from cold storage', 200, {
+          source: 'clickhouse',
+          limit,
+          offset,
+          totalCount: coldResult.total,
+          hasMore: coldResult.hasMore,
+          strategy: sourceParam,
+        });
+      } catch (error) {
+        logger.warn('Cold storage transaction query failed, falling back to hot tier', {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+
     const store = await serviceContainer.resolve<StoreAdapter>('store');
     const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
+    const cacheKey = `transactions:list:hot:${limit}:${offset}`;
 
-    // Cache key for this specific request
-    const cacheKey = `transactions:list:${limit}:${offset}`;
-    
-    // Try cache first
     try {
       const cached = await cacheService.get<any>(cacheKey);
       if (cached) {
         return successResponse(res, cached, 'Latest transactions retrieved from cache', 200, {
           source: 'cache',
           limit,
-          offset
+          offset,
         });
       }
     } catch (error) {
@@ -44,23 +139,17 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
     }
 
     try {
-      // OPTIMIZED: For large offsets, use cursor-based pagination behind the scenes
       let transactions: Transaction[];
       let totalCount: number;
-      
+
       if (offset > 10000) {
-        // Use cursor-based pagination for large offsets (more efficient)
-        
-        // Get the cursor timestamp from cache or calculate it
         const cursorCacheKey = `transactions:cursor:${offset}`;
-        let cursorTimestamp;
-        
+        let cursorTimestamp: Date | undefined;
+
         try {
-          cursorTimestamp = await cacheService.get<Date>(cursorCacheKey);
+          cursorTimestamp = await cacheService.get<Date>(cursorCacheKey) ?? undefined;
         } catch (error) {
-          // Fallback: calculate approximate cursor position
-          // This is an approximation, but much faster than large OFFSET
-          const hoursBack = Math.floor(offset / 1000); // Assuming ~1000 tx/hour average
+          const hoursBack = Math.floor(offset / 1000);
           cursorTimestamp = new Date(Date.now() - (hoursBack * 60 * 60 * 1000));
         }
 
@@ -71,12 +160,10 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
           take: limit,
         });
 
-        // Cache the cursor for next requests
         if (transactions.length > 0) {
           await cacheService.set(cursorCacheKey, transactions[transactions.length - 1].timestamp, 300000);
         }
       } else {
-        // Use traditional pagination for small offsets
         transactions = await store.Transaction.find({
           relations: ['block'],
           order: { timestamp: 'DESC' },
@@ -85,31 +172,25 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
         });
       }
 
-      // Get total count efficiently (cache this as it's expensive)
       const totalCountCacheKey = 'transactions:total_count';
-      
+
       try {
         const cachedCount = await cacheService.get<number>(totalCountCacheKey);
         if (cachedCount && typeof cachedCount === 'number') {
           totalCount = cachedCount;
         } else {
-          // Use estimated count based on latest transaction ID (much faster than COUNT(*))
           const latestTx = await store.Transaction.findOne({
             order: { timestamp: 'DESC' },
             select: ['id']
           });
-          
-          // Estimate based on auto-increment ID or use a reasonable approximation
-          totalCount = latestTx ? 150000000 : 0; // Current known scale
-          
-          // Cache for 5 minutes
+
+          totalCount = latestTx ? 150000000 : 0;
           await cacheService.set(totalCountCacheKey, totalCount, 300000);
         }
       } catch (error) {
-        totalCount = transactions.length > 0 ? 150000000 : 0; // Fallback estimate
+        totalCount = transactions.length > 0 ? 150000000 : 0;
       }
 
-      // Format basic transaction data for preview
       const basicTransactions = transactions.map((tx: Transaction) => ({
         hash: tx.hash,
         blockNumber: tx.block.number,
@@ -126,7 +207,6 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
         isContractCreation: tx.isContractCreation
       }));
 
-      // Convert BigInt fields to strings for JSON response
       const apiResponse = prepareForApiResponse({
         transactions: basicTransactions,
         pagination: {
@@ -137,13 +217,12 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
         }
       });
 
-      // Cache the result for 15 seconds (transactions change frequently)
       try {
         await cacheService.set(cacheKey, apiResponse, 15000);
       } catch (error) {
         // Cache error, but don't fail the request
       }
-      
+
       successResponse(res, apiResponse, 'Latest transactions retrieved successfully', 200, {
         totalCount,
         limit,
@@ -151,7 +230,9 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
         hasMore: offset + limit < totalCount,
         dataType: 'preview',
         source: 'database',
-        optimizationUsed: offset > 10000 ? 'cursor-based' : 'traditional'
+        optimizationUsed: offset > 10000 ? 'cursor-based' : 'traditional',
+        attemptedCold: shouldAttemptCold,
+        strategy: sourceParam,
       });
     } catch (error) {
       throw new ApiErrorResponse('Failed to fetch transactions', 500, 'DATABASE_ERROR');
@@ -164,14 +245,13 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
    */
   router.get('/:hash', asyncHandler(async (req: Request, res: Response) => {
     const { hash } = req.params;
-    const { 
+    const {
       includeTokenTransfers = 'true',
       includeTokenMetadata = 'true',
       includeDecodedLogs = 'true',
       includeInternalTransactions = 'true'
     } = req.query;
 
-    // Validate transaction hash
     if (!validateTransactionHash(hash)) {
       throw new ApiErrorResponse(
         'Invalid transaction hash format',
@@ -180,14 +260,10 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       );
     }
 
-    // Get services
     const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
     const transactionService = await serviceContainer.resolve<ITransactionService>('transactionService');
-
-    // Create cache key based on request parameters
     const cacheKey = `transaction:${hash}:${includeTokenTransfers}:${includeTokenMetadata}:${includeDecodedLogs}:${includeInternalTransactions}`;
-    
-    // Try cache first (longer TTL for specific transactions)
+
     try {
       const cached = await cacheService.get<any>(cacheKey);
       if (cached) {
@@ -204,13 +280,46 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       // Continue with transaction service
     }
 
-    // Get enriched transaction using existing service
-    const enrichedTx = await transactionService.getEnrichedTransaction(hash, {
+    let enrichedTx = await transactionService.getEnrichedTransaction(hash, {
       includeTokenTransfers: includeTokenTransfers === 'true',
       includeTokenMetadata: includeTokenMetadata === 'true',
       includeDecodedLogs: includeDecodedLogs === 'true',
       includeInternalTransactions: includeInternalTransactions === 'true'
     });
+
+    const config = appConfig.getConfig();
+
+    if (!enrichedTx && config.storage.enableColdReads) {
+      try {
+        const coldStorageService = await serviceContainer.resolve<ColdStorageQueryService>('coldStorageQueryService');
+        const coldResult = await coldStorageService.getTransactionByHash(hash);
+
+        if (coldResult) {
+          const coldEnriched = mapColdResultToEnriched(coldResult);
+          const apiResponse = prepareForApiResponse(coldEnriched);
+
+          try {
+            await cacheService.set(cacheKey, apiResponse, 120000);
+          } catch (error) {
+            // Cache error, continue
+          }
+
+          return successResponse(res, apiResponse, 'Transaction retrieved from cold storage', 200, {
+            architecture: 'cold-storage',
+            tokenTransfersComputed: false,
+            tokenTransferCount: 0,
+            decodedLogCount: coldResult.logs.length,
+            performance: 'cold-storage',
+            source: 'clickhouse'
+          });
+        }
+      } catch (error) {
+        logger.warn('Cold storage lookup failed for transaction', {
+          hash,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
 
     if (!enrichedTx) {
       throw new ApiErrorResponse(
@@ -220,16 +329,14 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       );
     }
 
-    // Convert BigInt fields to strings for JSON response
     const apiResponse = prepareForApiResponse(enrichedTx);
-    
-    // Cache for 2 minutes (specific transactions rarely change but can have new token data)
+
     try {
       await cacheService.set(cacheKey, apiResponse, 120000);
     } catch (error) {
       // Cache error, but don't fail the request
     }
-    
+
     successResponse(res, apiResponse, 'Transaction retrieved successfully', 200, {
       architecture: 'logs-first',
       tokenTransfersComputed: true,
@@ -248,7 +355,6 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
     const { hash } = req.params;
     const { includeMetadata = 'false' } = req.query;
 
-    // Validate transaction hash
     if (!validateTransactionHash(hash)) {
       throw new ApiErrorResponse(
         'Invalid transaction hash format',
@@ -257,13 +363,11 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       );
     }
 
-    // Get services
     const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
     const transactionService = await serviceContainer.resolve<ITransactionService>('transactionService');
 
     const cacheKey = `transaction:${hash}:token-transfers:${includeMetadata}`;
-    
-    // Try cache first
+
     try {
       const cached = await cacheService.get<any>(cacheKey);
       if (cached) {
@@ -277,21 +381,18 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       // Continue with transaction service
     }
 
-    // Get token transfers only using existing service
     const transfers = await transactionService.getTokenTransfersForTransaction(hash, {
       includeMetadata: includeMetadata === 'true'
     });
 
-    // Convert BigInt fields to strings for JSON response
     const apiTransfers = prepareForApiResponse(transfers);
-    
-    // Cache for 5 minutes (token transfers rarely change)
+
     try {
       await cacheService.set(cacheKey, apiTransfers, 300000);
     } catch (error) {
       // Cache error, but don't fail the request
     }
-    
+
     successResponse(res, apiTransfers, 'Token transfers retrieved successfully', 200, {
       architecture: 'logs-first',
       transferCount: transfers.length,
@@ -305,13 +406,12 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
    */
   router.get('/:hash/internal-transactions', asyncHandler(async (req: Request, res: Response) => {
     const { hash } = req.params;
-    const { 
+    const {
       includeFailedCalls = 'false',
       maxDepth = '10',
       filterByAddress = ''
     } = req.query;
 
-    // Validate transaction hash
     if (!validateTransactionHash(hash)) {
       throw new ApiErrorResponse(
         'Invalid transaction hash format',
@@ -320,7 +420,6 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       );
     }
 
-    // Validate maxDepth
     const depth = parseInt(maxDepth as string, 10);
     if (isNaN(depth) || depth < 1 || depth > 20) {
       throw new ApiErrorResponse(
@@ -330,12 +429,9 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       );
     }
 
-    // Get services
     const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
-    
     const cacheKey = `transaction:${hash}:internal:${includeFailedCalls}:${maxDepth}:${filterByAddress}`;
-    
-    // Try cache first (longer TTL for internal transactions as they're expensive to compute)
+
     try {
       const cached = await cacheService.get<any>(cacheKey);
       if (cached) {
@@ -348,27 +444,23 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       // Continue with service factory
     }
 
-    // Get InternalTransactionService from container
     const internalTxServiceFactory = await serviceContainer.resolve<any>('internalTransactionServiceFactory');
     const internalTxService = await internalTxServiceFactory.create();
 
-    // Get internal transactions with options
     const internalTxs = await internalTxService.getInternalTransactions(hash, {
       includeFailedCalls: includeFailedCalls === 'true',
       maxDepth: depth,
       filterByAddress: filterByAddress ? (filterByAddress as string) : undefined
     });
 
-    // Convert BigInt fields to strings for JSON response
     const apiInternalTxs = prepareForApiResponse(internalTxs);
-    
-    // Cache for 10 minutes (internal transactions are expensive and rarely change)
+
     try {
       await cacheService.set(cacheKey, apiInternalTxs, 600000);
     } catch (error) {
       // Cache error, but don't fail the request
     }
-    
+
     successResponse(res, apiInternalTxs, 'Internal transactions retrieved successfully', 200, {
       internalTransactionCount: internalTxs.length,
       source: 'database'
@@ -382,7 +474,6 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
   router.get('/:hash/has-internal-transactions', asyncHandler(async (req: Request, res: Response) => {
     const { hash } = req.params;
 
-    // Validate transaction hash
     if (!validateTransactionHash(hash)) {
       throw new ApiErrorResponse(
         'Invalid transaction hash format',
@@ -391,12 +482,9 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       );
     }
 
-    // Get services
     const cacheService = await serviceContainer.resolve<ICacheService>('cacheService');
-    
     const cacheKey = `transaction:${hash}:has-internal`;
-    
-    // Try cache first (very long TTL for this boolean check)
+
     try {
       const cached = await cacheService.get<any>(cacheKey);
       if (cached !== null) {
@@ -408,16 +496,13 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       // Continue with service factory
     }
 
-    // Get InternalTransactionService from container
     const internalTxServiceFactory = await serviceContainer.resolve<any>('internalTransactionServiceFactory');
     const internalTxService = await internalTxServiceFactory.create();
 
-    // Quick check for internal transactions
     const hasInternal = await internalTxService.hasInternalTransactions(hash);
 
     const response = { hasInternalTransactions: hasInternal };
-    
-    // Cache for 30 minutes (this rarely changes and is lightweight)
+
     try {
       await cacheService.set(cacheKey, response, 1800000);
     } catch (error) {

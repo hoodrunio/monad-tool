@@ -2,54 +2,69 @@ import { ProcessingResult } from '../processing/BlockProcessor';
 import { logger } from '../utils/logger';
 import { sanitizeEntityInPlace } from '../utils/data-sanitizer';
 import { In } from 'typeorm';
+import { IStorageRouter, StorageRoutingResult, HotStorageBatch, ColdStorageMessage, EntityBreakdown } from '../interfaces/storage/IStorageRouter';
+import { IQueueService, QueueMessage } from '../interfaces/services/IQueueService';
+import { serviceContainer } from '../services/core/ServiceContainer';
+import { appConfig } from '../config/AppConfig';
 
 /**
  * Entity Persister
  * Single Responsibility: Only handles database persistence operations
  */
 export class EntityPersister {
+  private storageRouterPromise?: Promise<IStorageRouter>;
+  private queueServicePromise?: Promise<IQueueService | null>;
+  private readonly config = appConfig.getConfig();
+
+  constructor(private readonly container = serviceContainer) {}
   
   /**
    * Persist all processed entities to the database
    * ⚡ OPTIMIZED: Parallel + Chunked persistence for maximum performance
    */
-  public async persistEntities(store: any, result: ProcessingResult): Promise<void> {
+  public async persistEntities(store: any, result: ProcessingResult): Promise<StorageRoutingResult> {
     const startTime = Date.now();
+    const storageRouter = await this.getStorageRouter();
+    const routing = storageRouter.route(result);
     
     logger.info('Starting optimized entity persistence', {
-      blocks: result.blocks.length,
-      transactions: result.transactions.length,
-      accounts: result.accounts.size,
-      logs: result.logs.length,
-      methodSignatures: result.methodSignatures.size,
-      tokens: result.tokens.length,
-      contracts: result.contracts.length,
-      discoveredContracts: result.discoveredContracts.length,
+      routingMode: routing.metadata.routingMode,
+      blocks: routing.hot.blocks.length,
+      transactions: routing.hot.transactions.length,
+      accounts: routing.hot.accounts.length,
+      logs: routing.hot.logs.length,
+      methodSignatures: routing.hot.methodSignatures.length,
+      tokens: routing.hot.tokens.length,
+      contracts: routing.hot.contracts.length,
+      discoveredContracts: routing.hot.discoveredContracts.length,
     });
 
     try {
       // ⚡ PHASE 1: Sequential (FK dependencies) - Fast entities first
-      await this.persistAccounts(store, result);
-      await this.persistMethodSignatures(store, result);
-      await this.persistBlocks(store, result);
+      await this.persistAccounts(store, routing.hot);
+      await this.persistMethodSignatures(store, routing.hot);
+      await this.persistBlocks(store, routing.hot);
 
       // ⚡ PHASE 2: Sequential for FK dependencies, Parallel within each
-      await this.persistTransactionsChunked(store, result);
+      await this.persistTransactionsChunked(store, routing.hot);
       
       // ⚡ PHASE 3: Parallel (No FK dependencies)
       await Promise.all([
-        this.persistLogsChunked(store, result),
-        this.persistTokensOptimized(store, result),
-        this.persistContracts(store, result),
+        this.persistLogsChunked(store, routing.hot),
+        this.persistTokensOptimized(store, routing.hot),
+        this.persistContracts(store, routing.hot),
       ]);
+
+      await this.enqueueColdStorageBatch(routing);
 
       const duration = Date.now() - startTime;
       logger.info('Optimized entity persistence completed', {
         duration,
-        totalEntities: this.calculateTotalEntities(result),
-        improvementFactor: '~10x faster',
+        totalEntities: routing.metadata.hotEntityTotal,
+        routingMode: routing.metadata.routingMode,
       });
 
+      return routing;
     } catch (error) {
       const duration = Date.now() - startTime;
       logger.error('Entity persistence failed', {
@@ -63,21 +78,20 @@ export class EntityPersister {
   /**
    * Persist account entities
    */
-  private async persistAccounts(store: any, result: ProcessingResult): Promise<void> {
-    if (result.accounts.size === 0) {
+  private async persistAccounts(store: any, batch: HotStorageBatch): Promise<void> {
+    if (batch.accounts.length === 0) {
       return;
     }
 
     try {
-      const accountArray = [...result.accounts.values()];
-      await store.upsert(accountArray);
+      await store.upsert(batch.accounts);
       
       logger.debug('Accounts persisted successfully', { 
-        count: accountArray.length 
+        count: batch.accounts.length 
       });
     } catch (error) {
       logger.error('Failed to persist accounts', {
-        count: result.accounts.size,
+        count: batch.accounts.length,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
@@ -87,21 +101,20 @@ export class EntityPersister {
   /**
    * Persist method signature entities
    */
-  private async persistMethodSignatures(store: any, result: ProcessingResult): Promise<void> {
-    if (result.methodSignatures.size === 0) {
+  private async persistMethodSignatures(store: any, batch: HotStorageBatch): Promise<void> {
+    if (batch.methodSignatures.length === 0) {
       return;
     }
 
     try {
-      const methodArray = [...result.methodSignatures.values()];
-      await store.upsert(methodArray);
+      await store.upsert(batch.methodSignatures);
       
       logger.debug('Method signatures persisted successfully', { 
-        count: methodArray.length 
+        count: batch.methodSignatures.length 
       });
     } catch (error) {
       logger.error('Failed to persist method signatures', {
-        count: result.methodSignatures.size,
+        count: batch.methodSignatures.length,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
@@ -111,21 +124,21 @@ export class EntityPersister {
   /**
    * Persist block entities
    */
-  private async persistBlocks(store: any, result: ProcessingResult): Promise<void> {
-    if (result.blocks.length === 0) {
+  private async persistBlocks(store: any, batch: HotStorageBatch): Promise<void> {
+    if (batch.blocks.length === 0) {
       return;
     }
 
     try {
-      await store.insert(result.blocks);
+      await store.insert(batch.blocks);
       
       logger.debug('Blocks persisted successfully', { 
-        count: result.blocks.length,
-        blockRange: `${result.blocks[0]?.number}-${result.blocks[result.blocks.length - 1]?.number}`,
+        count: batch.blocks.length,
+        blockRange: `${batch.blocks[0]?.number}-${batch.blocks[batch.blocks.length - 1]?.number}`,
       });
     } catch (error) {
       logger.error('Failed to persist blocks', {
-        count: result.blocks.length,
+        count: batch.blocks.length,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
@@ -135,24 +148,24 @@ export class EntityPersister {
   /**
    * Persist transaction entities (legacy method)
    */
-  private async persistTransactions(store: any, result: ProcessingResult): Promise<void> {
-    await this.persistTransactionsChunked(store, result);
+  private async persistTransactions(store: any, batch: HotStorageBatch): Promise<void> {
+    await this.persistTransactionsChunked(store, batch);
   }
 
   /**
    * ⚡ OPTIMIZED: Chunked transaction persistence for large datasets
    */
-  private async persistTransactionsChunked(store: any, result: ProcessingResult): Promise<void> {
-    if (result.transactions.length === 0) {
+  private async persistTransactionsChunked(store: any, batch: HotStorageBatch): Promise<void> {
+    if (batch.transactions.length === 0) {
       return;
     }
 
     try {
       const CHUNK_SIZE = 20000; // Process 20000 transactions per chunk
-      const chunks = this.chunkArray(result.transactions, CHUNK_SIZE);
+      const chunks = this.chunkArray(batch.transactions, CHUNK_SIZE);
       
       // Bulk sanitize all transactions first
-      this.bulkSanitize(result.transactions);
+      this.bulkSanitize(batch.transactions);
       
       // Process chunks in parallel (with concurrency limit)
       await this.processChunksInParallel(chunks, async (chunk, index) => {
@@ -163,12 +176,12 @@ export class EntityPersister {
       }, 3); // Max 3 concurrent chunks
       
       logger.info('All transactions persisted successfully', { 
-        totalCount: result.transactions.length,
+        totalCount: batch.transactions.length,
         chunks: chunks.length 
       });
     } catch (error) {
       logger.error('Failed to persist transactions', {
-        count: result.transactions.length,
+        count: batch.transactions.length,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
@@ -178,24 +191,24 @@ export class EntityPersister {
   /**
    * Persist log entities (legacy method)
    */
-  private async persistLogs(store: any, result: ProcessingResult): Promise<void> {
-    await this.persistLogsChunked(store, result);
+  private async persistLogs(store: any, batch: HotStorageBatch): Promise<void> {
+    await this.persistLogsChunked(store, batch);
   }
 
   /**
    * ⚡ OPTIMIZED: Chunked logs persistence for large datasets
    */
-  private async persistLogsChunked(store: any, result: ProcessingResult): Promise<void> {
-    if (result.logs.length === 0) {
+  private async persistLogsChunked(store: any, batch: HotStorageBatch): Promise<void> {
+    if (batch.logs.length === 0) {
       return;
     }
 
     try {
       const CHUNK_SIZE = 20000; // Process 20000 logs per chunk
-      const chunks = this.chunkArray(result.logs, CHUNK_SIZE);
+      const chunks = this.chunkArray(batch.logs, CHUNK_SIZE);
       
       // Bulk sanitize all logs first
-      this.bulkSanitize(result.logs);
+      this.bulkSanitize(batch.logs);
       
       // Process chunks in parallel
       await this.processChunksInParallel(chunks, async (chunk: any[], index: number) => {
@@ -206,12 +219,12 @@ export class EntityPersister {
       }, 3); // Max 3 concurrent chunks
       
       logger.info('All logs persisted successfully', { 
-        totalCount: result.logs.length,
+        totalCount: batch.logs.length,
         chunks: chunks.length 
       });
     } catch (error) {
       logger.error('Failed to persist logs', {
-        count: result.logs.length,
+        count: batch.logs.length,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
@@ -221,29 +234,29 @@ export class EntityPersister {
   /**
    * Persist token entities (legacy method)
    */
-  private async persistTokens(store: any, result: ProcessingResult): Promise<void> {
-    await this.persistTokensOptimized(store, result);
+  private async persistTokens(store: any, batch: HotStorageBatch): Promise<void> {
+    await this.persistTokensOptimized(store, batch);
   }
 
   /**
    * ⚡ OPTIMIZED: Simplified token persistence without expensive existence checks
    */
-  private async persistTokensOptimized(store: any, result: ProcessingResult): Promise<void> {
-    if (result.tokens.length === 0) {
+  private async persistTokensOptimized(store: any, batch: HotStorageBatch): Promise<void> {
+    if (batch.tokens.length === 0) {
       return;
     }
 
     try {
       // Simple upsert approach - let database handle duplicates
-      await store.upsert(result.tokens);
+      await store.upsert(batch.tokens);
       
       logger.info('Tokens persisted successfully', { 
-        count: result.tokens.length
+        count: batch.tokens.length
       });
       
     } catch (error) {
       logger.error('Failed to persist tokens', {
-        count: result.tokens.length,
+        count: batch.tokens.length,
         error: error instanceof Error ? error.message : 'Unknown error',
         stack: error instanceof Error ? error.stack : undefined
       });
@@ -255,9 +268,9 @@ export class EntityPersister {
    * Persist contract entities (both creation and discovered contracts)
    * SMART PERSISTENCE: Check existing contracts first, insert only new ones
    */
-  private async persistContracts(store: any, result: ProcessingResult): Promise<void> {
+  private async persistContracts(store: any, batch: HotStorageBatch): Promise<void> {
     // Combine both regular contracts and discovered contracts
-    const allContracts = [...result.contracts, ...result.discoveredContracts];
+    const allContracts = [...batch.contracts, ...batch.discoveredContracts];
     
     if (allContracts.length === 0) {
       return;
@@ -276,8 +289,8 @@ export class EntityPersister {
       const existingAddresses = new Set(existingContracts.map((c: any) => c.address.toLowerCase()));
       
       logger.debug('Database contract existence check completed', {
-        creationContracts: result.contracts.length,
-        discoveredContracts: result.discoveredContracts.length,
+        creationContracts: batch.contracts.length,
+        discoveredContracts: batch.discoveredContracts.length,
         totalRequested: allContracts.length,
         existingInDb: existingAddresses.size,
         newToInsert: allContracts.length - existingAddresses.size,
@@ -289,10 +302,10 @@ export class EntityPersister {
       if (newContracts.length > 0) {
         // Separate creation and discovered contracts for logging
         const newCreationContracts = newContracts.filter(c => 
-          result.contracts.some(rc => rc.address === c.address)
+          batch.contracts.some(rc => rc.address === c.address)
         );
         const newDiscoveredContracts = newContracts.filter(c => 
-          result.discoveredContracts.some(dc => dc.address === c.address)
+          batch.discoveredContracts.some(dc => dc.address === c.address)
         );
         
         logger.debug('Inserting new contracts', {
@@ -313,8 +326,8 @@ export class EntityPersister {
 
       logger.debug('✅ Contract persistence completed successfully', { 
         totalContracts: allContracts.length,
-        creationContracts: result.contracts.length,
-        discoveredContracts: result.discoveredContracts.length,
+        creationContracts: batch.contracts.length,
+        discoveredContracts: batch.discoveredContracts.length,
         existingInDb: existingAddresses.size,
         inserted: newContracts.length,
       });
@@ -322,12 +335,108 @@ export class EntityPersister {
     } catch (error) {
       logger.error('❌ Failed to persist contracts', {
         totalContracts: allContracts.length,
-        creationContracts: result.contracts.length,
-        discoveredContracts: result.discoveredContracts.length,
+        creationContracts: batch.contracts.length,
+        discoveredContracts: batch.discoveredContracts.length,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
     }
+  }
+
+  private async enqueueColdStorageBatch(routing: StorageRoutingResult): Promise<void> {
+    if (!routing.cold) {
+      return;
+    }
+
+    const queueService = await this.getQueueService();
+    if (!queueService) {
+      logger.warn('Cold storage batch not enqueued - queue service unavailable', {
+        batchId: routing.cold.batchId,
+      });
+      return;
+    }
+
+    if (!queueService.isConnected()) {
+      logger.warn('Cold storage batch not enqueued - queue service not connected', {
+        batchId: routing.cold.batchId,
+      });
+      return;
+    }
+
+    const message = this.buildColdStorageMessage(routing);
+    const queueMessage: QueueMessage<ColdStorageMessage> = {
+      type: 'COLD_STORAGE_BATCH',
+      data: message,
+      priority: 6,
+      retryCount: 0,
+      timestamp: Date.now(),
+      messageId: `COLD_STORAGE_BATCH-${routing.cold.batchId}`,
+    };
+
+    try {
+      await queueService.publish(this.config.storage.coldQueue, queueMessage, {
+        persistent: true,
+        priority: 6,
+      });
+
+      logger.debug('Cold storage batch enqueued', {
+        batchId: routing.cold.batchId,
+        routingMode: routing.metadata.routingMode,
+        coldEntityTotal: routing.metadata.coldEntityTotal,
+      });
+    } catch (error) {
+      logger.error('Failed to enqueue cold storage batch', {
+        batchId: routing.cold.batchId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  private buildColdStorageMessage(routing: StorageRoutingResult): ColdStorageMessage {
+    const coldBatch = routing.cold;
+    if (!coldBatch) {
+      throw new Error('Cold batch is not available for message construction');
+    }
+
+    const entityCounts = routing.metadata.coldBreakdown ?? routing.metadata.hotBreakdown;
+
+    return {
+      version: 1,
+      payload: coldBatch,
+      routingMode: routing.metadata.routingMode,
+      hotBlockWindow: this.config.storage.hotBlockWindow,
+      entityCounts,
+    };
+  }
+
+  private async getStorageRouter(): Promise<IStorageRouter> {
+    if (!this.storageRouterPromise) {
+      this.storageRouterPromise = this.container.resolve<IStorageRouter>('storageRouter');
+    }
+
+    return this.storageRouterPromise;
+  }
+
+  private async getQueueService(): Promise<IQueueService | null> {
+    if (!this.config.storage.enableColdStorage) {
+      return null;
+    }
+
+    if (!this.queueServicePromise) {
+      this.queueServicePromise = (async () => {
+        try {
+          const service = await this.container.resolve<IQueueService>('queueService');
+          return service;
+        } catch (error) {
+          logger.warn('Unable to resolve queue service for cold storage routing', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+          return null;
+        }
+      })();
+    }
+
+    return this.queueServicePromise;
   }
 
   // ⚡ UTILITY METHODS FOR OPTIMIZED PERSISTENCE
@@ -384,40 +493,44 @@ export class EntityPersister {
   // ✅ TokenTransfer persistence removed - now computed at runtime from logs
 
   /**
-   * Calculate total number of entities to persist
-   */
-  private calculateTotalEntities(result: ProcessingResult): number {
-    return result.blocks.length +
-           result.transactions.length +
-           result.accounts.size +
-           result.logs.length +
-           result.methodSignatures.size +
-           result.tokens.length +
-           result.contracts.length +
-           result.discoveredContracts.length;
-  }
-
-  /**
    * Get persistence statistics
    */
-  public getPersistenceStats(result: ProcessingResult): {
-    totalEntities: number;
-    entityBreakdown: Record<string, number>;
+  public getPersistenceStats(routing: StorageRoutingResult): {
+    hot: {
+      totalEntities: number;
+      entityBreakdown: EntityBreakdown;
+    };
+    cold?: {
+      totalEntities: number;
+      entityBreakdown: EntityBreakdown;
+      batchId: string;
+    };
   } {
-    const entityBreakdown = {
-      blocks: result.blocks.length,
-      transactions: result.transactions.length,
-      accounts: result.accounts.size,
-      logs: result.logs.length,
-      methodSignatures: result.methodSignatures.size,
-      tokens: result.tokens.length,
-      contracts: result.contracts.length,
-      discoveredContracts: result.discoveredContracts.length,
+    const stats: {
+      hot: {
+        totalEntities: number;
+        entityBreakdown: EntityBreakdown;
+      };
+      cold?: {
+        totalEntities: number;
+        entityBreakdown: EntityBreakdown;
+        batchId: string;
+      };
+    } = {
+      hot: {
+        totalEntities: routing.metadata.hotEntityTotal,
+        entityBreakdown: routing.metadata.hotBreakdown,
+      },
     };
 
-    return {
-      totalEntities: this.calculateTotalEntities(result),
-      entityBreakdown,
-    };
+    if (routing.cold && routing.metadata.coldBreakdown) {
+      stats.cold = {
+        totalEntities: routing.metadata.coldEntityTotal,
+        entityBreakdown: routing.metadata.coldBreakdown,
+        batchId: routing.cold.batchId,
+      };
+    }
+
+    return stats;
   }
-} 
+}

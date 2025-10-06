@@ -14,6 +14,9 @@ import { LogTokenTransferParser } from '../services/parsing/LogTokenTransferPars
 import { TransactionService } from '../services/transaction/TransactionService';
 import { InternalTransactionService } from '../services/transaction/InternalTransactionService';
 import { logger } from '../utils/logger';
+import { StorageRouter } from '../storage/StorageRouter';
+import { ClickHouseService } from '../services/cold-storage/ClickHouseService';
+import { ColdStorageQueryService } from '../services/cold-storage/ColdStorageQueryService';
 
 // Import interfaces
 import { IRpcClient } from '../interfaces/blockchain/IRpcClient';
@@ -29,6 +32,7 @@ import { IQueueService } from '../interfaces/services/IQueueService';
 import { ILogTokenTransferParser } from '../interfaces/processing/ILogTokenTransferParser';
 import { ITransactionService } from '../interfaces/services/ITransactionService';
 import { IInternalTransactionService } from '../interfaces/services/IInternalTransactionService';
+import { IStorageRouter } from '../interfaces/storage/IStorageRouter';
 
 /**
  * Service Registration Module
@@ -79,6 +83,29 @@ export class ServiceRegistration {
     // Register RPC Client
     serviceContainer.registerFactory<IRpcClient>('rpcClient', () => {
       return new RpcClient(this.config.rpc);
+    });
+
+    // Register Storage Router
+    serviceContainer.registerFactory<IStorageRouter>('storageRouter', () => {
+      return new StorageRouter(this.config.storage);
+    });
+
+    serviceContainer.registerFactory<ClickHouseService>('clickHouseService', async () => {
+      const shouldConnect = this.config.storage.enableColdStorage || this.config.storage.enableColdReads;
+      const service = new ClickHouseService(this.config.storage.clickHouse);
+
+      if (shouldConnect) {
+        try {
+          await service.ping();
+          logger.info('ClickHouse connectivity validated');
+        } catch (error) {
+          logger.warn('Failed to ping ClickHouse - cold storage features may be unavailable', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
+
+      return service;
     });
 
     // Register Redis Cache Service (Redis only) - with fallback for connection failures
@@ -225,8 +252,9 @@ export class ServiceRegistration {
     serviceContainer.registerFactory<IQueueService>('queueService', async () => {
       const queueService = new RabbitMQService(this.config.queue.rabbitMqUrl);
       
-      // Only connect if async processing is enabled
-      if (this.config.processor.enableAsyncProcessing) {
+      const shouldConnectQueue = this.config.processor.enableAsyncProcessing || this.config.storage.enableColdStorage;
+
+      if (shouldConnectQueue) {
         try {
           await queueService.connect();
           logger.info('RabbitMQ service connected successfully');
@@ -236,7 +264,7 @@ export class ServiceRegistration {
           });
         }
       } else {
-        logger.debug('Async processing disabled - RabbitMQ connection skipped');
+        logger.debug('Queue connection skipped - async processing and cold storage disabled');
       }
       
       return queueService;
@@ -269,6 +297,11 @@ export class ServiceRegistration {
       const tokenDetectionService = await serviceContainer.resolveInternal<ITokenDetectionService>('tokenDetectionService');
       const cacheService = await serviceContainer.resolveInternal<ICacheService>('cacheService');
       return new ContractMetadataFetcher(rpcClient, tokenDetectionService, cacheService);
+    });
+
+    serviceContainer.registerFactory<ColdStorageQueryService>('coldStorageQueryService', async () => {
+      const clickHouseService = await serviceContainer.resolveInternal<ClickHouseService>('clickHouseService');
+      return new ColdStorageQueryService(clickHouseService, this.config.storage);
     });
 
     // Register Optimized Contract Filter (for RPC call reduction)

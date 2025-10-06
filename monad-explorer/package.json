@@ -16,11 +16,18 @@
     "worker:transaction:dev": "npm run build && npx ts-node src/scripts/start-transaction-enrichment-worker.ts",
     "worker:contract:start": "node -r dotenv/config lib/scripts/start-contract-enrichment-worker.js",
     "worker:contract:dev": "npm run build && npx ts-node src/scripts/start-contract-enrichment-worker.ts",
+    "worker:cold-storage:start": "node -r dotenv/config lib/scripts/start-cold-storage-worker.js",
+    "worker:cold-storage:dev": "npm run build && npx ts-node -r dotenv/config src/scripts/start-cold-storage-worker.ts",
+    "worker:cold-storage": "npm run build && node -r dotenv/config lib/scripts/start-cold-storage-worker.js",
+    "worker:pruner:start": "node -r dotenv/config lib/scripts/start-hot-storage-pruner.js",
+    "worker:pruner:dev": "npm run build && npx ts-node -r dotenv/config src/scripts/start-hot-storage-pruner.ts",
+    "worker:pruner": "npm run build && node -r dotenv/config lib/scripts/start-hot-storage-pruner.js",
     "query-node:start": "squid-graphql-server --dumb-cache in-memory --dumb-cache-ttl 1000 --dumb-cache-size 100 --dumb-cache-max-age 1000",
     "api:start": "node -r dotenv/config lib/api/server.js",
     "api:dev": "npx ts-node -r dotenv/config src/api/server.ts"
   },
   "dependencies": {
+    "@clickhouse/client": "^1.12.1",
     "@subsquid/evm-abi": "^0.3.0",
     "@subsquid/evm-processor": "^1.27.2",
     "@subsquid/graphql-server": "^4.6.0",

@@ -41,8 +41,94 @@ services:
       #retries: 3
       #start_period: 30s
 
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: monad-explorer-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_UI_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    restart: unless-stopped
+    networks:
+      - monad-explorer-network
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: monad-explorer-clickhouse
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-monad_explorer}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./migrations/clickhouse:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - monad-explorer-network
+
+  cold-storage-worker:
+    image: node:20
+    container_name: monad-explorer-cold-storage-worker
+    working_dir: /app
+    command: sh -c "npm install && npm run worker:cold-storage"
+    volumes:
+      - ./:/app
+    environment:
+      ENABLE_COLD_STORAGE: "true"
+      STORAGE_ROUTING_MODE: ${STORAGE_ROUTING_MODE:-dual-write}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-monad_explorer}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      RABBITMQ_URL: amqp://rabbitmq:5672
+    depends_on:
+      - rabbitmq
+      - clickhouse
+    restart: unless-stopped
+    networks:
+      - monad-explorer-network
+    profiles:
+      - cold-storage
+
+  hot-storage-pruner:
+    image: node:20
+    container_name: monad-explorer-hot-storage-pruner
+    working_dir: /app
+    command: sh -c "npm install && npm run worker:pruner"
+    volumes:
+      - ./:/app
+    environment:
+      ENABLE_HOT_PRUNING: "true"
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-squid_user}
+      DB_PASS: ${DB_PASS:-postgres}
+      DB_NAME: ${DB_NAME:-squid}
+    depends_on:
+      - db
+    restart: unless-stopped
+    networks:
+      - monad-explorer-network
+    profiles:
+      - cold-storage
+
 volumes:
   postgres_secure_data:
+    driver: local
+  rabbitmq_data:
+    driver: local
+  clickhouse_data:
     driver: local
 
 networks:

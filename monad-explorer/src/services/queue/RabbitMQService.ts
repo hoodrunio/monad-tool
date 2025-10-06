@@ -11,7 +11,8 @@ import {
   PublishOptions,
   ConsumeOptions,
   MessageHandler,
-  QueueStats
+  QueueStats,
+  ColdStorageMessage,
 } from '../../interfaces/services/IQueueService';
 
 // Legacy interfaces for backward compatibility
@@ -61,6 +62,7 @@ interface QueueConfig {
     transactionEnrichment: string;
     dailyStats: string;
     deadLetter: string;
+    coldStorage: string;
   };
   maxRetries: number;
   retryDelay: number;
@@ -87,6 +89,7 @@ export class RabbitMQService implements IQueueService {
       transactionEnrichment: 'transaction-enrichment',
       dailyStats: 'daily-stats',
       deadLetter: 'dead-letter',
+      coldStorage: 'cold-storage-ingest',
     },
     maxRetries: 3,
     retryDelay: 30000, // 30 seconds
@@ -168,6 +171,7 @@ export class RabbitMQService implements IQueueService {
     //await this.channel.assertQueue(this.config.queues.internalTransactions, queueOptions);
     await this.channel.assertQueue(this.config.queues.transactionEnrichment, queueOptions);
     await this.channel.assertQueue(this.config.queues.dailyStats, queueOptions);
+    await this.channel.assertQueue(this.config.queues.coldStorage, queueOptions);
 
     // Bind queues to exchange
     await this.channel.bindQueue(this.config.queues.tokenEnrichment, this.config.exchange, 'token.*');
@@ -175,6 +179,8 @@ export class RabbitMQService implements IQueueService {
     //await this.channel.bindQueue(this.config.queues.internalTransactions, this.config.exchange, 'transaction.*');
     await this.channel.bindQueue(this.config.queues.transactionEnrichment, this.config.exchange, 'transaction.*');
     await this.channel.bindQueue(this.config.queues.dailyStats, this.config.exchange, 'stats.*');
+    const coldRoutingKey = this.toRoutingKey(this.config.queues.coldStorage);
+    await this.channel.bindQueue(this.config.queues.coldStorage, this.config.exchange, coldRoutingKey);
 
     logger.info('RabbitMQ infrastructure setup completed');
   }
@@ -286,7 +292,7 @@ export class RabbitMQService implements IQueueService {
 
     try {
       const buffer = Buffer.from(JSON.stringify(message));
-      const routingKey = queueName.includes('-') ? queueName.replace('-', '.') : queueName;
+      const routingKey = this.toRoutingKey(queueName);
       
       // Retry logic for backpressure handling with ConfirmChannel callbacks
       let retryCount = 0;
@@ -371,6 +377,10 @@ export class RabbitMQService implements IQueueService {
     }
   }
 
+  private toRoutingKey(queueName: string): string {
+    return queueName.includes('-') ? queueName.replace(/-/g, '.') : queueName;
+  }
+
 
 
   async consumeTokenEnrichment(handler: MessageHandler<ITokenEnrichmentMessage>, options?: ConsumeOptions): Promise<void> {
@@ -388,6 +398,15 @@ export class RabbitMQService implements IQueueService {
         throw new Error(`Invalid message type: ${message.type}`);
       }
       await handler(message.data as IContractEnrichmentMessage);
+    }, options);
+  }
+
+  async consumeColdStorage(handler: MessageHandler<ColdStorageMessage>, options?: ConsumeOptions): Promise<void> {
+    await this.consume(this.config.queues.coldStorage, async (message: IQueueMessage) => {
+      if (message.type !== 'COLD_STORAGE_BATCH') {
+        throw new Error(`Invalid message type: ${message.type}`);
+      }
+      await handler(message.data as ColdStorageMessage);
     }, options);
   }
 
