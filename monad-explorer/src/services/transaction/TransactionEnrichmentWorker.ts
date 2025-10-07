@@ -6,6 +6,7 @@ import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 import { appConfig } from '../../config/AppConfig';
 import { Transaction } from '../../model/generated/transaction.model';
 import { Block } from '../../model/generated/block.model';
+import { extractMethodInfo } from '../../utils/method-signature';
 
 /**
  * Transaction Enrichment Worker
@@ -222,7 +223,7 @@ export class TransactionEnrichmentWorker {
     const transactionFee = BigInt(gasUsed || '0') * effectiveGasPrice;
 
     // 3. Extract method information
-    const methodInfo = this.extractMethodInfo(input);
+    const methodInfo = extractMethodInfo(input);
 
     // 4. Calculate contract address if needed (with safe BigInt conversion)
     let contractAddress = null;
@@ -392,42 +393,6 @@ export class TransactionEnrichmentWorker {
     }
   }
 
-  /**
-   * Extract method information from transaction input
-   */
-  private extractMethodInfo(input: string | null): { id: string | null; name: string | null } {
-    if (!input || input.length < 10) {
-      return { id: null, name: null };
-    }
-    
-    const methodId = input.slice(0, 10); // First 4 bytes (including 0x)
-    const knownMethod = this.getKnownMethod(methodId);
-    
-    return {
-      id: methodId,
-      name: knownMethod?.name || null,
-    };
-  }
-
-  /**
-   * Get known method signature
-   */
-  private getKnownMethod(methodId: string): { name: string; signature: string } | null {
-    const knownMethods = new Map([
-      ['0xa9059cbb', { name: 'transfer', signature: 'transfer(address,uint256)' }],
-      ['0x095ea7b3', { name: 'approve', signature: 'approve(address,uint256)' }],
-      ['0x23b872dd', { name: 'transferFrom', signature: 'transferFrom(address,address,uint256)' }],
-      ['0x70a08231', { name: 'balanceOf', signature: 'balanceOf(address)' }],
-      ['0xdd62ed3e', { name: 'allowance', signature: 'allowance(address,address)' }],
-      ['0x18160ddd', { name: 'totalSupply', signature: 'totalSupply()' }],
-      ['0x06fdde03', { name: 'name', signature: 'name()' }],
-      ['0x95d89b41', { name: 'symbol', signature: 'symbol()' }],
-      ['0xa25ffea8', { name: 'mint', signature: 'mint(address,address,uint256)' }],
-      ['0x313ce567', { name: 'decimals', signature: 'decimals()' }],
-    ]);
-
-    return knownMethods.get(methodId) || null;
-  }
 
   /**
    * Calculate contract address for contract creation transactions

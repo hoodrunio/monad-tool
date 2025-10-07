@@ -11,6 +11,7 @@ import { LessThan } from 'typeorm';
 import { appConfig } from '../../config/AppConfig';
 import { ColdStorageQueryService } from '../../services/cold-storage/ColdStorageQueryService';
 import { logger } from '../../utils/logger';
+import { extractMethodInfo } from '../../utils/method-signature';
 
 const parseBigIntSafe = (value: string | number | bigint | null | undefined): bigint => {
   if (typeof value === 'bigint') {
@@ -32,6 +33,11 @@ const mapColdResultToEnriched = (coldResult: { transaction: any; logs: any[] }):
   const tx = coldResult.transaction;
   const gasPrice = parseBigIntSafe(tx.gasPrice);
   const gasUsed = parseBigIntSafe(tx.gasUsed);
+
+  // Extract method info from input if not already present in cold storage
+  const methodInfo = tx.methodId && tx.methodName
+    ? { id: tx.methodId, name: tx.methodName }
+    : extractMethodInfo(tx.input ?? null);
 
   return {
     id: tx.hash,
@@ -59,8 +65,8 @@ const mapColdResultToEnriched = (coldResult: { transaction: any; logs: any[] }):
       },
     })),
     internalTransactions: [],
-    methodName: tx.methodName ?? null,
-    methodID: tx.methodId ?? null,
+    methodName: methodInfo.name,
+    methodID: methodInfo.id,
     isContractInteraction: Boolean(tx.isContractInteraction),
     isContractCreation: Boolean(tx.isContractCreation),
     effectiveGasPrice: gasPrice,

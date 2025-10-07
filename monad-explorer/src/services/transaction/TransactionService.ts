@@ -9,6 +9,7 @@ import { IRpcClient } from '../../interfaces/blockchain/IRpcClient';
 import { logger } from '../../utils/logger';
 import { In } from 'typeorm';
 import { IInternalTransactionService } from '../../interfaces/services/IInternalTransactionService';
+import { extractMethodInfo } from '../../utils/method-signature';
 
 export class TransactionService implements ITransactionService {
   private readonly cachePrefix = 'tx:enriched';
@@ -542,7 +543,7 @@ export class TransactionService implements ITransactionService {
 
       // Extract method info if not present
       if (!transaction.methodName && transaction.input) {
-        const methodInfo = this.extractMethodInfo(transaction.input);
+        const methodInfo = extractMethodInfo(transaction.input);
         fallbackData.methodName = methodInfo.name;
         fallbackData.methodID = methodInfo.id;
       }
@@ -566,32 +567,6 @@ export class TransactionService implements ITransactionService {
     }
   }
 
-  /**
-   * Extract method information from transaction input
-   */
-  private extractMethodInfo(input: string | null): { id: string | null; name: string | null } {
-    if (!input || input.length < 10) {
-      return { id: null, name: null };
-    }
-    
-    const methodId = input.slice(0, 10);
-    const knownMethods = new Map([
-      ['0xa9059cbb', 'transfer'],
-      ['0x095ea7b3', 'approve'],
-      ['0x23b872dd', 'transferFrom'],
-      ['0x70a08231', 'balanceOf'],
-      ['0xdd62ed3e', 'allowance'],
-      ['0x18160ddd', 'totalSupply'],
-      ['0x06fdde03', 'name'],
-      ['0x95d89b41', 'symbol'],
-      ['0x313ce567', 'decimals'],
-    ]);
-    
-    return {
-      id: methodId,
-      name: knownMethods.get(methodId) || null,
-    };
-  }
 
   /**
    * Calculate contract address for contract creation transactions

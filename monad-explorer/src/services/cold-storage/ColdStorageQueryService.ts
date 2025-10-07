@@ -1,6 +1,7 @@
 import { ClickHouseService } from './ClickHouseService';
 import { StorageConfig } from '../../config/AppConfig';
 import { logger } from '../../utils/logger';
+import { extractMethodInfo } from '../../utils/method-signature';
 
 interface ColdTransactionRecord {
   transaction_hash: string;
@@ -77,6 +78,7 @@ export class ColdStorageQueryService {
           gas_price,
           gas_used,
           status,
+          input,
           method_id,
           method_name,
           is_contract_interaction,
@@ -94,21 +96,28 @@ export class ColdStorageQueryService {
 
       const total = totalResult[0]?.total ?? rows.length;
 
-      const transactions = rows.map(row => ({
-        hash: row.transaction_hash,
-        blockNumber: Number(row.block_number),
-        fromAddress: row.from_address,
-        toAddress: row.to_address,
-        value: row.value,
-        gasUsed: row.gas_used,
-        gasPrice: row.gas_price,
-        timestamp: new Date(row.block_timestamp),
-        status: row.status,
-        methodId: row.method_id,
-        methodName: row.method_name,
-        isContractInteraction: Boolean(row.is_contract_interaction),
-        isContractCreation: Boolean(row.is_contract_creation),
-      }));
+      const transactions = rows.map(row => {
+        // Extract method info from input if not present in cold storage
+        const methodInfo = row.method_id && row.method_name
+          ? { id: row.method_id, name: row.method_name }
+          : extractMethodInfo(row.input ?? null);
+
+        return {
+          hash: row.transaction_hash,
+          blockNumber: Number(row.block_number),
+          fromAddress: row.from_address,
+          toAddress: row.to_address,
+          value: row.value,
+          gasUsed: row.gas_used,
+          gasPrice: row.gas_price,
+          timestamp: new Date(row.block_timestamp),
+          status: row.status,
+          methodId: methodInfo.id,
+          methodName: methodInfo.name,
+          isContractInteraction: Boolean(row.is_contract_interaction),
+          isContractCreation: Boolean(row.is_contract_creation),
+        };
+      });
 
       return {
         transactions,
@@ -377,6 +386,7 @@ export class ColdStorageQueryService {
           gas_price,
           gas_used,
           status,
+          input,
           method_id,
           method_name,
           is_contract_interaction,
@@ -399,21 +409,28 @@ export class ColdStorageQueryService {
 
       const totalCount = countRows[0]?.count ?? 0;
 
-      const transactions = txRows.map(row => ({
-        hash: row.transaction_hash,
-        blockNumber: Number(row.block_number),
-        fromAddress: row.from_address,
-        toAddress: row.to_address,
-        value: row.value,
-        gasUsed: row.gas_used,
-        gasPrice: row.gas_price,
-        timestamp: new Date(row.block_timestamp),
-        status: row.status,
-        methodId: row.method_id,
-        methodName: row.method_name,
-        isContractInteraction: Boolean(row.is_contract_interaction),
-        isContractCreation: Boolean(row.is_contract_creation),
-      }));
+      const transactions = txRows.map(row => {
+        // Extract method info from input if not present in cold storage
+        const methodInfo = row.method_id && row.method_name
+          ? { id: row.method_id, name: row.method_name }
+          : extractMethodInfo(row.input ?? null);
+
+        return {
+          hash: row.transaction_hash,
+          blockNumber: Number(row.block_number),
+          fromAddress: row.from_address,
+          toAddress: row.to_address,
+          value: row.value,
+          gasUsed: row.gas_used,
+          gasPrice: row.gas_price,
+          timestamp: new Date(row.block_timestamp),
+          status: row.status,
+          methodId: methodInfo.id,
+          methodName: methodInfo.name,
+          isContractInteraction: Boolean(row.is_contract_interaction),
+          isContractCreation: Boolean(row.is_contract_creation),
+        };
+      });
 
       return {
         block: {
