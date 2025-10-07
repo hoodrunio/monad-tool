@@ -238,6 +238,7 @@ export class ColdStorageQueryService {
           gas_used,
           transaction_count,
           miner,
+          extra_data,
           base_fee_per_gas
         FROM ${this.tables.blocks}
         ORDER BY block_number DESC
@@ -261,8 +262,9 @@ export class ColdStorageQueryService {
         gasLimit: row.gas_limit,
         gasUsed: row.gas_used,
         transactionCount: row.transaction_count,
-        miner: row.miner,
         baseFeePerGas: row.base_fee_per_gas,
+        miner: row.miner,
+        extraData: row.extra_data,
       }));
 
       return {
@@ -314,9 +316,9 @@ export class ColdStorageQueryService {
         gasLimit: record.gas_limit,
         gasUsed: record.gas_used,
         transactionCount: record.transaction_count,
+        baseFeePerGas: record.base_fee_per_gas,
         miner: record.miner,
         extraData: record.extra_data,
-        baseFeePerGas: record.base_fee_per_gas,
       };
     } catch (error) {
       logger.error('Failed to query cold storage block by number', {

@@ -195,7 +195,9 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         gasLimit: block.gasLimit,
         baseFeePerGas: block.baseFeePerGas,
         size: block.size,
-        transactionCount: transactionCounts.get(block.id) || 0
+        transactionCount: transactionCounts.get(block.id) || 0,
+        miner: block.miner,
+        extraData: block.extraData
       }));
 
       // Convert BigInt fields to strings for JSON response
@@ -303,7 +305,9 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         gasLimit: latestBlock.gasLimit,
         baseFeePerGas: latestBlock.baseFeePerGas,
         size: latestBlock.size,
-        transactionCount: transactionCount
+        transactionCount: transactionCount,
+        miner: latestBlock.miner,
+        extraData: latestBlock.extraData
       }
     });
 
@@ -436,7 +440,9 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         gasLimit: block.gasLimit,
         baseFeePerGas: block.baseFeePerGas,
         size: block.size,
-        transactionCount: transactionCount
+        transactionCount: transactionCount,
+        miner: block.miner,
+        extraData: block.extraData
       }
     });
 
