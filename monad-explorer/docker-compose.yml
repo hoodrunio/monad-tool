@@ -86,7 +86,7 @@ services:
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-monad_explorer}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
-      RABBITMQ_URL: ${INTERNAL_RABBITMQ_URL:-amqp://host.docker.internal:5672}
+      RABBITMQ_URL: ${INTERNAL_RABBITMQ_URL:-amqp://dockerworker:dockerpass@172.17.0.1:5672}
       INTERNAL_REDIS_HOST: ${INTERNAL_REDIS_HOST:-redis}
       INTERNAL_REDIS_PORT: ${INTERNAL_REDIS_PORT:-6379}
       REDIS_HOST: ${INTERNAL_REDIS_HOST:-redis}
@@ -113,7 +113,7 @@ services:
       DB_USER: ${DB_USER:-squid_user}
       DB_PASS: ${DB_PASS:-postgres}
       DB_NAME: ${DB_NAME:-squid}
-      RABBITMQ_URL: ${INTERNAL_RABBITMQ_URL:-amqp://host.docker.internal:5672}
+      RABBITMQ_URL: ${INTERNAL_RABBITMQ_URL:-amqp://dockerworker:dockerpass@172.17.0.1:5672}
       INTERNAL_REDIS_HOST: ${INTERNAL_REDIS_HOST:-redis}
       INTERNAL_REDIS_PORT: ${INTERNAL_REDIS_PORT:-6379}
       REDIS_HOST: ${INTERNAL_REDIS_HOST:-redis}
