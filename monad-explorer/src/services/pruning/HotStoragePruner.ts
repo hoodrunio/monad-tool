@@ -87,8 +87,9 @@ export class HotStoragePruner {
 
     const transactions = await transactionRepo
       .createQueryBuilder('tx')
+      .innerJoin('tx.block', 'block')
       .select(['tx.id'])
-      .where('tx.blockId IN (:...blockIds)', { blockIds })
+      .where('block.id IN (:...blockIds)', { blockIds })
       .getMany();
 
     const transactionIds = transactions.map(tx => tx.id);
@@ -120,7 +121,7 @@ export class HotStoragePruner {
           .createQueryBuilder()
           .delete()
           .from(Log)
-          .where('"transactionId" IN (:...transactionIds)', { transactionIds })
+          .where('transaction_id IN (:...transactionIds)', { transactionIds })
           .execute();
         logsDeleted = logDeleteResult.affected ?? 0;
 
