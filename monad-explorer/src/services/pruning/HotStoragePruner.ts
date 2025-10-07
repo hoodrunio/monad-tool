@@ -25,6 +25,9 @@ export class HotStoragePruner {
   private dataSource: DataSource | null = null;
   private static readonly CHUNK_SIZE = 500;
   private static readonly ISOLATION_LEVEL = 'READ COMMITTED';
+  // Prevent connection pool exhaustion with large batches
+  private static readonly MAX_TRANSACTION_DURATION_MS = 60000; // 1 minute
+  private isProcessing = false;
 
   constructor(private readonly storageConfig: StorageConfig) {}
 
@@ -45,13 +48,13 @@ export class HotStoragePruner {
       namingStrategy: new SnakeNamingStrategy(),
       entities: [Block, Transaction, Log],
       extra: {
-        max: 10,
-        min: 2,
+        max: 20, // Increased for large batches
+        min: 5,
         idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 10000,
+        connectionTimeoutMillis: 20000, // Increased timeout
         // PostgreSQL-specific optimizations
-        statement_timeout: 120000, // 2 minutes
-        query_timeout: 120000,
+        statement_timeout: 300000, // 5 minutes for large batches
+        query_timeout: 300000,
       },
     });
 
@@ -73,16 +76,32 @@ export class HotStoragePruner {
       throw new Error('HotStoragePruner data source is not initialized');
     }
 
-    const { hotRetentionDays, pruner } = this.storageConfig;
-    const retentionMs = hotRetentionDays * 60 * 60 * 1000;
-    const safetyBufferMs = pruner.safetyBufferHours * 60 * 60 * 1000;
-    const cutoff = new Date(Date.now() - retentionMs - safetyBufferMs);
+    // Prevent concurrent execution that could exhaust connection pool
+    if (this.isProcessing) {
+      logger.warn('Pruning already in progress, skipping this batch');
+      return {
+        cutoffTimestamp: new Date(),
+        blocksConsidered: 0,
+        blocksDeleted: 0,
+        transactionsDeleted: 0,
+        logsDeleted: 0,
+        dryRun: false,
+      };
+    }
 
-    // Execute entire pruning operation within a single transaction
-    // This ensures ACID compliance and maintains lock consistency
-    const result = await this.dataSource.transaction(
-      HotStoragePruner.ISOLATION_LEVEL,
-      async (manager) => {
+    this.isProcessing = true;
+
+    try {
+      const { hotRetentionDays, pruner } = this.storageConfig;
+      const retentionMs = hotRetentionDays * 60 * 60 * 1000;
+      const safetyBufferMs = pruner.safetyBufferHours * 60 * 60 * 1000;
+      const cutoff = new Date(Date.now() - retentionMs - safetyBufferMs);
+
+      // Execute entire pruning operation within a single transaction
+      // This ensures ACID compliance and maintains lock consistency
+      const result = await this.dataSource.transaction(
+        HotStoragePruner.ISOLATION_LEVEL,
+        async (manager) => {
         // Phase 1: Select and lock candidate blocks using SKIP LOCKED
         const candidates = await this.selectCandidateBlocks(
           manager,
@@ -143,37 +162,40 @@ export class HotStoragePruner {
           candidateBlockRange,
           ...deletionResult,
         };
-      }
-    );
+        }
+      );
 
-    if (result.candidates.length === 0) {
+      if (result.candidates.length === 0) {
+        return {
+          cutoffTimestamp: cutoff,
+          blocksConsidered: 0,
+          blocksDeleted: 0,
+          transactionsDeleted: 0,
+          logsDeleted: 0,
+          dryRun: pruner.dryRun,
+        };
+      }
+
+      logger.info('Hot storage pruning batch completed', {
+        cutoff,
+        blocksConsidered: result.candidates.length,
+        blocksDeleted: result.blocksDeleted,
+        transactionsDeleted: result.transactionsDeleted,
+        logsDeleted: result.logsDeleted,
+        candidateBlockRange: result.candidateBlockRange,
+      });
+
       return {
         cutoffTimestamp: cutoff,
-        blocksConsidered: 0,
-        blocksDeleted: 0,
-        transactionsDeleted: 0,
-        logsDeleted: 0,
-        dryRun: pruner.dryRun,
+        blocksConsidered: result.candidates.length,
+        blocksDeleted: result.blocksDeleted,
+        transactionsDeleted: result.transactionsDeleted,
+        logsDeleted: result.logsDeleted,
+        dryRun: false,
       };
+    } finally {
+      this.isProcessing = false;
     }
-
-    logger.info('Hot storage pruning batch completed', {
-      cutoff,
-      blocksConsidered: result.candidates.length,
-      blocksDeleted: result.blocksDeleted,
-      transactionsDeleted: result.transactionsDeleted,
-      logsDeleted: result.logsDeleted,
-      candidateBlockRange: result.candidateBlockRange,
-    });
-
-    return {
-      cutoffTimestamp: cutoff,
-      blocksConsidered: result.candidates.length,
-      blocksDeleted: result.blocksDeleted,
-      transactionsDeleted: result.transactionsDeleted,
-      logsDeleted: result.logsDeleted,
-      dryRun: false,
-    };
   }
 
   /**
@@ -185,6 +207,7 @@ export class HotStoragePruner {
     cutoff: Date,
     batchSize: number
   ): Promise<BlockCandidate[]> {
+    // Use index on timestamp for efficient candidate selection
     const candidates = await manager.query<BlockCandidate[]>(
       `SELECT id, number, timestamp
        FROM block
@@ -220,6 +243,7 @@ export class HotStoragePruner {
 
   /**
    * Executes cascade deletion with optimized batch processing
+   * Uses CTE (Common Table Expression) for efficient single-pass deletion
    * Order: logs -> transactions -> blocks (child to parent)
    */
   private async executeCascadeDelete(
@@ -231,40 +255,40 @@ export class HotStoragePruner {
     logsDeleted: number;
   }> {
     const blockIds = candidates.map((c) => c.id);
-
-    // Step 1: Delete logs and transactions together by block_id
-    // This is more efficient than fetching transaction IDs first
     let logsDeleted = 0;
     let transactionsDeleted = 0;
-
-    // Process blocks in chunks to avoid parameter limits and reduce lock contention
-    for (let i = 0; i < blockIds.length; i += HotStoragePruner.CHUNK_SIZE) {
-      const chunk = blockIds.slice(i, i + HotStoragePruner.CHUNK_SIZE);
-
-      // Delete logs via transaction.block_id relationship
-      // This avoids N+1 query to fetch transaction IDs first
-      const logResult = await manager.query(
-        `DELETE FROM log
-         WHERE transaction_id IN (
-           SELECT id FROM transaction WHERE block_id = ANY($1::text[])
-         )`,
-        [chunk]
-      );
-      logsDeleted += logResult[1] || 0;
-
-      // Delete transactions by block_id
-      const txResult = await manager.query(
-        `DELETE FROM transaction WHERE block_id = ANY($1::text[])`,
-        [chunk]
-      );
-      transactionsDeleted += txResult[1] || 0;
-    }
-
-    // Step 2: Delete blocks (now safe as children are removed)
     let blocksDeleted = 0;
+
+    // Process in chunks to avoid parameter limits and reduce lock contention
     for (let i = 0; i < blockIds.length; i += HotStoragePruner.CHUNK_SIZE) {
       const chunk = blockIds.slice(i, i + HotStoragePruner.CHUNK_SIZE);
 
+      // Use CTE for efficient cascade deletion in minimal queries
+      // This reduces transaction duration significantly
+
+      // Step 1: Delete logs and transactions in a single optimized query
+      const result = await manager.query(
+        `WITH deleted_logs AS (
+           DELETE FROM log
+           WHERE transaction_id IN (
+             SELECT id FROM transaction WHERE block_id = ANY($1::text[])
+           )
+           RETURNING 1
+         ),
+         deleted_txs AS (
+           DELETE FROM transaction WHERE block_id = ANY($1::text[])
+           RETURNING 1
+         )
+         SELECT
+           (SELECT COUNT(*) FROM deleted_logs) as logs,
+           (SELECT COUNT(*) FROM deleted_txs) as txs`,
+        [chunk]
+      );
+
+      logsDeleted += parseInt(result[0]?.logs || '0', 10);
+      transactionsDeleted += parseInt(result[0]?.txs || '0', 10);
+
+      // Step 2: Delete blocks (now safe as children are removed)
       const blockResult = await manager.query(
         `DELETE FROM block WHERE id = ANY($1::text[])`,
         [chunk]
