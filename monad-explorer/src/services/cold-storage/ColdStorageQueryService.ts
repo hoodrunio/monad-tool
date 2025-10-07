@@ -328,4 +328,101 @@ export class ColdStorageQueryService {
       throw error;
     }
   }
+
+  public async getBlockTransactions(blockNumber: number, limit: number, offset: number): Promise<{
+    block: { number: number; hash: string; timestamp: Date } | null;
+    transactions: any[];
+    totalCount: number;
+    hasMore: boolean;
+  }> {
+    try {
+      // First get block info
+      const blockRows = await this.clickHouseService.query<ColdBlockRecord>(
+        `SELECT
+          block_number,
+          block_hash,
+          block_timestamp
+        FROM ${this.tables.blocks}
+        WHERE block_number = {blockNumber:UInt64}
+        LIMIT 1`,
+        { blockNumber }
+      );
+
+      if (blockRows.length === 0) {
+        return {
+          block: null,
+          transactions: [],
+          totalCount: 0,
+          hasMore: false,
+        };
+      }
+
+      const blockRecord = blockRows[0];
+
+      // Get transactions for this block
+      const txRows = await this.clickHouseService.query<ColdTransactionRecord>(
+        `SELECT
+          transaction_hash,
+          block_number,
+          block_timestamp,
+          transaction_index,
+          from_address,
+          to_address,
+          value,
+          gas,
+          gas_price,
+          gas_used,
+          status,
+          is_contract_interaction,
+          is_contract_creation
+        FROM ${this.tables.transactions}
+        WHERE block_number = {blockNumber:UInt64}
+        ORDER BY transaction_index ASC
+        LIMIT {limit:UInt32}
+        OFFSET {offset:UInt64}`,
+        { blockNumber, limit, offset }
+      );
+
+      // Get total count
+      const countRows = await this.clickHouseService.query<{ count: number }>(
+        `SELECT count() as count
+        FROM ${this.tables.transactions}
+        WHERE block_number = {blockNumber:UInt64}`,
+        { blockNumber }
+      );
+
+      const totalCount = countRows[0]?.count ?? 0;
+
+      const transactions = txRows.map(row => ({
+        hash: row.transaction_hash,
+        blockNumber: Number(row.block_number),
+        fromAddress: row.from_address,
+        toAddress: row.to_address,
+        value: row.value,
+        gasUsed: row.gas_used,
+        gasPrice: row.gas_price,
+        timestamp: new Date(row.block_timestamp),
+        status: row.status,
+        isContractInteraction: Boolean(row.is_contract_interaction),
+        isContractCreation: Boolean(row.is_contract_creation),
+      }));
+
+      return {
+        block: {
+          number: Number(blockRecord.block_number),
+          hash: blockRecord.block_hash,
+          timestamp: new Date(blockRecord.block_timestamp),
+        },
+        transactions,
+        totalCount,
+        hasMore: offset + limit < totalCount,
+      };
+    } catch (error) {
+      logger.error('Failed to query cold storage block transactions', {
+        blockNumber,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      throw error;
+    }
+  }
 }

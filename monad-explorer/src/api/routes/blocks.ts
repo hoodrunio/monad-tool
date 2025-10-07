@@ -497,12 +497,63 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
     }
 
     // First check if block exists
-    const block = await store.Block.findOne({
+    let block = await store.Block.findOne({
       where: { number: parseInt(blockNumber) },
       select: ['id', 'number', 'hash', 'timestamp']
     });
 
+    // If block not found in hot storage, try cold storage
     if (!block) {
+      const config = appConfig.getConfig();
+      if (config.storage.enableColdReads) {
+        try {
+          logger.info('Block not found in hot storage for transactions, attempting cold storage lookup', {
+            blockNumber,
+          });
+
+          const coldStorageService = await serviceContainer.resolve<ColdStorageQueryService>('coldStorageQueryService');
+          const coldResult = await coldStorageService.getBlockTransactions(
+            parseInt(blockNumber),
+            limit,
+            offset
+          );
+
+          if (coldResult.block) {
+            const response = prepareForApiResponse({
+              block: coldResult.block,
+              transactions: coldResult.transactions,
+              pagination: {
+                limit,
+                offset,
+                total: coldResult.totalCount,
+                hasMore: coldResult.hasMore,
+              }
+            });
+
+            if (cacheService) {
+              try {
+                await cacheService.set(cacheKey, response, 60000);
+              } catch (error) {
+                logger.warn('Failed to cache cold storage block transactions', { error });
+              }
+            }
+
+            return successResponse(res, response, 'Block transactions retrieved from cold storage', 200, {
+              totalCount: coldResult.totalCount,
+              limit,
+              offset,
+              hasMore: coldResult.hasMore,
+              source: 'clickhouse'
+            });
+          }
+        } catch (error) {
+          logger.warn('Cold storage block transactions lookup failed', {
+            blockNumber,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
+
       throw new ApiErrorResponse('Block not found', 404, 'BLOCK_NOT_FOUND');
     }
 
