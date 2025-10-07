@@ -36,6 +36,12 @@ export class HotStoragePruner {
       logging: false,
       namingStrategy: new SnakeNamingStrategy(),
       entities: [Block, Transaction, Log],
+      extra: {
+        max: 10,
+        min: 2,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000,
+      },
     });
 
     await dataSource.initialize();
@@ -85,7 +91,6 @@ export class HotStoragePruner {
       logger.info('Hot storage pruning skipped - no eligible blocks', {
         cutoff,
         batchSize: pruner.batchSize,
-        totalBlocks: await blockRepo.count(),
         hotBlockWindow: this.storageConfig.hotBlockWindow,
       });
       return {
@@ -136,26 +141,48 @@ export class HotStoragePruner {
       let transactionsDeleted = 0;
       let blocksDeleted = 0;
 
-      if (transactionIds.length > 0) {
-        const logDeleteResult = await manager.query(
-          'DELETE FROM log WHERE transaction_id = ANY($1::text[]) RETURNING id',
-          [transactionIds]
-        );
-        logsDeleted = Array.isArray(logDeleteResult) ? logDeleteResult.length : 0;
+      // Create temporary table for efficient bulk operations
+      await manager.query('CREATE TEMP TABLE IF NOT EXISTS temp_block_ids (id TEXT) ON COMMIT DROP');
+      await manager.query('CREATE TEMP TABLE IF NOT EXISTS temp_tx_ids (id TEXT) ON COMMIT DROP');
 
-        const txDeleteResult = await manager.query(
-          'DELETE FROM transaction WHERE id = ANY($1::text[]) RETURNING id',
-          [transactionIds]
+      if (blockIds.length > 0) {
+        // Insert block IDs in chunks to avoid parameter limits
+        const blockChunkSize = 1000;
+        for (let i = 0; i < blockIds.length; i += blockChunkSize) {
+          const chunk = blockIds.slice(i, i + blockChunkSize);
+          const values = chunk.map((_, idx) => `($${idx + 1})`).join(',');
+          await manager.query(`INSERT INTO temp_block_ids (id) VALUES ${values}`, chunk);
+        }
+      }
+
+      if (transactionIds.length > 0) {
+        // Insert transaction IDs in chunks
+        const txChunkSize = 1000;
+        for (let i = 0; i < transactionIds.length; i += txChunkSize) {
+          const chunk = transactionIds.slice(i, i + txChunkSize);
+          const values = chunk.map((_, idx) => `($${idx + 1})`).join(',');
+          await manager.query(`INSERT INTO temp_tx_ids (id) VALUES ${values}`, chunk);
+        }
+
+        // Delete logs using temp table join
+        const logDeleteResult = await manager.query(
+          'DELETE FROM log WHERE transaction_id IN (SELECT id FROM temp_tx_ids)'
         );
-        transactionsDeleted = Array.isArray(txDeleteResult) ? txDeleteResult.length : 0;
+        logsDeleted = logDeleteResult[1] || 0;
+
+        // Delete transactions using temp table join
+        const txDeleteResult = await manager.query(
+          'DELETE FROM transaction WHERE id IN (SELECT id FROM temp_tx_ids)'
+        );
+        transactionsDeleted = txDeleteResult[1] || 0;
       }
 
       if (blockIds.length > 0) {
+        // Delete blocks using temp table join
         const blockDeleteResult = await manager.query(
-          'DELETE FROM block WHERE id = ANY($1::text[]) RETURNING id',
-          [blockIds]
+          'DELETE FROM block WHERE id IN (SELECT id FROM temp_block_ids)'
         );
-        blocksDeleted = Array.isArray(blockDeleteResult) ? blockDeleteResult.length : 0;
+        blocksDeleted = blockDeleteResult[1] || 0;
       }
 
       return {
@@ -172,7 +199,6 @@ export class HotStoragePruner {
       transactionsDeleted: result.transactionsDeleted,
       logsDeleted: result.logsDeleted,
       candidateBlockRange,
-      remainingBlocks: await blockRepo.count(),
     });
 
     return {
