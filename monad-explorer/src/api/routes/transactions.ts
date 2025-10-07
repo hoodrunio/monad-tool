@@ -381,9 +381,73 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
       // Continue with transaction service
     }
 
-    const transfers = await transactionService.getTokenTransfersForTransaction(hash, {
-      includeMetadata: includeMetadata === 'true'
-    });
+    let transfers;
+    let dataSource = 'database';
+
+    try {
+      transfers = await transactionService.getTokenTransfersForTransaction(hash, {
+        includeMetadata: includeMetadata === 'true'
+      });
+    } catch (error) {
+      // Transaction not in hot storage, try cold storage
+      const config = appConfig.getConfig();
+      if (config.storage.enableColdReads) {
+        try {
+          logger.info('Transaction not found in hot storage for token transfers, attempting cold storage', {
+            hash,
+          });
+
+          const coldStorageService = await serviceContainer.resolve<ColdStorageQueryService>('coldStorageQueryService');
+          const coldResult = await coldStorageService.getTransactionByHash(hash);
+
+          if (coldResult) {
+            // Format cold storage logs for parser
+            const formattedLogs = coldResult.logs.map((log: any) => ({
+              id: `${log.transactionHash}-${log.logIndex}`,
+              address: log.address,
+              topics: log.topics,
+              data: log.data,
+              logIndex: log.logIndex,
+              transaction: {
+                hash: log.transactionHash,
+                blockNumber: log.blockNumber,
+                timestamp: log.blockTimestamp
+              }
+            }));
+
+            // Parse token transfers using the same parser as hot storage
+            const logTokenTransferParser = await serviceContainer.resolve<any>('logTokenTransferParser');
+            const parsingResult = await logTokenTransferParser.parseTransfersFromLogs(
+              formattedLogs,
+              {
+                includeTokenInfo: includeMetadata === 'true'
+              }
+            );
+
+            const apiTransfers = prepareForApiResponse(parsingResult.transfers);
+
+            try {
+              await cacheService.set(cacheKey, apiTransfers, 300000);
+            } catch (cacheError) {
+              // Cache error, but don't fail
+            }
+
+            return successResponse(res, apiTransfers, 'Token transfers retrieved from cold storage', 200, {
+              architecture: 'cold-storage',
+              transferCount: parsingResult.transfers.length,
+              source: 'clickhouse'
+            });
+          }
+        } catch (coldError) {
+          logger.warn('Cold storage token transfers lookup failed', {
+            hash,
+            error: coldError instanceof Error ? coldError.message : 'Unknown error',
+          });
+        }
+      }
+
+      throw new ApiErrorResponse('Transaction not found', 404, 'TRANSACTION_NOT_FOUND');
+    }
 
     const apiTransfers = prepareForApiResponse(transfers);
 
@@ -396,7 +460,7 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
     successResponse(res, apiTransfers, 'Token transfers retrieved successfully', 200, {
       architecture: 'logs-first',
       transferCount: transfers.length,
-      source: 'database'
+      source: dataSource
     });
   }));
 
@@ -447,11 +511,49 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
     const internalTxServiceFactory = await serviceContainer.resolve<any>('internalTransactionServiceFactory');
     const internalTxService = await internalTxServiceFactory.create();
 
-    const internalTxs = await internalTxService.getInternalTransactions(hash, {
-      includeFailedCalls: includeFailedCalls === 'true',
-      maxDepth: depth,
-      filterByAddress: filterByAddress ? (filterByAddress as string) : undefined
-    });
+    let internalTxs;
+    let dataSource = 'database';
+
+    try {
+      internalTxs = await internalTxService.getInternalTransactions(hash, {
+        includeFailedCalls: includeFailedCalls === 'true',
+        maxDepth: depth,
+        filterByAddress: filterByAddress ? (filterByAddress as string) : undefined
+      });
+    } catch (error) {
+      // Transaction might be in cold storage, verify it exists
+      const config = appConfig.getConfig();
+      if (config.storage.enableColdReads) {
+        try {
+          logger.info('Transaction not found in hot storage for internal transactions, checking cold storage', {
+            hash,
+          });
+
+          const coldStorageService = await serviceContainer.resolve<ColdStorageQueryService>('coldStorageQueryService');
+          const coldResult = await coldStorageService.getTransactionByHash(hash);
+
+          if (coldResult) {
+            // Transaction exists in cold storage, but we still need RPC trace
+            // Internal transactions require RPC trace regardless of where tx is stored
+            internalTxs = await internalTxService.getInternalTransactions(hash, {
+              includeFailedCalls: includeFailedCalls === 'true',
+              maxDepth: depth,
+              filterByAddress: filterByAddress ? (filterByAddress as string) : undefined
+            });
+            dataSource = 'clickhouse-verified-rpc-traced';
+          }
+        } catch (coldError) {
+          logger.warn('Cold storage internal transactions lookup failed', {
+            hash,
+            error: coldError instanceof Error ? coldError.message : 'Unknown error',
+          });
+        }
+      }
+
+      if (!internalTxs) {
+        throw new ApiErrorResponse('Transaction not found', 404, 'TRANSACTION_NOT_FOUND');
+      }
+    }
 
     const apiInternalTxs = prepareForApiResponse(internalTxs);
 
@@ -499,7 +601,40 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
     const internalTxServiceFactory = await serviceContainer.resolve<any>('internalTransactionServiceFactory');
     const internalTxService = await internalTxServiceFactory.create();
 
-    const hasInternal = await internalTxService.hasInternalTransactions(hash);
+    let hasInternal;
+    let dataSource = 'database';
+
+    try {
+      hasInternal = await internalTxService.hasInternalTransactions(hash);
+    } catch (error) {
+      // Transaction might be in cold storage, verify it exists
+      const config = appConfig.getConfig();
+      if (config.storage.enableColdReads) {
+        try {
+          logger.info('Transaction not found in hot storage for internal tx check, checking cold storage', {
+            hash,
+          });
+
+          const coldStorageService = await serviceContainer.resolve<ColdStorageQueryService>('coldStorageQueryService');
+          const coldResult = await coldStorageService.getTransactionByHash(hash);
+
+          if (coldResult) {
+            // Transaction exists in cold storage, check via RPC
+            hasInternal = await internalTxService.hasInternalTransactions(hash);
+            dataSource = 'clickhouse-verified-rpc-traced';
+          }
+        } catch (coldError) {
+          logger.warn('Cold storage internal tx check failed', {
+            hash,
+            error: coldError instanceof Error ? coldError.message : 'Unknown error',
+          });
+        }
+      }
+
+      if (hasInternal === undefined) {
+        throw new ApiErrorResponse('Transaction not found', 404, 'TRANSACTION_NOT_FOUND');
+      }
+    }
 
     const response = { hasInternalTransactions: hasInternal };
 
@@ -510,7 +645,7 @@ export function createTransactionRoutes(serviceContainer: ServiceContainer): Rou
     }
 
     successResponse(res, response, 'Internal transaction check completed', 200, {
-      source: 'database'
+      source: dataSource
     });
   }));
 
