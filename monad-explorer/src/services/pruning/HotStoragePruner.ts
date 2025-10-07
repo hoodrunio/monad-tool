@@ -141,48 +141,41 @@ export class HotStoragePruner {
       let transactionsDeleted = 0;
       let blocksDeleted = 0;
 
-      // Create temporary table for efficient bulk operations
-      await manager.query('CREATE TEMP TABLE IF NOT EXISTS temp_block_ids (id TEXT) ON COMMIT DROP');
-      await manager.query('CREATE TEMP TABLE IF NOT EXISTS temp_tx_ids (id TEXT) ON COMMIT DROP');
-
-      if (blockIds.length > 0) {
-        // Insert block IDs in chunks to avoid parameter limits
-        const blockChunkSize = 1000;
-        for (let i = 0; i < blockIds.length; i += blockChunkSize) {
-          const chunk = blockIds.slice(i, i + blockChunkSize);
-          const values = chunk.map((_, idx) => `($${idx + 1})`).join(',');
-          await manager.query(`INSERT INTO temp_block_ids (id) VALUES ${values}`, chunk);
-        }
-      }
+      // Process in smaller chunks to avoid deadlocks and parameter limits
+      const chunkSize = 500;
 
       if (transactionIds.length > 0) {
-        // Insert transaction IDs in chunks
-        const txChunkSize = 1000;
-        for (let i = 0; i < transactionIds.length; i += txChunkSize) {
-          const chunk = transactionIds.slice(i, i + txChunkSize);
-          const values = chunk.map((_, idx) => `($${idx + 1})`).join(',');
-          await manager.query(`INSERT INTO temp_tx_ids (id) VALUES ${values}`, chunk);
+        // Process transaction deletions in chunks
+        for (let i = 0; i < transactionIds.length; i += chunkSize) {
+          const chunk = transactionIds.slice(i, i + chunkSize);
+
+          // Delete logs first (child records)
+          const logDeleteResult = await manager.query(
+            'DELETE FROM log WHERE transaction_id = ANY($1::text[])',
+            [chunk]
+          );
+          logsDeleted += logDeleteResult[1] || 0;
+
+          // Delete transactions
+          const txDeleteResult = await manager.query(
+            'DELETE FROM transaction WHERE id = ANY($1::text[])',
+            [chunk]
+          );
+          transactionsDeleted += txDeleteResult[1] || 0;
         }
-
-        // Delete logs using temp table join
-        const logDeleteResult = await manager.query(
-          'DELETE FROM log WHERE transaction_id IN (SELECT id FROM temp_tx_ids)'
-        );
-        logsDeleted = logDeleteResult[1] || 0;
-
-        // Delete transactions using temp table join
-        const txDeleteResult = await manager.query(
-          'DELETE FROM transaction WHERE id IN (SELECT id FROM temp_tx_ids)'
-        );
-        transactionsDeleted = txDeleteResult[1] || 0;
       }
 
       if (blockIds.length > 0) {
-        // Delete blocks using temp table join
-        const blockDeleteResult = await manager.query(
-          'DELETE FROM block WHERE id IN (SELECT id FROM temp_block_ids)'
-        );
-        blocksDeleted = blockDeleteResult[1] || 0;
+        // Process block deletions in chunks
+        for (let i = 0; i < blockIds.length; i += chunkSize) {
+          const chunk = blockIds.slice(i, i + chunkSize);
+
+          const blockDeleteResult = await manager.query(
+            'DELETE FROM block WHERE id = ANY($1::text[])',
+            [chunk]
+          );
+          blocksDeleted += blockDeleteResult[1] || 0;
+        }
       }
 
       return {
