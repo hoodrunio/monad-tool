@@ -3,14 +3,20 @@ import { ProcessingResult } from '../processing/BlockProcessor';
 import { IStorageRouter, StorageRoutingResult, HotStorageBatch, ColdStorageBatch, EntityBreakdown, SerializedBlock, SerializedTransaction, SerializedLog } from '../interfaces/storage/IStorageRouter';
 
 export class StorageRouter implements IStorageRouter {
+  private latestBlockNumber: number | null = null;
+  private hotWindowStart: number | null = null;
+
   constructor(private readonly storageConfig: StorageConfig) {}
 
   public route(result: ProcessingResult): StorageRoutingResult {
-    const hotBatch = this.buildHotBatch(result);
+    const fullHotBatch = this.buildHotBatch(result);
+    this.updateLatestBlockNumber(fullHotBatch);
+
     const coldBatch = this.shouldProduceColdBatch()
-      ? this.buildColdBatch(result, hotBatch)
+      ? this.buildColdBatch(result, fullHotBatch)
       : null;
 
+    const hotBatch = this.applyHotWindow(fullHotBatch);
     const hotBreakdown = this.getHotBreakdown(hotBatch);
     const coldBreakdown = coldBatch ? this.getColdBreakdown(coldBatch) : null;
 
@@ -23,6 +29,8 @@ export class StorageRouter implements IStorageRouter {
         coldEntityTotal: coldBreakdown ? this.countEntities(coldBreakdown) : 0,
         hotBreakdown,
         coldBreakdown,
+        latestBlockNumber: this.latestBlockNumber,
+        hotWindowStart: this.hotWindowStart,
       },
     };
   }
@@ -58,6 +66,73 @@ export class StorageRouter implements IStorageRouter {
       blocks: this.serializeBlocks(hotBatch.blocks),
       transactions: this.serializeTransactions(hotBatch.transactions),
       logs: this.serializeLogs(hotBatch.logs),
+    };
+  }
+
+  private shouldApplyHotWindow(): boolean {
+    if (!this.shouldProduceColdBatch()) {
+      return false;
+    }
+
+    return this.storageConfig.hotBlockWindow > 0;
+  }
+
+  private updateLatestBlockNumber(batch: HotStorageBatch): void {
+    if (batch.blocks.length === 0) {
+      return;
+    }
+
+    const maxBlock = batch.blocks.reduce<number>((max, block) => {
+      const blockNumber = Number(block.number ?? 0);
+      return blockNumber > max ? blockNumber : max;
+    }, this.latestBlockNumber ?? Number.MIN_SAFE_INTEGER);
+
+    if (this.latestBlockNumber === null || maxBlock > this.latestBlockNumber) {
+      this.latestBlockNumber = maxBlock;
+    }
+  }
+
+  private applyHotWindow(batch: HotStorageBatch): HotStorageBatch {
+    if (!this.shouldApplyHotWindow() || this.latestBlockNumber === null) {
+      this.hotWindowStart = null;
+      return batch;
+    }
+
+    const windowSize = this.storageConfig.hotBlockWindow;
+    if (!windowSize || windowSize <= 0) {
+      this.hotWindowStart = null;
+      return batch;
+    }
+
+    const threshold = Math.max(0, this.latestBlockNumber - windowSize + 1);
+    this.hotWindowStart = threshold;
+
+    const hotBlocks = batch.blocks.filter(block => Number(block.number ?? 0) >= threshold);
+    const hotBlockIds = new Set(hotBlocks.map(block => block.id));
+
+    const hotTransactions = batch.transactions.filter(transaction => {
+      const block = transaction.block;
+      if (!block) {
+        return false;
+      }
+      const blockNumber = Number(block.number ?? 0);
+      return blockNumber >= threshold && hotBlockIds.has(block.id);
+    });
+    const hotTransactionIds = new Set(hotTransactions.map(tx => tx.id));
+
+    const hotLogs = batch.logs.filter(log => {
+      const transaction = log.transaction;
+      if (!transaction) {
+        return false;
+      }
+      return hotTransactionIds.has(transaction.id);
+    });
+
+    return {
+      ...batch,
+      blocks: hotBlocks,
+      transactions: hotTransactions,
+      logs: hotLogs,
     };
   }
 

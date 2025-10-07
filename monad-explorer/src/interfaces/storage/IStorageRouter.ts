@@ -96,6 +96,8 @@ export interface StorageRoutingResult {
     coldEntityTotal: number;
     hotBreakdown: EntityBreakdown;
     coldBreakdown: EntityBreakdown | null;
+    latestBlockNumber: number | null;
+    hotWindowStart: number | null;
   };
 }
 

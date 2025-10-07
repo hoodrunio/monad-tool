@@ -62,6 +62,8 @@ export class EntityPersister {
         duration,
         totalEntities: routing.metadata.hotEntityTotal,
         routingMode: routing.metadata.routingMode,
+        latestBlockNumber: routing.metadata.latestBlockNumber,
+        hotWindowStart: routing.metadata.hotWindowStart,
       });
 
       return routing;

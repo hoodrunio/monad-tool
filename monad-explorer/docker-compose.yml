@@ -51,20 +51,6 @@ services:
     networks:
       - monad-explorer-network
 
-  rabbitmq:
-    image: rabbitmq:3.12-management
-    container_name: monad-explorer-rabbitmq
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
-    ports:
-      - "${RABBITMQ_UI_PORT:-15672}:15672"
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    restart: unless-stopped
-    networks:
-      - monad-explorer-network
-
   clickhouse:
     image: clickhouse/clickhouse-server:23.8
     container_name: monad-explorer-clickhouse
@@ -100,18 +86,18 @@ services:
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-monad_explorer}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
-      INTERNAL_RABBITMQ_URL: ${INTERNAL_RABBITMQ_URL:-amqp://rabbitmq:5672}
-      RABBITMQ_URL: ${INTERNAL_RABBITMQ_URL:-amqp://rabbitmq:5672}
+      RABBITMQ_URL: ${INTERNAL_RABBITMQ_URL:-amqp://host.docker.internal:5672}
       INTERNAL_REDIS_HOST: ${INTERNAL_REDIS_HOST:-redis}
       INTERNAL_REDIS_PORT: ${INTERNAL_REDIS_PORT:-6379}
       REDIS_HOST: ${INTERNAL_REDIS_HOST:-redis}
       REDIS_PORT: ${INTERNAL_REDIS_PORT:-6379}
     depends_on:
-      - rabbitmq
       - clickhouse
     restart: unless-stopped
     networks:
       - monad-explorer-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   hot-storage-pruner:
     image: node:20
@@ -127,8 +113,7 @@ services:
       DB_USER: ${DB_USER:-squid_user}
       DB_PASS: ${DB_PASS:-postgres}
       DB_NAME: ${DB_NAME:-squid}
-      INTERNAL_RABBITMQ_URL: ${INTERNAL_RABBITMQ_URL:-amqp://rabbitmq:5672}
-      RABBITMQ_URL: ${INTERNAL_RABBITMQ_URL:-amqp://rabbitmq:5672}
+      RABBITMQ_URL: ${INTERNAL_RABBITMQ_URL:-amqp://host.docker.internal:5672}
       INTERNAL_REDIS_HOST: ${INTERNAL_REDIS_HOST:-redis}
       INTERNAL_REDIS_PORT: ${INTERNAL_REDIS_PORT:-6379}
       REDIS_HOST: ${INTERNAL_REDIS_HOST:-redis}
@@ -138,13 +123,13 @@ services:
     restart: unless-stopped
     networks:
       - monad-explorer-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   postgres_secure_data:
     driver: local
   redis_data:
-    driver: local
-  rabbitmq_data:
     driver: local
   clickhouse_data:
     driver: local
