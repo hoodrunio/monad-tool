@@ -632,7 +632,7 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
               value: tx.value,
               gasUsed: tx.gasUsed,
               gasPrice: tx.gasPrice,
-              timestamp: block.timestamp,
+              timestamp: block!.timestamp,
               status: tx.status,
               error: tx.error,
               revertReason: tx.revertReason
@@ -647,7 +647,7 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
               value: tx.value,
               gasUsed: tx.gasUsed,
               gasPrice: tx.gasPrice,
-              timestamp: block.timestamp,
+              timestamp: block!.timestamp,
               status: tx.status,
               error: tx.error,
               revertReason: tx.revertReason
@@ -698,7 +698,7 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
         value: tx.value,
         gasUsed: tx.gasUsed,
         gasPrice: tx.gasPrice,
-        timestamp: block.timestamp,
+        timestamp: block!.timestamp,
         status: tx.status,
         error: tx.error,
         revertReason: tx.revertReason
@@ -706,9 +706,9 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
 
       const response = prepareForApiResponse({
         block: {
-          number: block.number,
-          hash: block.hash,
-          timestamp: block.timestamp
+          number: block!.number,
+          hash: block!.hash,
+          timestamp: block!.timestamp
         },
         transactions: basicTransactions
       });
