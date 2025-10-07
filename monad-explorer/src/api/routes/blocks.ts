@@ -769,8 +769,61 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
       where: { block: { number: parseInt(blockNumber) } },
       select: ['id']
     });
-    
+
     if (blockTransactions.length === 0) {
+      // Try cold storage if enabled
+      const config = appConfig.getConfig();
+      if (config.storage.enableColdReads) {
+        try {
+          logger.info('Block has no transactions in hot storage, attempting cold storage logs lookup', {
+            blockNumber,
+          });
+
+          const coldStorageService = await serviceContainer.resolve<ColdStorageQueryService>('coldStorageQueryService');
+          const coldResult = await coldStorageService.getBlockLogs(
+            parseInt(blockNumber),
+            limit,
+            offset
+          );
+
+          if (coldResult.logs.length > 0) {
+            const response = prepareForApiResponse({
+              blockNumber: parseInt(blockNumber),
+              logs: coldResult.logs.map(log => ({
+                transactionHash: log.transactionHash,
+                address: log.address,
+                topics: log.topics,
+                data: log.data,
+                logIndex: log.logIndex
+              })),
+              totalCount: coldResult.totalCount,
+              hasMore: coldResult.hasMore
+            });
+
+            if (cacheService) {
+              try {
+                await cacheService.set(cacheKey, response, 60000);
+              } catch (error) {
+                logger.warn('Failed to cache cold storage logs', { error });
+              }
+            }
+
+            return successResponse(res, response, 'Block logs retrieved from cold storage', 200, {
+              totalCount: coldResult.totalCount,
+              limit,
+              offset,
+              hasMore: coldResult.hasMore,
+              source: 'clickhouse'
+            });
+          }
+        } catch (error) {
+          logger.warn('Cold storage block logs lookup failed', {
+            blockNumber,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
+
       const response = prepareForApiResponse({
         blockNumber: parseInt(blockNumber),
         logs: [],

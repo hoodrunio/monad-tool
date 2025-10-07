@@ -425,4 +425,64 @@ export class ColdStorageQueryService {
       throw error;
     }
   }
+
+  public async getBlockLogs(blockNumber: number, limit: number, offset: number): Promise<{
+    blockNumber: number;
+    logs: any[];
+    totalCount: number;
+    hasMore: boolean;
+  }> {
+    try {
+      // Get logs for this block
+      const logRows = await this.clickHouseService.query<ColdLogRecord>(
+        `SELECT
+          block_number,
+          block_timestamp,
+          transaction_hash,
+          log_index,
+          address,
+          topics,
+          data
+        FROM ${this.tables.logs}
+        WHERE block_number = {blockNumber:UInt64}
+        ORDER BY log_index ASC
+        LIMIT {limit:UInt32}
+        OFFSET {offset:UInt64}`,
+        { blockNumber, limit, offset }
+      );
+
+      // Get total count
+      const countRows = await this.clickHouseService.query<{ count: number }>(
+        `SELECT count() as count
+        FROM ${this.tables.logs}
+        WHERE block_number = {blockNumber:UInt64}`,
+        { blockNumber }
+      );
+
+      const totalCount = countRows[0]?.count ?? 0;
+
+      const logs = logRows.map(log => ({
+        blockNumber: Number(log.block_number),
+        blockTimestamp: new Date(log.block_timestamp),
+        transactionHash: log.transaction_hash,
+        logIndex: log.log_index,
+        address: log.address,
+        topics: log.topics,
+        data: log.data,
+      }));
+
+      return {
+        blockNumber,
+        logs,
+        totalCount,
+        hasMore: offset + limit < totalCount,
+      };
+    } catch (error) {
+      logger.error('Failed to query cold storage block logs', {
+        blockNumber,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      throw error;
+    }
+  }
 }
