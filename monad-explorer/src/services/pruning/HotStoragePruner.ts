@@ -58,7 +58,7 @@ export class HotStoragePruner {
 
     const { hotRetentionDays, pruner } = this.storageConfig;
 
-    const retentionMs = hotRetentionDays * 24 * 60 * 60 * 1000;
+    const retentionMs = hotRetentionDays * 60 * 60 * 1000;
     const safetyBufferMs = pruner.safetyBufferHours * 60 * 60 * 1000;
     const cutoff = new Date(Date.now() - retentionMs - safetyBufferMs);
 
