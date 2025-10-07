@@ -117,30 +117,26 @@ export class HotStoragePruner {
       let blocksDeleted = 0;
 
       if (transactionIds.length > 0) {
-        const logDeleteResult = await manager
-          .createQueryBuilder()
-          .delete()
-          .from(Log)
-          .where('transaction_id IN (:...transactionIds)', { transactionIds })
-          .execute();
-        logsDeleted = logDeleteResult.affected ?? 0;
+        const logDeleteResult = await manager.query(
+          'DELETE FROM log WHERE transaction_id = ANY($1::text[]) RETURNING id',
+          [transactionIds]
+        );
+        logsDeleted = Array.isArray(logDeleteResult) ? logDeleteResult.length : 0;
 
-        const txDeleteResult = await manager
-          .createQueryBuilder()
-          .delete()
-          .from(Transaction)
-          .where('id IN (:...transactionIds)', { transactionIds })
-          .execute();
-        transactionsDeleted = txDeleteResult.affected ?? 0;
+        const txDeleteResult = await manager.query(
+          'DELETE FROM transaction WHERE id = ANY($1::text[]) RETURNING id',
+          [transactionIds]
+        );
+        transactionsDeleted = Array.isArray(txDeleteResult) ? txDeleteResult.length : 0;
       }
 
-      const blockDeleteResult = await manager
-        .createQueryBuilder()
-        .delete()
-        .from(Block)
-        .where('id IN (:...blockIds)', { blockIds })
-        .execute();
-      blocksDeleted = blockDeleteResult.affected ?? 0;
+      if (blockIds.length > 0) {
+        const blockDeleteResult = await manager.query(
+          'DELETE FROM block WHERE id = ANY($1::text[]) RETURNING id',
+          [blockIds]
+        );
+        blocksDeleted = Array.isArray(blockDeleteResult) ? blockDeleteResult.length : 0;
+      }
 
       return {
         logsDeleted,
