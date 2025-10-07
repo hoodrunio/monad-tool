@@ -41,7 +41,7 @@ interface ColdBlockRecord {
   block_hash: string;
   parent_hash: string;
   block_timestamp: string;
-  block_size: string;
+  size: string;
   gas_limit: string;
   gas_used: string;
   transaction_count: number;
@@ -233,7 +233,7 @@ export class ColdStorageQueryService {
           block_hash,
           parent_hash,
           block_timestamp,
-          block_size,
+          size,
           gas_limit,
           gas_used,
           transaction_count,
@@ -257,7 +257,7 @@ export class ColdStorageQueryService {
         hash: row.block_hash,
         parentHash: row.parent_hash,
         timestamp: new Date(row.block_timestamp),
-        size: row.block_size,
+        size: row.size,
         gasLimit: row.gas_limit,
         gasUsed: row.gas_used,
         transactionCount: row.transaction_count,
@@ -286,7 +286,7 @@ export class ColdStorageQueryService {
           block_hash,
           parent_hash,
           block_timestamp,
-          block_size,
+          size,
           gas_limit,
           gas_used,
           transaction_count,
@@ -310,7 +310,7 @@ export class ColdStorageQueryService {
         hash: record.block_hash,
         parentHash: record.parent_hash,
         timestamp: new Date(record.block_timestamp),
-        size: record.block_size,
+        size: record.size,
         gasLimit: record.gas_limit,
         gasUsed: record.gas_used,
         transactionCount: record.transaction_count,
