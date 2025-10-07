@@ -202,7 +202,7 @@ export class StorageRouter implements IStorageRouter {
       number: Number(block.number),
       hash: block.hash,
       parentHash: block.parentHash ?? null,
-      timestamp: this.toISOString(block.timestamp),
+      timestamp: this.toDateTimeString(block.timestamp),
       size: this.toStringValue(block.size),
       gasLimit: this.toStringValue(block.gasLimit),
       gasUsed: this.toStringValue(block.gasUsed),
@@ -218,7 +218,7 @@ export class StorageRouter implements IStorageRouter {
       hash: transaction.hash,
       blockId: transaction.block?.id ?? '',
       blockNumber: Number(transaction.block?.number ?? 0),
-      blockTimestamp: this.toISOString(transaction.timestamp ?? transaction.block?.timestamp),
+      blockTimestamp: this.toDateTimeString(transaction.timestamp ?? transaction.block?.timestamp),
       transactionIndex: Number(transaction.transactionIndex ?? 0),
       fromAddress: transaction.fromAddress,
       toAddress: transaction.toAddress || null,
@@ -245,7 +245,7 @@ export class StorageRouter implements IStorageRouter {
       id: log.id,
       transactionHash: log.transaction?.hash ?? '',
       blockNumber: Number(log.transaction?.block?.number ?? 0),
-      blockTimestamp: this.toISOString(log.transaction?.timestamp ?? log.transaction?.block?.timestamp ?? null),
+      blockTimestamp: this.toDateTimeString(log.transaction?.timestamp ?? log.transaction?.block?.timestamp ?? null),
       logIndex: Number(log.logIndex ?? 0),
       address: log.address,
       topics: Array.isArray(log.topics) ? log.topics : [],
@@ -273,18 +273,23 @@ export class StorageRouter implements IStorageRouter {
     return String(value);
   }
 
-  private toISOString(value: unknown): string {
-    if (value instanceof Date) {
-      return value.toISOString();
-    }
+  private toDateTimeString(value: unknown): string {
+    let date: Date | null = null;
 
-    if (typeof value === 'string') {
+    if (value instanceof Date) {
+      date = value;
+    } else if (typeof value === 'string') {
       const parsed = new Date(value);
       if (!Number.isNaN(parsed.getTime())) {
-        return parsed.toISOString();
+        date = parsed;
       }
     }
 
-    return new Date(0).toISOString();
+    if (!date) {
+      return '1970-01-01 00:00:00';
+    }
+
+    const iso = date.toISOString();
+    return iso.replace('T', ' ').substring(0, 19);
   }
 }

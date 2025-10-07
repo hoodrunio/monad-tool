@@ -22,15 +22,29 @@ export class ClickHouseService {
   }
 
   public async insertBatch(batch: ColdStorageBatch): Promise<void> {
-    const insertedAt = batch.producedAt;
+    const insertedAt = this.formatDateTimeString(batch.producedAt);
 
     const blockRows = batch.blocks.map(block => this.mapBlockRow(batch.batchId, insertedAt, block));
     const transactionRows = batch.transactions.map(tx => this.mapTransactionRow(batch.batchId, insertedAt, tx));
     const logRows = batch.logs.map(log => this.mapLogRow(batch.batchId, insertedAt, log));
 
-    await this.insertRows(this.config.tables.blocks, blockRows);
-    await this.insertRows(this.config.tables.transactions, transactionRows);
-    await this.insertRows(this.config.tables.logs, logRows);
+    if (!blockRows.length && !transactionRows.length && !logRows.length) {
+      logger.info('Cold storage batch skipped - no rows to insert', {
+        batchId: batch.batchId,
+      });
+      return;
+    }
+
+    await this.insertRows(this.config.tables.blocks, blockRows, 'blocks');
+    await this.insertRows(this.config.tables.transactions, transactionRows, 'transactions');
+    await this.insertRows(this.config.tables.logs, logRows, 'logs');
+
+    logger.info('Cold storage batch inserted', {
+      batchId: batch.batchId,
+      blocksInserted: blockRows.length,
+      transactionsInserted: transactionRows.length,
+      logsInserted: logRows.length,
+    });
   }
 
   public async close(): Promise<void> {
@@ -58,7 +72,7 @@ export class ClickHouseService {
       block_number: block.number,
       block_hash: block.hash,
       parent_hash: block.parentHash,
-      block_timestamp: block.timestamp,
+      block_timestamp: this.formatDateTimeString(block.timestamp),
       size: block.size,
       gas_limit: block.gasLimit,
       gas_used: block.gasUsed,
@@ -75,7 +89,7 @@ export class ClickHouseService {
       ingested_at: insertedAt,
       block_id: transaction.blockId,
       block_number: transaction.blockNumber,
-      block_timestamp: transaction.blockTimestamp,
+      block_timestamp: this.formatDateTimeString(transaction.blockTimestamp),
       transaction_hash: transaction.hash,
       transaction_index: transaction.transactionIndex,
       from_address: transaction.fromAddress,
@@ -103,7 +117,7 @@ export class ClickHouseService {
       batch_id: batchId,
       ingested_at: insertedAt,
       block_number: log.blockNumber,
-      block_timestamp: log.blockTimestamp,
+      block_timestamp: this.formatDateTimeString(log.blockTimestamp),
       transaction_hash: log.transactionHash,
       log_index: log.logIndex,
       address: log.address,
@@ -112,7 +126,7 @@ export class ClickHouseService {
     };
   }
 
-  private async insertRows<T>(table: string, rows: T[]): Promise<void> {
+  private async insertRows<T>(table: string, rows: T[], label: string): Promise<void> {
     if (!rows.length) {
       return;
     }
@@ -127,6 +141,11 @@ export class ClickHouseService {
           values: chunk,
           format: 'JSONEachRow',
         });
+        logger.debug('Cold storage chunk inserted', {
+          table,
+          label,
+          chunkSize: chunk.length,
+        });
       } catch (error) {
         logger.error('Failed to insert rows into ClickHouse', {
           table,
@@ -136,5 +155,20 @@ export class ClickHouseService {
         throw error;
       }
     }
+  }
+
+  private formatDateTimeString(value: string | null | undefined): string {
+    if (!value) {
+      return '1970-01-01 00:00:00';
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      const normalized = value.replace('T', ' ').substring(0, 19);
+      return normalized;
+    }
+
+    const iso = date.toISOString();
+    return iso.replace('T', ' ').substring(0, 19);
   }
 }
