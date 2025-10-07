@@ -1,45 +1,3 @@
-/**
- * OnChainBalanceService
- * 
- * Real-time token balance queries directly from the blockchain.
- * This service replaces database-based balance queries with on-chain RPC calls
- * for the most accurate and up-to-date balance information.
- * 
- * Benefits:
- * - ✅ Real-time accuracy: Always reflects current on-chain state
- * - ✅ No database lag: Eliminates indexing delays
- * - ✅ Multicall optimization: Batches multiple token queries efficiently
- * - ✅ Smart caching: 5-minute cache reduces RPC load
- * - ✅ Multi-token support: ERC20, ERC721, ERC1155 compatible
- * - ✅ Native balance: Optional ETH balance inclusion
- * - ✅ Metadata enrichment: Token name, symbol, decimals on-demand
- * 
- * Cost Optimization:
- * - Uses Multicall3 contract to batch up to 100 queries in a single RPC call
- * - 5-minute cache reduces repeated queries for same address/token
- * - Only queries tokens with non-zero balances
- * - Circuit breaker prevents excessive RPC calls
- * 
- * Usage:
- * ```typescript
- * const balanceService = new OnChainBalanceService(rpcClient, cacheService);
- * 
- * // Single token balance
- * const balance = await balanceService.getTokenBalance(
- *   userAddress, 
- *   tokenAddress, 
- *   TokenType.ERC20
- * );
- * 
- * // Multiple tokens with native balance
- * const result = await balanceService.getMultipleTokenBalances(
- *   userAddress,
- *   tokens,
- *   { includeNativeBalance: true, includeMetadata: true }
- * );
- * ```
- */
-
 import { IRpcClient } from '../../interfaces/blockchain/IRpcClient';
 import { ICacheService } from '../../interfaces/cache/ICacheService';
 import { TokenType } from '../../model';
@@ -377,12 +335,14 @@ export class OnChainBalanceService {
         };
       });
     } catch (error) {
-      logger.error('ERC20 multicall balance query failed', {
+      logger.warn('ERC20 multicall balance query failed, falling back to individual calls', {
         address,
         tokenCount: tokenAddresses.length,
         error: error instanceof Error ? error.message : 'Unknown error'
       });
-      return tokenAddresses.map(() => null);
+
+      // Fallback: Query each token individually
+      return await this.queryBalancesIndividually(address, tokenAddresses, TokenType.ERC20, erc20, options);
     }
   }
 
@@ -445,12 +405,14 @@ export class OnChainBalanceService {
         };
       });
     } catch (error) {
-      logger.error('ERC721 multicall balance query failed', {
+      logger.warn('ERC721 multicall balance query failed, falling back to individual calls', {
         address,
         tokenCount: tokenAddresses.length,
         error: error instanceof Error ? error.message : 'Unknown error'
       });
-      return tokenAddresses.map(() => null);
+
+      // Fallback: Query each token individually
+      return await this.queryBalancesIndividually(address, tokenAddresses, TokenType.ERC721, erc721, options);
     }
   }
 
@@ -500,6 +462,81 @@ export class OnChainBalanceService {
       }
     } as ChainContext;
   }
+
+    /**
+   * Generic fallback method: Query token balances individually (when multicall is not available)
+   */
+    private async queryBalancesIndividually<T extends typeof erc20 | typeof erc721>(
+      address: string,
+      tokenAddresses: string[],
+      tokenType: TokenType,
+      contractModule: T,
+      options: BalanceQueryOptions
+    ): Promise<(TokenBalance | null)[]> {
+      const context = this.createChainContext();
+      const block = this.createBlock(options.blockNumber);
+  
+      const results = await Promise.all(
+        tokenAddresses.map(async (tokenAddress) => {
+          try {
+            const contract = new contractModule.Contract(context, block, tokenAddress);
+            const balance = await contract.balanceOf(address);
+  
+            if (!balance || balance === 0n) {
+              return null;
+            }
+  
+            let metadata: { name?: string; symbol?: string; decimals?: number } | undefined;
+  
+            if (options.includeMetadata) {
+              try {
+                const metadataPromises: Promise<any>[] = [
+                  contract.name().catch(() => undefined),
+                  contract.symbol().catch(() => undefined)
+                ];
+  
+                // ERC20 has decimals, ERC721 doesn't
+                if (tokenType === TokenType.ERC20) {
+                  metadataPromises.push((contract as any).decimals().catch(() => undefined));
+                }
+  
+                const metadataResults = await Promise.all(metadataPromises);
+  
+                metadata = {
+                  name: metadataResults[0],
+                  symbol: metadataResults[1],
+                  decimals: tokenType === TokenType.ERC20 && metadataResults[2] !== undefined
+                    ? Number(metadataResults[2])
+                    : undefined
+                };
+              } catch (err) {
+                logger.debug('Failed to fetch token metadata', {
+                  tokenAddress,
+                  tokenType,
+                  error: err instanceof Error ? err.message : 'Unknown error'
+                });
+              }
+            }
+  
+            return {
+              tokenAddress,
+              balance,
+              tokenType,
+              metadata
+            };
+          } catch (error) {
+            logger.debug('Failed to query individual token balance', {
+              tokenAddress,
+              tokenType,
+              error: error instanceof Error ? error.message : 'Unknown error'
+            });
+            return null;
+          }
+        })
+      );
+  
+      return results;
+    }
 
   /**
    * Create block object for contract calls
