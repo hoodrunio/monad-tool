@@ -70,17 +70,16 @@ export class HotStoragePruner {
       .where('block.timestamp < :cutoff', { cutoff })
       .orderBy('block.timestamp', 'ASC')
       .limit(pruner.batchSize)
-      .select(['block.id', 'block.number', 'block.timestamp'])
-      .getRawMany();
+      .getMany();
 
     const candidateBlockRange = candidateBlocks.length
       ? {
-          start: Number(candidateBlocks[0].block_number ?? 0),
-          end: Number(candidateBlocks[candidateBlocks.length - 1].block_number ?? 0),
+          start: Number(candidateBlocks[0].number ?? 0),
+          end: Number(candidateBlocks[candidateBlocks.length - 1].number ?? 0),
         }
       : null;
 
-    const blockIds = candidateBlocks.map(block => block.block_id ?? block.id);
+    const blockIds = candidateBlocks.map(block => block.id);
 
     if (candidateBlocks.length === 0) {
       logger.info('Hot storage pruning skipped - no eligible blocks', {
