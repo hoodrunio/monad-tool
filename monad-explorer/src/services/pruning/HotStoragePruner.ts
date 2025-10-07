@@ -70,9 +70,25 @@ export class HotStoragePruner {
       .where('block.timestamp < :cutoff', { cutoff })
       .orderBy('block.timestamp', 'ASC')
       .limit(pruner.batchSize)
-      .getMany();
+      .select(['block.id', 'block.number', 'block.timestamp'])
+      .getRawMany();
+
+    const candidateBlockRange = candidateBlocks.length
+      ? {
+          start: Number(candidateBlocks[0].block_number ?? 0),
+          end: Number(candidateBlocks[candidateBlocks.length - 1].block_number ?? 0),
+        }
+      : null;
+
+    const blockIds = candidateBlocks.map(block => block.block_id ?? block.id);
 
     if (candidateBlocks.length === 0) {
+      logger.info('Hot storage pruning skipped - no eligible blocks', {
+        cutoff,
+        batchSize: pruner.batchSize,
+        totalBlocks: await blockRepo.count(),
+        hotBlockWindow: this.storageConfig.hotBlockWindow,
+      });
       return {
         cutoffTimestamp: cutoff,
         blocksConsidered: 0,
@@ -83,7 +99,12 @@ export class HotStoragePruner {
       };
     }
 
-    const blockIds = candidateBlocks.map(block => block.id);
+    logger.info('Hot storage pruning candidate summary', {
+      cutoff,
+      batchSize: pruner.batchSize,
+      candidateCount: candidateBlocks.length,
+      candidateBlockRange,
+    });
 
     const transactions = await transactionRepo
       .createQueryBuilder('tx')
@@ -151,6 +172,8 @@ export class HotStoragePruner {
       blocksDeleted: result.blocksDeleted,
       transactionsDeleted: result.transactionsDeleted,
       logsDeleted: result.logsDeleted,
+      candidateBlockRange,
+      remainingBlocks: await blockRepo.count(),
     });
 
     return {
