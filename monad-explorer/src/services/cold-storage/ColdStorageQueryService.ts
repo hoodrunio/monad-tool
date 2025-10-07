@@ -77,6 +77,8 @@ export class ColdStorageQueryService {
           gas_price,
           gas_used,
           status,
+          method_id,
+          method_name,
           is_contract_interaction,
           is_contract_creation
         FROM ${this.tables.transactions}
@@ -102,6 +104,8 @@ export class ColdStorageQueryService {
         gasPrice: row.gas_price,
         timestamp: new Date(row.block_timestamp),
         status: row.status,
+        methodId: row.method_id,
+        methodName: row.method_name,
         isContractInteraction: Boolean(row.is_contract_interaction),
         isContractCreation: Boolean(row.is_contract_creation),
       }));
@@ -373,6 +377,8 @@ export class ColdStorageQueryService {
           gas_price,
           gas_used,
           status,
+          method_id,
+          method_name,
           is_contract_interaction,
           is_contract_creation
         FROM ${this.tables.transactions}
@@ -403,6 +409,8 @@ export class ColdStorageQueryService {
         gasPrice: row.gas_price,
         timestamp: new Date(row.block_timestamp),
         status: row.status,
+        methodId: row.method_id,
+        methodName: row.method_name,
         isContractInteraction: Boolean(row.is_contract_interaction),
         isContractCreation: Boolean(row.is_contract_creation),
       }));
