@@ -207,7 +207,7 @@ class ConfigManager {
       },
       storage: {
         enableColdStorage: this.getBooleanEnv('ENABLE_COLD_STORAGE', false),
-        enableColdReads: this.getBooleanEnv('ENABLE_COLD_READS', false),
+        enableColdReads: this.getBooleanEnv('ENABLE_COLD_READS', true),
         enableHotPruning: this.getBooleanEnv('ENABLE_HOT_PRUNING', false),
         routingMode: this.getStorageRoutingMode('STORAGE_ROUTING_MODE', 'hot-only'),
         hotBlockWindow: this.getNumberEnv('HOT_BLOCK_WINDOW', 4096),
