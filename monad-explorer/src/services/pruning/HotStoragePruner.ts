@@ -1,4 +1,4 @@
-import { DataSource } from 'typeorm';
+import { DataSource, EntityManager } from 'typeorm';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 import { StorageConfig } from '../../config/AppConfig';
 import { Block } from '../../model/generated/block.model';
@@ -15,8 +15,16 @@ export interface PruneResult {
   dryRun: boolean;
 }
 
+interface BlockCandidate {
+  id: string;
+  number: string;
+  timestamp: Date;
+}
+
 export class HotStoragePruner {
   private dataSource: DataSource | null = null;
+  private static readonly CHUNK_SIZE = 500;
+  private static readonly ISOLATION_LEVEL = 'READ COMMITTED';
 
   constructor(private readonly storageConfig: StorageConfig) {}
 
@@ -41,6 +49,9 @@ export class HotStoragePruner {
         min: 2,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 10000,
+        // PostgreSQL-specific optimizations
+        statement_timeout: 120000, // 2 minutes
+        query_timeout: 120000,
       },
     });
 
@@ -63,36 +74,79 @@ export class HotStoragePruner {
     }
 
     const { hotRetentionDays, pruner } = this.storageConfig;
-
     const retentionMs = hotRetentionDays * 60 * 60 * 1000;
     const safetyBufferMs = pruner.safetyBufferHours * 60 * 60 * 1000;
     const cutoff = new Date(Date.now() - retentionMs - safetyBufferMs);
 
-    const blockRepo = this.dataSource.getRepository(Block);
-    const transactionRepo = this.dataSource.getRepository(Transaction);
+    // Execute entire pruning operation within a single transaction
+    // This ensures ACID compliance and maintains lock consistency
+    const result = await this.dataSource.transaction(
+      HotStoragePruner.ISOLATION_LEVEL,
+      async (manager) => {
+        // Phase 1: Select and lock candidate blocks using SKIP LOCKED
+        const candidates = await this.selectCandidateBlocks(
+          manager,
+          cutoff,
+          pruner.batchSize
+        );
 
-    const candidateBlocks = await blockRepo
-      .createQueryBuilder('block')
-      .where('block.timestamp < :cutoff', { cutoff })
-      .orderBy('block.timestamp', 'ASC')
-      .limit(pruner.batchSize)
-      .getMany();
-
-    const candidateBlockRange = candidateBlocks.length
-      ? {
-          start: Number(candidateBlocks[0].number ?? 0),
-          end: Number(candidateBlocks[candidateBlocks.length - 1].number ?? 0),
+        if (candidates.length === 0) {
+          logger.info('Hot storage pruning skipped - no eligible blocks', {
+            cutoff,
+            batchSize: pruner.batchSize,
+          });
+          return {
+            candidates: [],
+            candidateBlockRange: null,
+            blocksDeleted: 0,
+            transactionsDeleted: 0,
+            logsDeleted: 0,
+          };
         }
-      : null;
 
-    const blockIds = candidateBlocks.map(block => block.id);
+        const candidateBlockRange = {
+          start: Number(candidates[0].number),
+          end: Number(candidates[candidates.length - 1].number),
+        };
 
-    if (candidateBlocks.length === 0) {
-      logger.info('Hot storage pruning skipped - no eligible blocks', {
-        cutoff,
-        batchSize: pruner.batchSize,
-        hotBlockWindow: this.storageConfig.hotBlockWindow,
-      });
+        logger.info('Hot storage pruning candidate summary', {
+          cutoff,
+          batchSize: pruner.batchSize,
+          candidateCount: candidates.length,
+          candidateBlockRange,
+        });
+
+        if (pruner.dryRun) {
+          const txCount = await this.countTransactions(manager, candidates);
+          logger.info('Hot storage pruner dry-run summary', {
+            cutoff,
+            blocksMatched: candidates.length,
+            transactionsMatched: txCount,
+          });
+          return {
+            candidates,
+            candidateBlockRange,
+            blocksDeleted: 0,
+            transactionsDeleted: 0,
+            logsDeleted: 0,
+          };
+        }
+
+        // Phase 2: Cascade delete in correct order (logs -> transactions -> blocks)
+        const deletionResult = await this.executeCascadeDelete(
+          manager,
+          candidates
+        );
+
+        return {
+          candidates,
+          candidateBlockRange,
+          ...deletionResult,
+        };
+      }
+    );
+
+    if (result.candidates.length === 0) {
       return {
         cutoffTimestamp: cutoff,
         blocksConsidered: 0,
@@ -103,104 +157,125 @@ export class HotStoragePruner {
       };
     }
 
-    logger.info('Hot storage pruning candidate summary', {
-      cutoff,
-      batchSize: pruner.batchSize,
-      candidateCount: candidateBlocks.length,
-      candidateBlockRange,
-    });
-
-    const transactions = await transactionRepo
-      .createQueryBuilder('tx')
-      .innerJoin('tx.block', 'block')
-      .select(['tx.id'])
-      .where('block.id IN (:...blockIds)', { blockIds })
-      .getMany();
-
-    const transactionIds = transactions.map(tx => tx.id);
-
-    if (pruner.dryRun) {
-      logger.info('Hot storage pruner dry-run summary', {
-        cutoff,
-        blocksMatched: candidateBlocks.length,
-        transactionsMatched: transactionIds.length,
-      });
-
-      return {
-        cutoffTimestamp: cutoff,
-        blocksConsidered: candidateBlocks.length,
-        blocksDeleted: 0,
-        transactionsDeleted: 0,
-        logsDeleted: 0,
-        dryRun: true,
-      };
-    }
-
-    const result = await this.dataSource.transaction(async manager => {
-      let logsDeleted = 0;
-      let transactionsDeleted = 0;
-      let blocksDeleted = 0;
-
-      // Process in smaller chunks to avoid deadlocks and parameter limits
-      const chunkSize = 500;
-
-      if (transactionIds.length > 0) {
-        // Process transaction deletions in chunks
-        for (let i = 0; i < transactionIds.length; i += chunkSize) {
-          const chunk = transactionIds.slice(i, i + chunkSize);
-
-          // Delete logs first (child records)
-          const logDeleteResult = await manager.query(
-            'DELETE FROM log WHERE transaction_id = ANY($1::text[])',
-            [chunk]
-          );
-          logsDeleted += logDeleteResult[1] || 0;
-
-          // Delete transactions
-          const txDeleteResult = await manager.query(
-            'DELETE FROM transaction WHERE id = ANY($1::text[])',
-            [chunk]
-          );
-          transactionsDeleted += txDeleteResult[1] || 0;
-        }
-      }
-
-      if (blockIds.length > 0) {
-        // Process block deletions in chunks
-        for (let i = 0; i < blockIds.length; i += chunkSize) {
-          const chunk = blockIds.slice(i, i + chunkSize);
-
-          const blockDeleteResult = await manager.query(
-            'DELETE FROM block WHERE id = ANY($1::text[])',
-            [chunk]
-          );
-          blocksDeleted += blockDeleteResult[1] || 0;
-        }
-      }
-
-      return {
-        logsDeleted,
-        transactionsDeleted,
-        blocksDeleted,
-      };
-    });
-
     logger.info('Hot storage pruning batch completed', {
       cutoff,
-      blocksConsidered: candidateBlocks.length,
+      blocksConsidered: result.candidates.length,
       blocksDeleted: result.blocksDeleted,
       transactionsDeleted: result.transactionsDeleted,
       logsDeleted: result.logsDeleted,
-      candidateBlockRange,
+      candidateBlockRange: result.candidateBlockRange,
     });
 
     return {
       cutoffTimestamp: cutoff,
-      blocksConsidered: candidateBlocks.length,
+      blocksConsidered: result.candidates.length,
       blocksDeleted: result.blocksDeleted,
       transactionsDeleted: result.transactionsDeleted,
       logsDeleted: result.logsDeleted,
       dryRun: false,
+    };
+  }
+
+  /**
+   * Selects candidate blocks using FOR UPDATE SKIP LOCKED
+   * This prevents race conditions when multiple pruner instances run concurrently
+   */
+  private async selectCandidateBlocks(
+    manager: EntityManager,
+    cutoff: Date,
+    batchSize: number
+  ): Promise<BlockCandidate[]> {
+    const candidates = await manager.query<BlockCandidate[]>(
+      `SELECT id, number, timestamp
+       FROM block
+       WHERE timestamp < $1
+       ORDER BY timestamp ASC
+       LIMIT $2
+       FOR UPDATE SKIP LOCKED`,
+      [cutoff, batchSize]
+    );
+
+    return candidates;
+  }
+
+  /**
+   * Counts transactions for dry-run mode
+   */
+  private async countTransactions(
+    manager: EntityManager,
+    candidates: BlockCandidate[]
+  ): Promise<number> {
+    if (candidates.length === 0) return 0;
+
+    const blockIds = candidates.map((c) => c.id);
+    const result = await manager.query<{ count: string }[]>(
+      `SELECT COUNT(*) as count
+       FROM transaction
+       WHERE block_id = ANY($1::text[])`,
+      [blockIds]
+    );
+
+    return parseInt(result[0]?.count || '0', 10);
+  }
+
+  /**
+   * Executes cascade deletion with optimized batch processing
+   * Order: logs -> transactions -> blocks (child to parent)
+   */
+  private async executeCascadeDelete(
+    manager: EntityManager,
+    candidates: BlockCandidate[]
+  ): Promise<{
+    blocksDeleted: number;
+    transactionsDeleted: number;
+    logsDeleted: number;
+  }> {
+    const blockIds = candidates.map((c) => c.id);
+
+    // Step 1: Delete logs and transactions together by block_id
+    // This is more efficient than fetching transaction IDs first
+    let logsDeleted = 0;
+    let transactionsDeleted = 0;
+
+    // Process blocks in chunks to avoid parameter limits and reduce lock contention
+    for (let i = 0; i < blockIds.length; i += HotStoragePruner.CHUNK_SIZE) {
+      const chunk = blockIds.slice(i, i + HotStoragePruner.CHUNK_SIZE);
+
+      // Delete logs via transaction.block_id relationship
+      // This avoids N+1 query to fetch transaction IDs first
+      const logResult = await manager.query(
+        `DELETE FROM log
+         WHERE transaction_id IN (
+           SELECT id FROM transaction WHERE block_id = ANY($1::text[])
+         )`,
+        [chunk]
+      );
+      logsDeleted += logResult[1] || 0;
+
+      // Delete transactions by block_id
+      const txResult = await manager.query(
+        `DELETE FROM transaction WHERE block_id = ANY($1::text[])`,
+        [chunk]
+      );
+      transactionsDeleted += txResult[1] || 0;
+    }
+
+    // Step 2: Delete blocks (now safe as children are removed)
+    let blocksDeleted = 0;
+    for (let i = 0; i < blockIds.length; i += HotStoragePruner.CHUNK_SIZE) {
+      const chunk = blockIds.slice(i, i + HotStoragePruner.CHUNK_SIZE);
+
+      const blockResult = await manager.query(
+        `DELETE FROM block WHERE id = ANY($1::text[])`,
+        [chunk]
+      );
+      blocksDeleted += blockResult[1] || 0;
+    }
+
+    return {
+      logsDeleted,
+      transactionsDeleted,
+      blocksDeleted,
     };
   }
 }
