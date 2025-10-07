@@ -10,6 +10,8 @@ import { prepareForApiResponse } from '../../utils/bigint-serializer';
 import { In } from 'typeorm';
 import { ICacheService } from '../../interfaces/cache/ICacheService';
 import { logger } from '../../utils/logger';
+import { appConfig } from '../../config/AppConfig';
+import { ColdStorageQueryService } from '../../services/cold-storage/ColdStorageQueryService';
 
 /**
  * Create block routes using logs-first architecture with optimized queries
@@ -67,17 +69,65 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
     }
 
     try {
+      const config = appConfig.getConfig();
+      const coldReadsEnabled = config.storage.enableColdReads;
+
       // Get latest blocks with basic data
-      const blocks = await store.Block.find({
+      let blocks = await store.Block.find({
         order: { number: 'DESC' },
         skip: offset,
         take: limit,
       });
 
+      // If hot storage is empty or has very few results, try cold storage
+      if (coldReadsEnabled && blocks.length === 0) {
+        try {
+          logger.info('Hot storage returned no blocks, attempting cold storage fallback', {
+            limit,
+            offset,
+          });
+
+          const coldStorageService = await serviceContainer.resolve<ColdStorageQueryService>('coldStorageQueryService');
+          const coldResult = await coldStorageService.getBlocks(limit, offset);
+
+          if (coldResult.blocks.length > 0) {
+            const apiResponse = prepareForApiResponse({
+              blocks: coldResult.blocks,
+              pagination: {
+                limit,
+                offset,
+                total: coldResult.total,
+                hasMore: coldResult.hasMore,
+              }
+            });
+
+            if (cacheService) {
+              try {
+                await cacheService.set(cacheKey, apiResponse, 30000);
+              } catch (error) {
+                logger.warn('Failed to cache cold storage response', { error });
+              }
+            }
+
+            return successResponse(res, apiResponse, 'Blocks retrieved from cold storage', 200, {
+              source: 'clickhouse',
+              limit,
+              offset,
+              totalCount: coldResult.total,
+              hasMore: coldResult.hasMore,
+            });
+          }
+        } catch (error) {
+          logger.warn('Cold storage blocks query failed, returning empty result', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
+
       // Get total count efficiently (cache this separately as it's expensive)
       const totalCountCacheKey = 'blocks:total_count';
       let totalCount;
-      
+
       if (cacheService) {
         try {
           totalCount = await cacheService.get<number>(totalCountCacheKey);
@@ -85,7 +135,7 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
           logger.warn('Failed to get total count from cache', { error });
         }
       }
-      
+
       if (!totalCount) {
         try {
           // Use latest block number as approximation (much faster than COUNT(*))
@@ -94,7 +144,7 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
             select: ['number']
           });
           totalCount = latestBlock?.number || 0;
-          
+
           // Cache for 1 minute (if cache available)
           if (cacheService) {
             try {
@@ -322,16 +372,56 @@ export function createBlockRoutes(serviceContainer: ServiceContainer): Router {
       }
     }
 
-    const block = await store.Block.findOne({
+    let block = await store.Block.findOne({
       where: { number: parseInt(blockNumber) },
     });
 
+    let transactionCount = 0;
+    let dataSource = 'database';
+
     if (!block) {
+      // Try cold storage if enabled
+      const config = appConfig.getConfig();
+      if (config.storage.enableColdReads) {
+        try {
+          logger.info('Block not found in hot storage, attempting cold storage lookup', {
+            blockNumber,
+          });
+
+          const coldStorageService = await serviceContainer.resolve<ColdStorageQueryService>('coldStorageQueryService');
+          const coldBlock = await coldStorageService.getBlockByNumber(parseInt(blockNumber));
+
+          if (coldBlock) {
+            const response = prepareForApiResponse({
+              block: coldBlock
+            });
+
+            if (cacheService) {
+              try {
+                await cacheService.set(cacheKey, response, 300000);
+              } catch (error) {
+                logger.warn('Failed to cache cold storage block', { error });
+              }
+            }
+
+            return successResponse(res, response, 'Block details retrieved from cold storage', 200, {
+              queryTime: Date.now(),
+              source: 'clickhouse'
+            });
+          }
+        } catch (error) {
+          logger.warn('Cold storage block lookup failed', {
+            blockNumber,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
+
       throw new ApiErrorResponse('Block not found', 404, 'BLOCK_NOT_FOUND');
     }
 
     // OPTIMIZED: Get transaction count efficiently using block id
-    const transactionCount = await store.Transaction.find({
+    transactionCount = await store.Transaction.find({
       where: { block: { id: block.id } },
       select: ['id']
     }).then(txs => txs.length);

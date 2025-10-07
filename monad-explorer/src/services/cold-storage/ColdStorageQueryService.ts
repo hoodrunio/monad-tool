@@ -36,6 +36,20 @@ interface ColdLogRecord {
   data: string;
 }
 
+interface ColdBlockRecord {
+  block_number: number;
+  block_hash: string;
+  parent_hash: string;
+  block_timestamp: string;
+  block_size: string;
+  gas_limit: string;
+  gas_used: string;
+  transaction_count: number;
+  miner: string;
+  extra_data: string;
+  base_fee_per_gas: string;
+}
+
 export class ColdStorageQueryService {
   private readonly tables = this.storageConfig.clickHouse.tables;
 
@@ -201,6 +215,112 @@ export class ColdStorageQueryService {
     } catch (error) {
       logger.error('Failed to query cold storage transaction by hash', {
         hash,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      throw error;
+    }
+  }
+
+  public async getBlocks(limit: number, offset: number): Promise<{
+    blocks: any[];
+    total: number;
+    hasMore: boolean;
+  }> {
+    try {
+      const rows = await this.clickHouseService.query<ColdBlockRecord>(
+        `SELECT
+          block_number,
+          block_hash,
+          parent_hash,
+          block_timestamp,
+          block_size,
+          gas_limit,
+          gas_used,
+          transaction_count,
+          miner,
+          base_fee_per_gas
+        FROM ${this.tables.blocks}
+        ORDER BY block_number DESC
+        LIMIT {limit:UInt32}
+        OFFSET {offset:UInt64}`,
+        { limit, offset }
+      );
+
+      const totalResult = await this.clickHouseService.query<{ total: number }>(
+        `SELECT count() AS total FROM ${this.tables.blocks}`
+      );
+
+      const total = totalResult[0]?.total ?? rows.length;
+
+      const blocks = rows.map(row => ({
+        number: Number(row.block_number),
+        hash: row.block_hash,
+        parentHash: row.parent_hash,
+        timestamp: new Date(row.block_timestamp),
+        size: row.block_size,
+        gasLimit: row.gas_limit,
+        gasUsed: row.gas_used,
+        transactionCount: row.transaction_count,
+        miner: row.miner,
+        baseFeePerGas: row.base_fee_per_gas,
+      }));
+
+      return {
+        blocks,
+        total,
+        hasMore: offset + limit < total,
+      };
+    } catch (error) {
+      logger.error('Failed to query cold storage blocks', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      throw error;
+    }
+  }
+
+  public async getBlockByNumber(blockNumber: number): Promise<any | null> {
+    try {
+      const rows = await this.clickHouseService.query<ColdBlockRecord>(
+        `SELECT
+          block_number,
+          block_hash,
+          parent_hash,
+          block_timestamp,
+          block_size,
+          gas_limit,
+          gas_used,
+          transaction_count,
+          miner,
+          extra_data,
+          base_fee_per_gas
+        FROM ${this.tables.blocks}
+        WHERE block_number = {blockNumber:UInt64}
+        LIMIT 1`,
+        { blockNumber }
+      );
+
+      if (rows.length === 0) {
+        return null;
+      }
+
+      const record = rows[0];
+
+      return {
+        number: Number(record.block_number),
+        hash: record.block_hash,
+        parentHash: record.parent_hash,
+        timestamp: new Date(record.block_timestamp),
+        size: record.block_size,
+        gasLimit: record.gas_limit,
+        gasUsed: record.gas_used,
+        transactionCount: record.transaction_count,
+        miner: record.miner,
+        extraData: record.extra_data,
+        baseFeePerGas: record.base_fee_per_gas,
+      };
+    } catch (error) {
+      logger.error('Failed to query cold storage block by number', {
+        blockNumber,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
