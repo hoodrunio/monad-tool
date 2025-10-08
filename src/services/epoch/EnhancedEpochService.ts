@@ -165,13 +165,14 @@ export class EnhancedEpochService {
    */
   private async buildNormalPhaseProgress(epochId: number, currentRound: RoundBlockInfo): Promise<EpochProgressInfo> {
     // Normal phase: block-based calculation
-    const epochStartBlock = (epochId - 1) * this.epochInterval;
-    const epochEndBlock = epochId * this.epochInterval - 1;
+    // Special handling for epoch 0
+    const epochStartBlock = epochId === 0 ? 0 : (epochId - 1) * this.epochInterval;
+    const epochEndBlock = epochId === 0 ? this.epochInterval - 1 : epochId * this.epochInterval - 1;
     const currentBlock = currentRound.seq_num;
-    
+
     const blocksCompleted = currentBlock - epochStartBlock;
     const blocksRemaining = epochEndBlock - currentBlock;
-    
+
     const progressValue = blocksCompleted / this.epochInterval;
     const progressPercentage = progressValue * 100;
 
