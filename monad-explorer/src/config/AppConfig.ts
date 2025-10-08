@@ -2,6 +2,13 @@ import { logger } from '../utils/logger';
 
 export interface DatabaseConfig {
   supportHotBlocks: boolean;
+  // Performance optimization settings
+  maxConnections: number;
+  idleTimeoutMillis: number;
+  statementTimeout: number; // PostgreSQL statement timeout in ms
+  // Batch processing settings
+  chunkSize: number; // Number of entities per chunk for bulk inserts
+  maxConcurrency: number; // Max concurrent chunk processing
 }
 
 export interface RpcConfig {
@@ -147,6 +154,13 @@ class ConfigManager {
     const config: AppConfig = {
       database: {
         supportHotBlocks: this.getBooleanEnv('ENABLE_HOT_BLOCKS', true),
+        // Optimized connection pool settings for high-throughput processing
+        maxConnections: this.getNumberEnv('DB_MAX_CONNECTIONS', 20),
+        idleTimeoutMillis: this.getNumberEnv('DB_IDLE_TIMEOUT', 30000),
+        statementTimeout: this.getNumberEnv('DB_STATEMENT_TIMEOUT', 60000),
+        // Batch processing optimization
+        chunkSize: this.getNumberEnv('DB_CHUNK_SIZE', 5000),
+        maxConcurrency: this.getNumberEnv('DB_MAX_CONCURRENCY', 6),
       },
       rpc: {
         url: rpcUrl,

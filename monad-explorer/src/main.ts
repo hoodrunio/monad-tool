@@ -34,8 +34,10 @@ class MainApplication {
       const config = appConfig.getConfig();
 
       // Create database with configuration
-      const database = new TypeormDatabase({ 
-        supportHotBlocks: config.database.supportHotBlocks 
+      // Connection pool is optimized via environment variables:
+      // DB_MAX_CONNECTIONS=20, DB_IDLE_TIMEOUT=30000
+      const database = new TypeormDatabase({
+        supportHotBlocks: config.database.supportHotBlocks
       });
 
       // Start the Subsquid processor

@@ -20,10 +20,10 @@ export const processor = new EvmBatchProcessor()
     .setRpcEndpoint({
         // Monad testnet RPC with optimized settings
         url: assertNotNull(process.env.RPC_MONAD_HTTP || 'https://testnet-rpc.monad.xyz', 'No RPC endpoint supplied'),
-        rateLimit: 50, // Increased from 10 to 50 req/sec
-        capacity: 100, // Add capacity for burst requests
+        rateLimit: 50, // req/sec
+        capacity: 100, // capacity for burst requests
         requestTimeout: 30000, // 30 second timeout
-        maxBatchCallSize: 100 // Optimize batch call size
+        maxBatchCallSize: 100 // batch call size
     })
     .setFinalityConfirmation(2)
     .setFields({
@@ -55,7 +55,6 @@ export const processor = new EvmBatchProcessor()
             size: true,
             gasLimit: true,
             gasUsed: true,
-            // Enhanced fields
             extraData: true,
             baseFeePerGas: true,
             miner: true,

@@ -10,13 +10,26 @@ import { appConfig } from '../config/AppConfig';
 /**
  * Entity Persister
  * Single Responsibility: Only handles database persistence operations
+ * ⚡ OPTIMIZED: Config-driven chunk size and concurrency for maximum performance
  */
 export class EntityPersister {
   private storageRouterPromise?: Promise<IStorageRouter>;
   private queueServicePromise?: Promise<IQueueService | null>;
   private readonly config = appConfig.getConfig();
 
-  constructor(private readonly container = serviceContainer) {}
+  // Config-driven performance settings
+  private readonly CHUNK_SIZE: number;
+  private readonly MAX_CONCURRENCY: number;
+
+  constructor(private readonly container = serviceContainer) {
+    this.CHUNK_SIZE = this.config.database.chunkSize;
+    this.MAX_CONCURRENCY = this.config.database.maxConcurrency;
+
+    logger.debug('EntityPersister initialized with optimized settings', {
+      chunkSize: this.CHUNK_SIZE,
+      maxConcurrency: this.MAX_CONCURRENCY,
+    });
+  }
   
   /**
    * Persist all processed entities to the database
@@ -78,7 +91,7 @@ export class EntityPersister {
   }
 
   /**
-   * Persist account entities
+   * ⚡ OPTIMIZED: Persist account entities with batching for large datasets
    */
   private async persistAccounts(store: any, batch: HotStorageBatch): Promise<void> {
     if (batch.accounts.length === 0) {
@@ -86,11 +99,30 @@ export class EntityPersister {
     }
 
     try {
-      await store.upsert(batch.accounts);
-      
-      logger.debug('Accounts persisted successfully', { 
-        count: batch.accounts.length 
-      });
+      // For large account batches, split into chunks to avoid memory issues
+      const threshold = this.CHUNK_SIZE * 2; // Use 2x chunk size as threshold
+      if (batch.accounts.length > threshold) {
+        const chunks = this.chunkArray(batch.accounts, this.CHUNK_SIZE);
+
+        await this.processChunksInParallel(chunks, async (chunk: any[], index: number) => {
+          await store.upsert(chunk);
+          logger.debug(`Account chunk ${index + 1}/${chunks.length} persisted`, {
+            count: chunk.length
+          });
+        }, Math.max(4, this.MAX_CONCURRENCY - 2)); // Use slightly lower concurrency for accounts
+
+        logger.debug('Accounts persisted successfully (chunked)', {
+          count: batch.accounts.length,
+          chunks: chunks.length
+        });
+      } else {
+        // For smaller batches, use single upsert
+        await store.upsert(batch.accounts);
+
+        logger.debug('Accounts persisted successfully', {
+          count: batch.accounts.length
+        });
+      }
     } catch (error) {
       logger.error('Failed to persist accounts', {
         count: batch.accounts.length,
@@ -163,19 +195,19 @@ export class EntityPersister {
     }
 
     try {
-      const CHUNK_SIZE = 20000; // Process 20000 transactions per chunk
-      const chunks = this.chunkArray(batch.transactions, CHUNK_SIZE);
-      
+      // Config-driven chunk size for optimal PostgreSQL performance
+      const chunks = this.chunkArray(batch.transactions, this.CHUNK_SIZE);
+
       // Bulk sanitize all transactions first
       this.bulkSanitize(batch.transactions);
-      
-      // Process chunks in parallel (with concurrency limit)
+
+      // Process chunks in parallel with config-driven concurrency
       await this.processChunksInParallel(chunks, async (chunk, index) => {
         await store.insert(chunk);
-        logger.debug(`Transaction chunk ${index + 1}/${chunks.length} persisted`, { 
-          count: chunk.length 
+        logger.debug(`Transaction chunk ${index + 1}/${chunks.length} persisted`, {
+          count: chunk.length
         });
-      }, 3); // Max 3 concurrent chunks
+      }, this.MAX_CONCURRENCY);
       
       logger.info('All transactions persisted successfully', { 
         totalCount: batch.transactions.length,
@@ -206,19 +238,19 @@ export class EntityPersister {
     }
 
     try {
-      const CHUNK_SIZE = 20000; // Process 20000 logs per chunk
-      const chunks = this.chunkArray(batch.logs, CHUNK_SIZE);
-      
+      // Config-driven chunk size matching transaction persistence
+      const chunks = this.chunkArray(batch.logs, this.CHUNK_SIZE);
+
       // Bulk sanitize all logs first
       this.bulkSanitize(batch.logs);
-      
-      // Process chunks in parallel
+
+      // Process chunks in parallel with config-driven concurrency
       await this.processChunksInParallel(chunks, async (chunk: any[], index: number) => {
         await store.insert(chunk);
-        logger.debug(`Log chunk ${index + 1}/${chunks.length} persisted`, { 
-          count: chunk.length 
+        logger.debug(`Log chunk ${index + 1}/${chunks.length} persisted`, {
+          count: chunk.length
         });
-      }, 3); // Max 3 concurrent chunks
+      }, this.MAX_CONCURRENCY);
       
       logger.info('All logs persisted successfully', { 
         totalCount: batch.logs.length,
@@ -462,34 +494,53 @@ export class EntityPersister {
   }
 
   /**
-   * Process chunks in parallel with concurrency limit
+   * ⚡ OPTIMIZED: Process chunks in parallel with improved concurrency control
+   * Uses semaphore pattern for better resource management
    */
   private async processChunksInParallel<T>(
     chunks: T[][],
     processor: (chunk: T[], index: number) => Promise<void>,
     maxConcurrency: number
   ): Promise<void> {
-    const processingPromises: Promise<void>[] = [];
-    
-    for (let i = 0; i < chunks.length; i++) {
-      const promise = processor(chunks[i], i);
-      processingPromises.push(promise);
-      
-      // Control concurrency
-      if (processingPromises.length >= maxConcurrency) {
-        await Promise.race(processingPromises);
-        // Remove completed promises
-        for (let j = processingPromises.length - 1; j >= 0; j--) {
-          const p = processingPromises[j];
-          if (await Promise.race([p, Promise.resolve('pending')]) !== 'pending') {
-            processingPromises.splice(j, 1);
-          }
-        }
+    // Use semaphore pattern for more efficient concurrency control
+    let activeCount = 0;
+    let currentIndex = 0;
+    const errors: Error[] = [];
+
+    const processNext = async (): Promise<void> => {
+      const index = currentIndex++;
+      if (index >= chunks.length) {
+        return;
       }
+
+      activeCount++;
+      try {
+        await processor(chunks[index], index);
+      } catch (error) {
+        errors.push(error instanceof Error ? error : new Error(String(error)));
+      } finally {
+        activeCount--;
+      }
+
+      // Process next chunk if available
+      if (currentIndex < chunks.length) {
+        await processNext();
+      }
+    };
+
+    // Start initial batch of concurrent processes
+    const initialBatch = Math.min(maxConcurrency, chunks.length);
+    await Promise.all(Array.from({ length: initialBatch }, () => processNext()));
+
+    // Wait for all processing to complete
+    while (activeCount > 0) {
+      await new Promise(resolve => setTimeout(resolve, 10));
     }
-    
-    // Wait for all remaining promises
-    await Promise.all(processingPromises);
+
+    // Throw first error if any occurred
+    if (errors.length > 0) {
+      throw errors[0];
+    }
   }
 
   // ✅ TokenTransfer persistence removed - now computed at runtime from logs
