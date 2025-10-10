@@ -21,8 +21,8 @@ RUN apk add --no-cache \
 COPY package*.json ./
 COPY tsconfig.json ./
 
-# Install dependencies
-RUN npm ci --only=production && npm cache clean --force
+# Install dependencies (include dev deps for the TypeScript build)
+RUN npm ci
 
 # Copy source code
 COPY src/ ./src/
@@ -31,6 +31,9 @@ COPY database/ ./database/
 # Build the application
 RUN npm run build
 
+# Remove dev dependencies after build to slim the final image
+RUN npm prune --omit=dev && npm cache clean --force
+
 # =============================================
 # Production Stage
 # =============================================
@@ -38,7 +41,6 @@ FROM node:18-alpine AS production
 
 # Install runtime dependencies
 RUN apk add --no-cache \
-    systemd \
     util-linux \
     curl \
     dumb-init \
