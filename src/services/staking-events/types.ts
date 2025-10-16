@@ -212,7 +212,7 @@ export interface IEventListener {
   /**
    * Subscribe to new events
    */
-  onEvent(callback: (event: StakingEvent) => Promise<void>): void;
+  onEvent(callback: (log: Log) => Promise<void>): void;
 
   /**
    * Subscribe to errors

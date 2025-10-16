@@ -5,7 +5,6 @@ import { ethers, WebSocketProvider, Log } from 'ethers';
 import { logger } from '../../../utils/logger';
 import {
   IEventListener,
-  StakingEvent,
   STAKING_PRECOMPILE_ADDRESS,
   ListenerConnectionError
 } from '../types';
@@ -36,7 +35,7 @@ export class WebSocketEventListener implements IEventListener {
   private lastHeartbeat: Date | null = null;
 
   // Callbacks
-  private eventCallback: ((event: StakingEvent) => Promise<void>) | null = null;
+  private eventCallback: ((log: Log) => Promise<void>) | null = null;
   private errorCallback: ((error: Error) => void) | null = null;
 
   // State tracking
@@ -126,7 +125,7 @@ export class WebSocketEventListener implements IEventListener {
   /**
    * Subscribe to new events
    */
-  onEvent(callback: (event: StakingEvent) => Promise<void>): void {
+  onEvent(callback: (log: Log) => Promise<void>): void {
     this.eventCallback = callback;
   }
 
@@ -268,12 +267,10 @@ export class WebSocketEventListener implements IEventListener {
           logIndex: log.index
         });
 
-        // Note: Event processing is handled by the EventProcessor in the indexer
-        // This listener just forwards raw logs to the callback
-        // The callback should handle conversion to typed events
-
-        // For now, we'll emit the raw log and let the indexer process it
-        // The indexer will handle EventProcessor conversion
+        // Forward raw log to indexer for processing
+        if (this.eventCallback) {
+          await this.eventCallback(log);
+        }
       } catch (error) {
         logger.error('Error processing log', {
           error: error instanceof Error ? error.message : 'Unknown error',

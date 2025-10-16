@@ -1,7 +1,7 @@
 // Staking Event Indexer - Main Orchestrator
 // Coordinates all components for production-ready event indexing
 
-import { ethers } from 'ethers';
+import { ethers, Log } from 'ethers';
 import { logger } from '../../utils/logger';
 import type { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { EventProcessor } from './processors/EventProcessor';
@@ -314,19 +314,17 @@ export class StakingEventIndexer {
   /**
    * Handle incoming event
    */
-  private async handleEvent(event: StakingEvent): Promise<void> {
+  private async handleEvent(log: Log): Promise<void> {
     try {
-      // Update metrics
-      this.metrics.currentBlock = event.blockNumber;
-      if (event.blockNumber > this.metrics.lastProcessedBlock) {
-        this.metrics.lastProcessedBlock = event.blockNumber;
+      // Update metrics from log
+      this.metrics.currentBlock = log.blockNumber;
+      if (log.blockNumber > this.metrics.lastProcessedBlock) {
+        this.metrics.lastProcessedBlock = log.blockNumber;
       }
       this.metrics.lag = this.currentListener?.getCurrentLag() || 0;
 
-      // Check for duplicates
-      const eventId = `${event.transactionHash}:${event.logIndex}`;
-      this.deduplicator.markProcessing(eventId);
-
+      // Check for duplicates BEFORE marking as processing
+      const eventId = `${log.transactionHash}:${log.index}`;
       const isDuplicate = await this.deduplicator.isDuplicate(eventId);
 
       if (isDuplicate) {
@@ -335,8 +333,22 @@ export class StakingEventIndexer {
         return;
       }
 
+      // Mark as processing only after confirming it's not a duplicate
+      this.deduplicator.markProcessing(eventId);
+
+      // Decode raw log into typed staking event using EventProcessor
+      const provider = new ethers.JsonRpcProvider(this.config.rpcUrl);
+      const block = await provider.getBlock(log.blockNumber);
+      const blockTimestamp = new Date(Number(block?.timestamp || 0) * 1000);
+      const typedEvent = await this.eventProcessor.processLog(log, blockTimestamp);
+
+      if (!typedEvent) {
+        this.metrics.eventsSkipped++;
+        return;
+      }
+
       // Add to buffer
-      this.eventBuffer.push(event);
+      this.eventBuffer.push(typedEvent);
 
       // Process batch if buffer is full
       if (this.eventBuffer.length >= this.BATCH_SIZE) {
@@ -346,11 +358,8 @@ export class StakingEventIndexer {
       this.metrics.eventsFailed++;
       logger.error('Failed to handle event', {
         error: error instanceof Error ? error.message : 'Unknown error',
-        event: {
-          type: event.eventType,
-          transactionHash: event.transactionHash,
-          blockNumber: event.blockNumber
-        }
+        txHash: log.transactionHash,
+        blockNumber: log.blockNumber
       });
     }
   }

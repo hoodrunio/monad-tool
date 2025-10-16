@@ -36,7 +36,7 @@ export class PollingEventListener implements IEventListener {
   private isPolling = false;
 
   // Callbacks
-  private eventCallback: ((event: StakingEvent) => Promise<void>) | null = null;
+  private eventCallback: ((log: Log) => Promise<void>) | null = null;
   private errorCallback: ((error: Error) => void) | null = null;
 
   // Stats
@@ -147,7 +147,7 @@ export class PollingEventListener implements IEventListener {
   /**
    * Subscribe to new events
    */
-  onEvent(callback: (event: StakingEvent) => Promise<void>): void {
+  onEvent(callback: (log: Log) => Promise<void>): void {
     this.eventCallback = callback;
   }
 
@@ -239,9 +239,12 @@ export class PollingEventListener implements IEventListener {
         lag: this.getCurrentLag()
       });
 
-      // Process logs (note: actual event processing happens in the indexer)
-      // For now we just track that we've queried these blocks
-      // The indexer will handle conversion to typed events
+      // Forward logs to indexer for processing
+      if (this.eventCallback && logs.length > 0) {
+        for (const log of logs) {
+          await this.eventCallback(log);
+        }
+      }
 
       // Update last processed block
       this.lastProcessedBlock = toBlock;
