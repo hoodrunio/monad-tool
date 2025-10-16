@@ -192,16 +192,16 @@ export class MonadClickHouseClient {
         epoch UInt64,
         validator_id String,
         validator_index UInt32,
-        
+
         -- Participation: 1 = participated, 0 = did not participate
         participated UInt8,
-        
+
         -- QC metadata
         qc_id String,
         total_validators UInt16,
         participating_validators UInt16,
         participation_rate Float32,
-        
+
         -- Processing metadata
         ingestion_id UUID DEFAULT generateUUIDv4(),
         processed_at DateTime64(3, 'UTC') DEFAULT now()
@@ -209,6 +209,105 @@ export class MonadClickHouseClient {
       PARTITION BY toYYYYMM(timestamp)
       ORDER BY (seq_num, validator_id)
       TTL toDateTime(timestamp) + INTERVAL 30 DAY
+      SETTINGS index_granularity = 8192`,
+
+      // =============================================
+      // STAKING EVENTS TABLES
+      // =============================================
+
+      `CREATE TABLE IF NOT EXISTS staking_events (
+        event_id String,
+        event_type Enum8(
+          'ValidatorCreated' = 1,
+          'ValidatorStatusChanged' = 2,
+          'Delegate' = 3,
+          'Undelegate' = 4,
+          'Withdraw' = 5,
+          'ClaimRewards' = 6,
+          'CommissionChanged' = 7,
+          'ValidatorRewarded' = 8,
+          'EpochChanged' = 9
+        ),
+        block_number UInt64,
+        block_timestamp DateTime64(3, 'UTC'),
+        transaction_hash String,
+        log_index UInt32,
+        epoch String,
+
+        -- Event-specific data (nullable for flexibility)
+        validator_id Nullable(String),
+        delegator Nullable(String),
+        amount Nullable(String),
+        commission Nullable(String),
+        old_commission Nullable(String),
+        new_commission Nullable(String),
+        activation_epoch Nullable(String),
+        withdraw_id Nullable(UInt8),
+        flags Nullable(String),
+        from_address Nullable(String),
+        old_epoch Nullable(String),
+        new_epoch Nullable(String),
+
+        -- Processing metadata
+        processed_at DateTime64(3, 'UTC') DEFAULT now()
+      ) ENGINE = ReplacingMergeTree(processed_at)
+      PARTITION BY toYYYYMM(block_timestamp)
+      ORDER BY (event_id, event_type, block_number)
+      TTL toDateTime(block_timestamp) + INTERVAL 90 DAY
+      SETTINGS index_granularity = 8192`,
+
+      `CREATE TABLE IF NOT EXISTS validator_delegations (
+        validator_id String,
+        delegator String,
+        current_amount String,
+        total_delegated String,
+        total_undelegated String,
+        total_withdrawn String,
+        total_rewards_claimed String,
+        pending_withdrawals UInt32,
+        first_delegation_at DateTime64(3, 'UTC'),
+        last_updated_at DateTime64(3, 'UTC'),
+        last_updated_block UInt64,
+        epoch String
+      ) ENGINE = ReplacingMergeTree(last_updated_at)
+      PARTITION BY toYYYYMM(last_updated_at)
+      ORDER BY (validator_id, delegator)
+      SETTINGS index_granularity = 8192`,
+
+      `CREATE TABLE IF NOT EXISTS delegation_history (
+        history_id String,
+        validator_id String,
+        delegator String,
+        action Enum8('delegate' = 1, 'undelegate' = 2, 'withdraw' = 3, 'compound' = 4),
+        amount String,
+        epoch String,
+        activation_epoch Nullable(String),
+        withdraw_id Nullable(UInt8),
+        block_number UInt64,
+        block_timestamp DateTime64(3, 'UTC'),
+        transaction_hash String
+      ) ENGINE = MergeTree()
+      PARTITION BY toYYYYMM(block_timestamp)
+      ORDER BY (validator_id, delegator, block_number)
+      TTL toDateTime(block_timestamp) + INTERVAL 180 DAY
+      SETTINGS index_granularity = 8192`,
+
+      `CREATE TABLE IF NOT EXISTS reward_events (
+        event_id String,
+        validator_id String,
+        delegator Nullable(String),
+        amount String,
+        epoch String,
+        event_type Enum8('claim' = 1, 'commission_change' = 2, 'validator_reward' = 3),
+        old_commission Nullable(String),
+        new_commission Nullable(String),
+        block_number UInt64,
+        block_timestamp DateTime64(3, 'UTC'),
+        transaction_hash String
+      ) ENGINE = MergeTree()
+      PARTITION BY toYYYYMM(block_timestamp)
+      ORDER BY (validator_id, event_type, block_number)
+      TTL toDateTime(block_timestamp) + INTERVAL 90 DAY
       SETTINGS index_granularity = 8192`
     ];
   }
@@ -589,6 +688,126 @@ export class MonadClickHouseClient {
       values: rows,
       format: 'JSONEachRow'
     });
+  }
+
+  // =============================================
+  // STAKING EVENTS INSERTION METHODS
+  // =============================================
+
+  /**
+   * Insert staking events into database
+   */
+  async insertStakingEvents(events: import('../services/staking-events/types').StakingEventRecord[]): Promise<void> {
+    if (events.length === 0) return;
+
+    try {
+      await this.client.insert({
+        table: 'staking_events',
+        values: events,
+        format: 'JSONEachRow'
+      });
+      logger.info(`💾 Successfully inserted ${events.length} staking events`);
+    } catch (error) {
+      logger.error('Failed to insert staking events:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Insert or update validator delegation records
+   */
+  async upsertValidatorDelegations(delegations: import('../services/staking-events/types').ValidatorDelegationRecord[]): Promise<void> {
+    if (delegations.length === 0) return;
+
+    try {
+      await this.client.insert({
+        table: 'validator_delegations',
+        values: delegations,
+        format: 'JSONEachRow'
+      });
+      logger.info(`💾 Successfully upserted ${delegations.length} validator delegation records`);
+    } catch (error) {
+      logger.error('Failed to upsert validator delegations:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Insert delegation history records
+   */
+  async insertDelegationHistory(history: import('../services/staking-events/types').DelegationHistoryRecord[]): Promise<void> {
+    if (history.length === 0) return;
+
+    try {
+      await this.client.insert({
+        table: 'delegation_history',
+        values: history,
+        format: 'JSONEachRow'
+      });
+      logger.info(`💾 Successfully inserted ${history.length} delegation history records`);
+    } catch (error) {
+      logger.error('Failed to insert delegation history:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Insert reward event records
+   */
+  async insertRewardEvents(rewards: import('../services/staking-events/types').RewardEventRecord[]): Promise<void> {
+    if (rewards.length === 0) return;
+
+    try {
+      await this.client.insert({
+        table: 'reward_events',
+        values: rewards,
+        format: 'JSONEachRow'
+      });
+      logger.info(`💾 Successfully inserted ${rewards.length} reward events`);
+    } catch (error) {
+      logger.error('Failed to insert reward events:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if a staking event has already been processed (deduplication)
+   */
+  async isStakingEventProcessed(eventId: string): Promise<boolean> {
+    try {
+      const query = `
+        SELECT count() as count
+        FROM staking_events
+        WHERE event_id = '${eventId}'
+        LIMIT 1
+      `;
+      const result = await this.executeRawQuery(query);
+      return Number(result[0]?.count || 0) > 0;
+    } catch (error) {
+      logger.error('Failed to check if staking event is processed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get current delegation state for a validator-delegator pair
+   */
+  async getValidatorDelegation(validatorId: string, delegator: string): Promise<import('../services/staking-events/types').ValidatorDelegationRecord | null> {
+    try {
+      const query = `
+        SELECT *
+        FROM validator_delegations
+        WHERE validator_id = '${validatorId}'
+          AND delegator = '${delegator}'
+        ORDER BY last_updated_at DESC
+        LIMIT 1
+      `;
+      const result = await this.executeRawQuery(query);
+      return result.length > 0 ? result[0] : null;
+    } catch (error) {
+      logger.error('Failed to get validator delegation:', error);
+      return null;
+    }
   }
 
   /**

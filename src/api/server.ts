@@ -20,9 +20,11 @@ import { QueryPerformanceController } from './controllers/QueryPerformanceContro
 import { EpochController } from './controllers/EpochController';
 import { EnhancedEpochController } from './controllers/EnhancedEpochController';
 import { TransactionAnalyticsController } from './controllers/TransactionAnalyticsController';
+import { StakingEventController } from './controllers/StakingEventController';
 
 // Import Staking Services
 import { StakingUpdateService, StakingUpdateConfig } from '../services/staking/StakingUpdateService';
+import { StakingEventIndexer } from '../services/staking-events/StakingEventIndexer';
 
 // Import Routes
 import { createHealthRoutes } from './routes/health';
@@ -35,6 +37,7 @@ import { createDNSAnalyticsRoutes } from './routes/dns-analytics';
 import { createEpochRoutes } from './routes/epoch';
 import { createEnhancedEpochRoutes } from './routes/enhanced-epoch';
 import { createTransactionAnalyticsRoutes } from './routes/transaction-analytics';
+import { createStakingEventsRouter } from './routes/staking-events';
 
 export interface APIServerConfig {
   port: number;
@@ -58,6 +61,7 @@ export class AnalyticsAPIServer {
   private redisClient: MonadRedisClient;
   private server: any;
   private stakingUpdateService: StakingUpdateService | null = null;
+  private stakingEventIndexer: StakingEventIndexer | null = null;
 
   // Controllers
   private healthController!: HealthController;
@@ -69,6 +73,7 @@ export class AnalyticsAPIServer {
   private epochController!: EpochController;
   private enhancedEpochController!: EnhancedEpochController;
   private transactionAnalyticsController!: TransactionAnalyticsController;
+  private stakingEventController!: StakingEventController;
 
   constructor(config: APIServerConfig, ingestionService: DataIngestionService) {
     this.config = config;
@@ -197,6 +202,11 @@ export class AnalyticsAPIServer {
       this.clickhouseClient,
       this.redisClient
     );
+
+    this.stakingEventController = new StakingEventController(
+      this.clickhouseClient,
+      this.stakingEventIndexer || undefined
+    );
   }
 
   // =============================================
@@ -269,6 +279,7 @@ export class AnalyticsAPIServer {
     this.app.use('/', createEpochRoutes(this.epochController));
     this.app.use('/', createEnhancedEpochRoutes(this.enhancedEpochController));
     this.app.use('/api/transaction-analytics', createTransactionAnalyticsRoutes(this.transactionAnalyticsController));
+    this.app.use('/api/staking', createStakingEventsRouter(this.stakingEventController));
 
     // API documentation endpoint
     this.app.get('/api/docs', this.handleApiDocs.bind(this));
