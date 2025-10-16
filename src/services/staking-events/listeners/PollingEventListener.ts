@@ -5,9 +5,9 @@ import { ethers, JsonRpcProvider, Log } from 'ethers';
 import { logger } from '../../../utils/logger';
 import {
   IEventListener,
-  StakingEvent,
   STAKING_PRECOMPILE_ADDRESS,
-  ListenerConnectionError
+  ListenerConnectionError,
+  EVENT_SIGNATURES
 } from '../types';
 
 interface PollingConfig {
@@ -278,7 +278,8 @@ export class PollingEventListener implements IEventListener {
     const filter = {
       address: STAKING_PRECOMPILE_ADDRESS,
       fromBlock,
-      toBlock
+      toBlock,
+      topics: [Object.values(EVENT_SIGNATURES) as string[]]
     };
 
     for (let attempt = 1; attempt <= retries; attempt++) {

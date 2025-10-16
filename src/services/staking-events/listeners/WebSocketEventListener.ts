@@ -6,7 +6,8 @@ import { logger } from '../../../utils/logger';
 import {
   IEventListener,
   STAKING_PRECOMPILE_ADDRESS,
-  ListenerConnectionError
+  ListenerConnectionError,
+  EVENT_SIGNATURES
 } from '../types';
 
 interface WebSocketConfig {
@@ -252,7 +253,8 @@ export class WebSocketEventListener implements IEventListener {
     }
 
     const filter = {
-      address: STAKING_PRECOMPILE_ADDRESS
+      address: STAKING_PRECOMPILE_ADDRESS,
+      topics: [Object.values(EVENT_SIGNATURES) as string[]]
     };
 
     logger.info('Subscribing to staking contract logs...', { address: STAKING_PRECOMPILE_ADDRESS });
