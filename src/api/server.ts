@@ -107,6 +107,9 @@ export class AnalyticsAPIServer {
     // Initialize staking services
     this.initializeStakingServices();
 
+    // Initialize staking events indexer (separate from stakingUpdateService)
+    this.initializeStakingEventIndexer();
+
     // Initialize controllers
     this.initializeControllers();
 
@@ -141,6 +144,47 @@ export class AnalyticsAPIServer {
     } catch (error) {
       logger.error('❌ Failed to initialize staking services:', error);
       logger.warn('⚠️  Continuing without staking integration');
+    }
+  }
+
+  // =============================================
+  // STAKING EVENTS INDEXER INITIALIZATION
+  // =============================================
+
+  private initializeStakingEventIndexer(): void {
+    const rpcUrl = process.env.MONAD_RPC_URL;
+    if (!rpcUrl) {
+      logger.warn('⚠️  MONAD_RPC_URL not configured, staking event indexer will be disabled');
+      return;
+    }
+
+    try {
+      const wsUrl = process.env.MONAD_WS_URL || '';
+      const startBlock = parseInt(process.env.STAKING_INDEXER_START_BLOCK || '0');
+      const pollingInterval = parseInt(process.env.STAKING_INDEXER_POLLING_INTERVAL_MS || '2000');
+      const batchSize = parseInt(process.env.STAKING_INDEXER_BATCH_SIZE || '1000');
+      const reconnectDelay = parseInt(process.env.STAKING_INDEXER_RECONNECT_DELAY_MS || '5000');
+      const maxReconnectAttempts = parseInt(process.env.STAKING_INDEXER_MAX_RECONNECT_ATTEMPTS || '10');
+      const enableWebSocket = (process.env.STAKING_INDEXER_ENABLE_WS || 'true').toLowerCase() !== 'false';
+      const enablePolling = (process.env.STAKING_INDEXER_ENABLE_POLLING || 'true').toLowerCase() !== 'false';
+
+      this.stakingEventIndexer = new StakingEventIndexer(this.clickhouseClient, {
+        rpcUrl,
+        wsUrl,
+        startBlock,
+        pollingInterval,
+        batchSize,
+        reconnectDelay,
+        maxReconnectAttempts,
+        enableWebSocket,
+        enablePolling
+      });
+
+      logger.info('✅ Staking event indexer initialized');
+    } catch (error) {
+      logger.error('❌ Failed to initialize staking event indexer:', error);
+      logger.warn('⚠️  Continuing without staking event indexing');
+      this.stakingEventIndexer = null;
     }
   }
 
@@ -489,6 +533,20 @@ export class AnalyticsAPIServer {
         }
       }
 
+      // Start staking events indexer if available
+      if (this.stakingEventIndexer) {
+        (async () => {
+          try {
+            logger.info('🔄 Starting staking events indexer...');
+            await this.stakingEventIndexer!.start();
+            logger.info('✅ Staking events indexer started');
+          } catch (error) {
+            logger.warn('⚠️  Failed to start staking events indexer, continuing without it:', error);
+            this.stakingEventIndexer = null;
+          }
+        })();
+      }
+
       this.server = this.app.listen(this.config.port, () => {
         logger.info(`🚀 Monad Analytics API Server started on port ${this.config.port}`);
         logger.info(`📊 API Documentation: http://localhost:${this.config.port}/api/docs`);
@@ -524,6 +582,16 @@ export class AnalyticsAPIServer {
       logger.info('✅ API server stopped');
     }
     
+    // Stop staking events indexer if running
+    if (this.stakingEventIndexer) {
+      try {
+        await this.stakingEventIndexer.stop();
+        logger.info('✅ Staking events indexer stopped');
+      } catch (error) {
+        logger.warn('⚠️  Error while stopping staking events indexer:', error);
+      }
+    }
+
     // Close database connections
     await this.clickhouseClient.close();
     await this.redisClient.close();
