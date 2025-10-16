@@ -207,28 +207,40 @@ export class WebSocketEventListener implements IEventListener {
   private setupProviderListeners(): void {
     if (!this.provider) return;
 
-    // Handle errors
-    this.provider.on('error', (error: Error) => {
-      logger.error('WebSocket error', {
-        error: error.message,
-        reconnectAttempts: this.reconnectAttempts
-      });
+    // ethers v6 does not emit 'close' or 'error' ProviderEvents.
+    // Use the 'debug' channel to detect reconnect/close/error scenarios.
+    type ProviderDebugEvent = {
+      action: string;
+      reason?: unknown;
+      [key: string]: unknown;
+    };
 
-      if (this.errorCallback) {
-        this.errorCallback(error);
+    this.provider.on('debug', (debugEvent: ProviderDebugEvent) => {
+      const action = String(debugEvent.action || '');
+
+      if (action === 'reconnect') {
+        logger.warn('WebSocket provider reconnect detected', {
+          reconnectAttempts: this.reconnectAttempts
+        });
+        // Let ethers handle reconnect internally; we just log it
+        return;
       }
 
-      // Trigger reconnection
-      this.handleDisconnection();
-    });
+      if (action === 'close' || action === 'error') {
+        const reason = typeof debugEvent.reason === 'string' ? debugEvent.reason : undefined;
+        logger.warn('WebSocket provider debug event indicates close/error', {
+          action,
+          reason,
+          reconnectAttempts: this.reconnectAttempts
+        });
 
-    // Handle close
-    this.provider.on('close', () => {
-      logger.warn('WebSocket closed', {
-        reconnectAttempts: this.reconnectAttempts
-      });
+        if (this.errorCallback) {
+          this.errorCallback(new Error(`WebSocket provider ${action}${reason ? `: ${reason}` : ''}`));
+        }
 
-      this.handleDisconnection();
+        // Trigger our reconnection logic
+        this.handleDisconnection();
+      }
     });
   }
 
