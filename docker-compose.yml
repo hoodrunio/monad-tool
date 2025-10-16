@@ -43,33 +43,6 @@ services:
     networks:
       - monad-network
 
-  monad-analytics:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: monad-analytics-app
-    hostname: monad-analytics
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./examples:/app/examples:ro
-      - ./logs:/app/logs
-    environment:
-      NODE_ENV: production
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: 8123
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_PASSWORD: monad_redis_pass
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - monad-network
-    restart: unless-stopped
-
 volumes:
   clickhouse_data:
     driver: local
