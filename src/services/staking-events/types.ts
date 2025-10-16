@@ -11,15 +11,15 @@ export const STAKING_PRECOMPILE_ADDRESS = '0x00000000000000000000000000000000000
 
 // Event signatures (keccak256 of event signature)
 export const EVENT_SIGNATURES = {
-  ValidatorCreated: '0x3d8c9ec2e8b4b8c0e8e5b5e5b5e5b5e5b5e5b5e5b5e5b5e5b5e5b5e5b5e5b5e5',
-  ValidatorStatusChanged: '0x4d8c9ec2e8b4b8c0e8e5b5e5b5e5b5e5b5e5b5e5b5e5b5e5b5e5b5e5b5e5b5e5',
-  Delegate: '0x510b11bb3f3c799b11307c01ab7db0d335683ef5b2da98f7697de744f465eacc',
-  Undelegate: '0x0f5bb82176feb1b5e747e28471aa92156a04d9f3ab9f45f28e2d704232b93f75',
-  Withdraw: '0x884edad9ce6fa2440d8a54cc123490eb96d2768479d49ff9c7366125a9424364',
-  ClaimRewards: '0x9310ccfcb8de723f578a9e5fbc1e5f86c8e3e1f85d2e5c73c3e5e5e5e5e5e5e5',
-  CommissionChanged: '0xa31ccfcb8de723f578a9e5fbc1e5f86c8e3e1f85d2e5c73c3e5e5e5e5e5e5e5',
-  ValidatorRewarded: '0xb41ccfcb8de723f578a9e5fbc1e5f86c8e3e1f85d2e5c73c3e5e5e5e5e5e5e5',
-  EpochChanged: '0xc51ccfcb8de723f578a9e5fbc1e5f86c8e3e1f85d2e5c73c3e5e5e5e5e5e5e5'
+  ValidatorCreated: '0x6f8045cd38e512b8f12f6f02947c632e5f25af03aad132890ecf50015d97c1b2',
+  ValidatorStatusChanged: '0x53fea97d222a32adefa819a8c0458efa5c2d28d52edd73d970f09a352efc241c',
+  Delegate: '0xe4d4df1e1827dd28252fd5c3cd7ebccd3da6e0aa31f74c828f3c8542af49d840',
+  Undelegate: '0x3e53c8b91747e1b72a44894db10f2a45fa632b161fdcdd3a17bd6be5482bac62',
+  Withdraw: '0x63030e4238e1146c63f38f4ac81b2b23c8be28882e68b03f0887e50d0e9bb18f',
+  ClaimRewards: '0x3170ba953fe3e068954fcbc93913a05bf457825d4d4d86ec9b72ce2186cd8109',
+  CommissionChanged: '0xd1698d3454c5b5384b70aaae33f1704af7c7e055f0c75503ba3146dc28995920',
+  ValidatorRewarded: '0xcd427adadd397bb451e509d89a641d460fb5e0e6fb30fa89ed48f6681bad0551',
+  EpochChanged: '0x4fae4dbe0ed659e8ce6637e3c273cd8e4d3bf029b9379a9e8b3f3f27dbef809b'
 } as const;
 
 export type StakingEventType = keyof typeof EVENT_SIGNATURES;
