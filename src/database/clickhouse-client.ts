@@ -1096,6 +1096,7 @@ POPULATE
           commission,
           consensus_commission,
           snapshot_commission,
+          is_staking_active,
           keybase_id,
           keybase_logo_url,
           last_updated,
@@ -1117,6 +1118,7 @@ POPULATE
         commission,
         consensus_commission,
         snapshot_commission,
+        is_staking_active,
         keybase_id,
         keybase_logo_url,
         last_updated
@@ -1167,6 +1169,7 @@ POPULATE
         'commission',
         'consensus_commission',
         'snapshot_commission',
+        'is_staking_active',
         'keybase_id',
         'keybase_logo_url',
         'last_updated'
