@@ -282,7 +282,7 @@ export class ConsensusController {
           epoch,
           round,
           ts,
-          (current_stake * 100.0 / total_stake) as progress_percentage
+          (toFloat64(current_stake) * 100.0 / toFloat64(total_stake)) as progress_percentage
         FROM bft_round_state
         ORDER BY current_stake DESC
         LIMIT 1
@@ -317,7 +317,7 @@ export class ConsensusController {
           epoch,
           current_stake,
           total_stake,
-          (current_stake * 100.0 / total_stake) as percentage,
+          (toFloat64(current_stake) * 100.0 / toFloat64(total_stake)) as percentage,
           ts
         FROM bft_round_state
         ORDER BY ts DESC
