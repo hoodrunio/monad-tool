@@ -5,6 +5,7 @@ import { createClient, ClickHouseClient } from '@clickhouse/client';
 import { ConsensusEvent, LedgerEvent, QCParticipationData, ValidatorInfrastructure, BlockProposalEvent, QCParticipationEvent } from '../log-processor/types';
 import { CompleteValidator } from '../services/unified-validator';
 import { logger } from '../utils/logger';
+import { MigrationRunner } from './migrations';
 
 export interface ClickHouseConfig {
   host: string;
@@ -60,7 +61,8 @@ export class MonadClickHouseClient {
       });
 
       // Run migrations before schema creation
-      await this.runMigrations();
+      const migrationRunner = new MigrationRunner(this.client, this.config.database);
+      await migrationRunner.runMigrations();
 
       // Execute schema creation
       const schemaStatements = await this.loadSchemaStatements();
@@ -75,49 +77,6 @@ export class MonadClickHouseClient {
     } catch (error) {
       console.error('Failed to initialize schema:', error);
       throw error;
-    }
-  }
-
-  /**
-   * Run database migrations to handle schema changes
-   */
-  private async runMigrations(): Promise<void> {
-    console.log('Running database migrations...');
-
-    try {
-      // Migration 1: Fix validator_registry_latest to include is_staking_active
-      const checkColumn = await this.client.query({
-        query: `
-          SELECT name
-          FROM system.columns
-          WHERE database = '${this.config.database}'
-            AND table = 'validator_registry_latest'
-            AND name = 'is_staking_active'
-        `,
-        format: 'JSONEachRow'
-      });
-
-      const result = await checkColumn.json() as any[];
-
-      if (result.length === 0) {
-        console.log('Migration: Adding is_staking_active column to validator_registry_latest...');
-
-        // Drop materialized view first (depends on the table)
-        await this.client.command({
-          query: `DROP VIEW IF EXISTS ${this.config.database}.validator_registry_latest_mv`
-        });
-
-        // Drop and recreate the table with new schema
-        await this.client.command({
-          query: `DROP TABLE IF EXISTS ${this.config.database}.validator_registry_latest`
-        });
-
-        console.log('✅ Migration completed: validator_registry_latest will be recreated with new schema');
-      } else {
-        console.log('✅ Migration check: validator_registry_latest already has is_staking_active column');
-      }
-    } catch (error) {
-      console.warn('Migration check failed (this is normal for new installations):', error);
     }
   }
 
