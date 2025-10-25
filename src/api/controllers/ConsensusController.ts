@@ -264,4 +264,111 @@ export class ConsensusController {
       });
     }
   }
+
+  /**
+   * GET /api/consensus/quorum?history_limit=20
+   * Get quorum status - shows peak stake across all rounds and whether 2/3 threshold is reached
+   */
+  async getQuorumStatus(req: Request, res: Response): Promise<void> {
+    try {
+      const historyLimit = Math.min(parseInt(req.query.history_limit as string) || 20, 100);
+      const QUORUM_THRESHOLD = 66.67; // BFT consensus requires 2/3
+
+      // Query 1: Get peak stake (highest current_stake across all rounds)
+      const peakQuery = `
+        SELECT
+          current_stake,
+          total_stake,
+          epoch,
+          round,
+          ts,
+          (current_stake * 100.0 / total_stake) as progress_percentage
+        FROM bft_round_state
+        ORDER BY current_stake DESC
+        LIMIT 1
+      `;
+
+      const peakResult = await this.clickhouseClient.executeRawQuery(peakQuery);
+
+      if (!peakResult || peakResult.length === 0) {
+        res.json({
+          success: true,
+          data: null,
+          message: 'No consensus data available'
+        });
+        return;
+      }
+
+      const peak = peakResult[0];
+
+      // Query 2: Get total unique rounds tracked
+      const statsQuery = `
+        SELECT COUNT(DISTINCT concat(toString(epoch), '-', toString(round))) as total_rounds
+        FROM bft_round_state
+      `;
+
+      const statsResult = await this.clickhouseClient.executeRawQuery(statsQuery);
+      const totalRounds = statsResult[0]?.total_rounds || 0;
+
+      // Query 3: Get recent peak history
+      const historyQuery = `
+        SELECT
+          round,
+          epoch,
+          current_stake,
+          total_stake,
+          (current_stake * 100.0 / total_stake) as percentage,
+          ts
+        FROM bft_round_state
+        ORDER BY ts DESC
+        LIMIT ${historyLimit}
+      `;
+
+      const historyResult = await this.clickhouseClient.executeRawQuery(historyQuery);
+
+      // Calculate quorum metrics
+      const currentStake = BigInt(peak.current_stake);
+      const totalStake = BigInt(peak.total_stake);
+      const progressPercentage = parseFloat(peak.progress_percentage);
+      const isQuorumReached = progressPercentage >= QUORUM_THRESHOLD;
+
+      // Calculate remaining stake needed for quorum (2/3 of total)
+      const quorumStakeNeeded = (totalStake * BigInt(6667)) / BigInt(10000); // 66.67%
+      const remainingStakeNeeded = currentStake >= quorumStakeNeeded
+        ? 0n
+        : quorumStakeNeeded - currentStake;
+      const remainingPercentage = Math.max(0, QUORUM_THRESHOLD - progressPercentage);
+
+      res.json({
+        success: true,
+        data: {
+          current_stake: currentStake.toString(),
+          total_stake: totalStake.toString(),
+          progress_percentage: Math.round(progressPercentage * 100) / 100, // 2 decimal places
+          is_quorum_reached: isQuorumReached,
+          quorum_threshold: QUORUM_THRESHOLD,
+          remaining_stake_needed: remainingStakeNeeded.toString(),
+          remaining_percentage: Math.round(remainingPercentage * 100) / 100,
+          peak_epoch: peak.epoch,
+          peak_round: peak.round,
+          peak_timestamp: peak.ts,
+          total_rounds_tracked: totalRounds,
+          recent_peak_history: historyResult.map((h: any) => ({
+            round: h.round,
+            epoch: h.epoch,
+            stake: h.current_stake,
+            percentage: Math.round(parseFloat(h.percentage) * 100) / 100,
+            ts: h.ts
+          }))
+        }
+      });
+    } catch (error) {
+      logger.error('Failed to fetch quorum status:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch quorum status',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
 }

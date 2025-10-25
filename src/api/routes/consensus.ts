@@ -22,5 +22,8 @@ export function createConsensusRouter(controller: ConsensusController): Router {
   // Historical rounds
   router.get('/history', controller.getHistory.bind(controller));
 
+  // Quorum status (peak stake across all rounds)
+  router.get('/quorum', controller.getQuorumStatus.bind(controller));
+
   return router;
 }
