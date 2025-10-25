@@ -10,6 +10,7 @@ import { ServiceContainer, ServiceContainerConfig } from '../services/service-co
 import { logger } from '../utils/logger';
 import { EpochService } from '../services/epoch/EpochService';
 import { NodeRpcClient } from '../services/blockchain/NodeRpcClient';
+import { LogEpochDetector } from '../services/epoch/LogEpochDetector';
 
 export interface StartupConfig {
   clickhouse: ServiceContainerConfig['clickhouse'];
@@ -103,28 +104,43 @@ export class ApplicationInitializer {
         // 1. Determine and set the correct epoch with database fallback
         let actualCurrentEpoch = await epochService.getCurrentEpoch();
 
-        // FALLBACK: If RPC returns a very low epoch (chain halted), use latest epoch from database or validator registry
+        // FALLBACK: If RPC returns a very low epoch (chain halted), use epoch from live logs
         if (actualCurrentEpoch < 10) {
           logger.warn(`⚠️  RPC returned low epoch (${actualCurrentEpoch}), checking for fallback epoch...`);
 
-          // Try database first
+          // PRIORITY 1: Try to detect epoch from live consensus logs (most reliable)
           try {
-            const dbEpochQuery = await clickhouseClient.executeRawQuery(
-              'SELECT MAX(epoch) as max_epoch FROM validator_registry'
-            );
+            const logDetector = new LogEpochDetector();
+            const logEpoch = await logDetector.detectEpoch();
 
-            if (dbEpochQuery && dbEpochQuery.length > 0 && dbEpochQuery[0].max_epoch) {
-              const dbEpoch = Number(dbEpochQuery[0].max_epoch);
-              if (dbEpoch > actualCurrentEpoch) {
-                logger.info(`📊 Using database epoch ${dbEpoch} instead of RPC epoch ${actualCurrentEpoch}`);
-                actualCurrentEpoch = dbEpoch;
-              }
+            if (logEpoch && logEpoch > actualCurrentEpoch) {
+              logger.info(`📊 Using epoch ${logEpoch} from live logs instead of RPC epoch ${actualCurrentEpoch}`);
+              actualCurrentEpoch = logEpoch;
             }
           } catch (error) {
-            logger.warn('Could not fetch epoch from database', error);
+            logger.warn('Could not detect epoch from live logs', error);
           }
 
-          // If still low, try validator registry available epochs
+          // PRIORITY 2: Try database if logs failed
+          if (actualCurrentEpoch < 10) {
+            try {
+              const dbEpochQuery = await clickhouseClient.executeRawQuery(
+                'SELECT MAX(epoch) as max_epoch FROM validator_registry'
+              );
+
+              if (dbEpochQuery && dbEpochQuery.length > 0 && dbEpochQuery[0].max_epoch) {
+                const dbEpoch = Number(dbEpochQuery[0].max_epoch);
+                if (dbEpoch > actualCurrentEpoch) {
+                  logger.info(`📊 Using database epoch ${dbEpoch} instead of RPC epoch ${actualCurrentEpoch}`);
+                  actualCurrentEpoch = dbEpoch;
+                }
+              }
+            } catch (error) {
+              logger.warn('Could not fetch epoch from database', error);
+            }
+          }
+
+          // PRIORITY 3: Try validator registry as last resort
           if (actualCurrentEpoch < 10) {
             try {
               const availableEpochs = validatorService.getAvailableEpochs();
