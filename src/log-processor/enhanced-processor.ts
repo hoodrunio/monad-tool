@@ -120,7 +120,11 @@ export class FocusedLogProcessor {
 
     const processingTime = Date.now() - startTime;
 
-    logger.info(`✅ Processed ${blockProposalEvents.length} block proposals, ${qcParticipationEvents.length} QC participations, ${bftVoteEvents.length} BFT votes, ${bftRoundStates.length} BFT round states in ${processingTime}ms`);
+    // Filter BFT round states: keep only the highest stake per epoch+round
+    // This matches the Perl command logic: only track increasing stake values
+    const filteredBftRoundStates = this.filterBftRoundStatesByMaxStake(bftRoundStates);
+
+    logger.info(`✅ Processed ${blockProposalEvents.length} block proposals, ${qcParticipationEvents.length} QC participations, ${bftVoteEvents.length} BFT votes, ${filteredBftRoundStates.length} BFT round states (filtered from ${bftRoundStates.length}) in ${processingTime}ms`);
 
     return {
       // Legacy fields (empty for compatibility)
@@ -137,13 +141,13 @@ export class FocusedLogProcessor {
 
       // NEW: BFT consensus tracking
       bftVoteEvents,
-      bftRoundStates,
+      bftRoundStates: filteredBftRoundStates,
 
       // Metadata
       errors,
       processingTimeMs: processingTime,
       processedLogs: logs.length,
-      successfullyParsed: blockProposalEvents.length + qcParticipationEvents.length + bftVoteEvents.length + bftRoundStates.length
+      successfullyParsed: blockProposalEvents.length + qcParticipationEvents.length + bftVoteEvents.length + filteredBftRoundStates.length
     };
   }
 
@@ -533,6 +537,31 @@ export class FocusedLogProcessor {
       logger.warn(`Failed to parse BFT round state: ${error}`);
       return null;
     }
+  }
+
+  /**
+   * Filter BFT round states to keep only the highest stake per epoch+round
+   * This matches the Perl command logic which only tracks increasing stake values
+   */
+  private filterBftRoundStatesByMaxStake(events: BftRoundStateEvent[]): BftRoundStateEvent[] {
+    if (events.length === 0) return [];
+
+    // Group by epoch+round and keep only the max stake
+    const maxStakeMap = new Map<string, BftRoundStateEvent>();
+
+    for (const event of events) {
+      const key = `${event.epoch}-${event.round}`;
+      const existing = maxStakeMap.get(key);
+
+      // Keep event if:
+      // 1. No existing event for this epoch+round, OR
+      // 2. This event has higher currentStake than existing
+      if (!existing || event.currentStake > existing.currentStake) {
+        maxStakeMap.set(key, event);
+      }
+    }
+
+    return Array.from(maxStakeMap.values());
   }
 
   /**
