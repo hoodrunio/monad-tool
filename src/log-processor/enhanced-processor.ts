@@ -9,7 +9,10 @@ import {
   QCParticipationEvent,
   EnhancedLogProcessingResult,
   ParsedQCData,
-  ValidatorRegistryEntry
+  ValidatorRegistryEntry,
+  BftVoteEvent,
+  BftRoundStateEvent,
+  BftEnhancedLogProcessingResult
 } from './types';
 
 import { ValidatorService, CompleteValidator } from '../services/unified-validator';
@@ -62,7 +65,7 @@ export class FocusedLogProcessor {
     }
   }
 
-  async processLogBatch(logs: RawLog[]): Promise<EnhancedLogProcessingResult> {
+  async processLogBatch(logs: RawLog[]): Promise<BftEnhancedLogProcessingResult> {
     if (!this.isInitialized) {
       await this.initialize();
     }
@@ -70,6 +73,8 @@ export class FocusedLogProcessor {
     const startTime = Date.now();
     const blockProposalEvents: BlockProposalEvent[] = [];
     const qcParticipationEvents: QCParticipationEvent[] = [];
+    const bftVoteEvents: BftVoteEvent[] = [];
+    const bftRoundStates: BftRoundStateEvent[] = [];
     const errors: string[] = [];
 
     logger.info(`📋 Processing batch of ${logs.length} logs for separate metrics...`);
@@ -88,11 +93,24 @@ export class FocusedLogProcessor {
           }
         }
 
-        // Process BFT logs for QC participation
+        // Process BFT logs for QC participation and consensus tracking
         if (this.isConsensusTarget(log.target)) {
+          // Existing QC participation extraction
           const qcEvents = this.extractQCParticipation(log, fields, errors);
           if (qcEvents.length > 0) {
             qcParticipationEvents.push(...qcEvents);
+          }
+
+          // NEW: BFT vote message extraction
+          const voteEvent = this.extractBftVoteMessage(log, fields);
+          if (voteEvent) {
+            bftVoteEvents.push(voteEvent);
+          }
+
+          // NEW: BFT round state extraction
+          const roundState = this.extractBftRoundState(log, fields);
+          if (roundState) {
+            bftRoundStates.push(roundState);
           }
         }
       } catch (error) {
@@ -102,7 +120,7 @@ export class FocusedLogProcessor {
 
     const processingTime = Date.now() - startTime;
 
-    logger.info(`✅ Processed ${blockProposalEvents.length} block proposals and ${qcParticipationEvents.length} QC participations in ${processingTime}ms`);
+    logger.info(`✅ Processed ${blockProposalEvents.length} block proposals, ${qcParticipationEvents.length} QC participations, ${bftVoteEvents.length} BFT votes, ${bftRoundStates.length} BFT round states in ${processingTime}ms`);
 
     return {
       // Legacy fields (empty for compatibility)
@@ -111,17 +129,21 @@ export class FocusedLogProcessor {
       qcParticipationData: [],
       voteChains: [],
       validatorInfrastructure: [],
-      
+
       // New focused fields
       blockProposalEvents,
       qcParticipationEvents,
       separateMetrics: [],
-      
+
+      // NEW: BFT consensus tracking
+      bftVoteEvents,
+      bftRoundStates,
+
       // Metadata
       errors,
       processingTimeMs: processingTime,
       processedLogs: logs.length,
-      successfullyParsed: blockProposalEvents.length + qcParticipationEvents.length
+      successfullyParsed: blockProposalEvents.length + qcParticipationEvents.length + bftVoteEvents.length + bftRoundStates.length
     };
   }
 
@@ -386,6 +408,203 @@ export class FocusedLogProcessor {
       logger.info(`💾 Successfully inserted ${events.length} QC participation events`);
     } catch (error) {
       logger.error('Failed to insert QC participations:', error);
+      throw error;
+    }
+  }
+
+  // =============================================
+  // BFT CONSENSUS TRACKING (NEW)
+  // =============================================
+
+  /**
+   * Extract BFT vote message event
+   * Parses "vote message" logs to extract validator signatures
+   */
+  private extractBftVoteMessage(log: RawLog, fields: any): BftVoteEvent | null {
+    const message = fields.message;
+
+    if (message !== 'vote message') {
+      return null;
+    }
+
+    try {
+      const author = fields.author;
+      const voteMsgString = fields.vote_msg;
+
+      if (!author || !voteMsgString) {
+        return null;
+      }
+
+      // Extract vote ID: "Vote { id: 9db8..cabe, epoch: 619, round: 3279267 }"
+      const voteMatch = String(voteMsgString).match(/id:\s*([0-9a-f.]+).*epoch:\s*(\d+).*round:\s*(\d+)/);
+      if (!voteMatch) {
+        return null;
+      }
+
+      const voteId = voteMatch[1];
+      const epoch = Number(voteMatch[2]);
+      const round = Number(voteMatch[3]);
+
+      // Extract BLS signature: BlsSignature("...")
+      const sigMatch = String(voteMsgString).match(/BlsSignature\("(.+?)"\)/);
+      const sig = sigMatch ? sigMatch[1] : '';
+
+      if (!sig) {
+        return null;
+      }
+
+      // Generate event ID for deduplication (SHA1 hash)
+      const crypto = require('crypto');
+      const eventId = crypto
+        .createHash('sha1')
+        .update(`${author}${epoch}${round}${voteId}`)
+        .digest('hex');
+
+      return {
+        timestamp: new Date(log.timestamp),
+        epoch,
+        round,
+        author,
+        sig,
+        voteId,
+        eventId
+      };
+    } catch (error) {
+      logger.warn(`Failed to parse BFT vote message: ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Extract BFT round state event
+   * Parses "collecting vote" logs to track stake accumulation
+   */
+  private extractBftRoundState(log: RawLog, fields: any): BftRoundStateEvent | null {
+    const message = fields.message;
+
+    if (message !== 'collecting vote') {
+      return null;
+    }
+
+    try {
+      const roundStr = fields.round;
+      const epochStr = fields.epoch;
+      const currentStakeStr = fields.current_stake;
+      const totalStakeStr = fields.total_stake;
+
+      if (!roundStr || !epochStr || !currentStakeStr || !totalStakeStr) {
+        return null;
+      }
+
+      const round = Number(roundStr);
+      const epoch = Number(epochStr);
+
+      // Parse stake values: "Ok(Stake(1273254265463543980894843884))" or "Stake(9554473084196538460577820321)"
+      const parseStake = (stakeStr: string): bigint => {
+        const match = String(stakeStr).match(/(\d+)/);
+        return match ? BigInt(match[1]) : 0n;
+      };
+
+      const currentStake = parseStake(currentStakeStr);
+      const totalStake = parseStake(totalStakeStr);
+
+      // Calculate stake ratio as percentage
+      const stakeRatio = totalStake > 0n
+        ? (Number(currentStake) / Number(totalStake)) * 100
+        : 0;
+
+      // Generate event ID for deduplication
+      const crypto = require('crypto');
+      const eventId = crypto
+        .createHash('sha1')
+        .update(`${epoch}${round}${currentStake}${totalStake}`)
+        .digest('hex');
+
+      return {
+        timestamp: new Date(log.timestamp),
+        epoch,
+        round,
+        currentStake,
+        totalStake,
+        stakeRatio,
+        eventId
+      };
+    } catch (error) {
+      logger.warn(`Failed to parse BFT round state: ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Insert BFT vote events into ClickHouse
+   */
+  async insertBftVotes(events: BftVoteEvent[]): Promise<void> {
+    if (events.length === 0) {
+      return;
+    }
+
+    if (!this.clickhouseClient) {
+      logger.warn('💾 No ClickHouse client available, skipping BFT vote insertion');
+      return;
+    }
+
+    try {
+      const values = events.map(event => ({
+        ts: event.timestamp.toISOString(),
+        epoch: event.epoch,
+        round: event.round,
+        author: event.author,
+        sig: event.sig,
+        vote_id: event.voteId,
+        event_id: event.eventId
+      }));
+
+      await this.clickhouseClient.getClient().insert({
+        table: 'bft_votes',
+        values,
+        format: 'JSONEachRow'
+      });
+
+      logger.info(`💾 Successfully inserted ${events.length} BFT vote events`);
+    } catch (error) {
+      logger.error('Failed to insert BFT votes:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Insert BFT round state events into ClickHouse
+   */
+  async insertBftRoundStates(events: BftRoundStateEvent[]): Promise<void> {
+    if (events.length === 0) {
+      return;
+    }
+
+    if (!this.clickhouseClient) {
+      logger.warn('💾 No ClickHouse client available, skipping BFT round state insertion');
+      return;
+    }
+
+    try {
+      const values = events.map(event => ({
+        ts: event.timestamp.toISOString(),
+        epoch: event.epoch,
+        round: event.round,
+        current_stake: event.currentStake.toString(),
+        total_stake: event.totalStake.toString(),
+        stake_ratio: event.stakeRatio,
+        event_id: event.eventId
+      }));
+
+      await this.clickhouseClient.getClient().insert({
+        table: 'bft_round_state',
+        values,
+        format: 'JSONEachRow'
+      });
+
+      logger.info(`💾 Successfully inserted ${events.length} BFT round state events`);
+    } catch (error) {
+      logger.error('Failed to insert BFT round states:', error);
       throw error;
     }
   }

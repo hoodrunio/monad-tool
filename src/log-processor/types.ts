@@ -570,4 +570,53 @@ export interface ValidatorMappingService {
   getPositionByValidatorId(validatorId: string, epoch?: number): number | null;
   updateEpochMapping(epoch: number, validators: ValidatorRegistryEntry[]): void;
   getCurrentEpochValidators(): ValidatorRegistryEntry[];
+}
+
+// =============================================
+// BFT CONSENSUS TRACKING TYPES (NEW)
+// =============================================
+
+// BFT Vote Message Event ("vote message" logs)
+export interface BftVoteEvent {
+  timestamp: Date;
+  epoch: number;
+  round: number;
+  author: string; // Validator public key
+  sig: string; // BLS signature
+  voteId: string; // Vote ID (truncated hash format like "9db8..cabe")
+  eventId: string; // SHA1 hash for deduplication
+}
+
+// BFT Round State Event ("collecting vote" logs)
+export interface BftRoundStateEvent {
+  timestamp: Date;
+  epoch: number;
+  round: number;
+  currentStake: bigint; // Current accumulated stake
+  totalStake: bigint; // Total possible stake
+  stakeRatio: number; // Quorum percentage (0-100)
+  eventId: string; // SHA1 hash for deduplication
+}
+
+// BFT Vote Message Log Fields
+export interface BftVoteMessageFields {
+  message: 'vote message';
+  author: string;
+  vote_msg: string; // Contains Vote and BLS signature
+}
+
+// BFT Collecting Vote Log Fields
+export interface BftCollectingVoteFields {
+  message: 'collecting vote';
+  round: string;
+  epoch: string;
+  vote: string;
+  current_stake: string; // Format: "Ok(Stake(1273254265463543980894843884))"
+  total_stake: string; // Format: "Stake(9554473084196538460577820321)"
+}
+
+// Extended EnhancedLogProcessingResult to include BFT events
+export interface BftEnhancedLogProcessingResult extends EnhancedLogProcessingResult {
+  bftVoteEvents: BftVoteEvent[];
+  bftRoundStates: BftRoundStateEvent[];
 } 

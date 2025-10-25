@@ -21,6 +21,7 @@ import { EpochController } from './controllers/EpochController';
 import { EnhancedEpochController } from './controllers/EnhancedEpochController';
 import { TransactionAnalyticsController } from './controllers/TransactionAnalyticsController';
 import { StakingEventController } from './controllers/StakingEventController';
+import { ConsensusController } from './controllers/ConsensusController';
 
 // Import Staking Services
 import { StakingUpdateService, StakingUpdateConfig } from '../services/staking/StakingUpdateService';
@@ -38,6 +39,7 @@ import { createEpochRoutes } from './routes/epoch';
 import { createEnhancedEpochRoutes } from './routes/enhanced-epoch';
 import { createTransactionAnalyticsRoutes } from './routes/transaction-analytics';
 import { createStakingEventsRouter } from './routes/staking-events';
+import { createConsensusRouter } from './routes/consensus';
 
 export interface APIServerConfig {
   port: number;
@@ -74,6 +76,7 @@ export class AnalyticsAPIServer {
   private enhancedEpochController!: EnhancedEpochController;
   private transactionAnalyticsController!: TransactionAnalyticsController;
   private stakingEventController!: StakingEventController;
+  private consensusController!: ConsensusController;
 
   constructor(config: APIServerConfig, ingestionService: DataIngestionService) {
     this.config = config;
@@ -251,6 +254,10 @@ export class AnalyticsAPIServer {
       this.clickhouseClient,
       this.stakingEventIndexer || undefined
     );
+
+    this.consensusController = new ConsensusController(
+      this.clickhouseClient
+    );
   }
 
   // =============================================
@@ -324,6 +331,7 @@ export class AnalyticsAPIServer {
     this.app.use('/', createEnhancedEpochRoutes(this.enhancedEpochController));
     this.app.use('/api/transaction-analytics', createTransactionAnalyticsRoutes(this.transactionAnalyticsController));
     this.app.use('/api/staking', createStakingEventsRouter(this.stakingEventController));
+    this.app.use('/api/consensus', createConsensusRouter(this.consensusController));
 
     // API documentation endpoint
     this.app.get('/api/docs', this.handleApiDocs.bind(this));

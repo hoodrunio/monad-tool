@@ -239,7 +239,26 @@ export class DataIngestionService extends EventEmitter {
           console.error(`QC participation events sample:`, JSON.stringify(result.qcParticipationEvents.slice(0, 2), null, 2));
         }
       }
-      
+
+      // NEW: Store BFT consensus tracking events
+      if (result.bftVoteEvents && result.bftVoteEvents.length > 0) {
+        try {
+          await this.logProcessor.insertBftVotes(result.bftVoteEvents);
+        } catch (error) {
+          console.error(`Failed to insert BFT vote events:`, error);
+          console.error(`BFT vote events sample:`, JSON.stringify(result.bftVoteEvents.slice(0, 2), null, 2));
+        }
+      }
+
+      if (result.bftRoundStates && result.bftRoundStates.length > 0) {
+        try {
+          await this.logProcessor.insertBftRoundStates(result.bftRoundStates);
+        } catch (error) {
+          console.error(`Failed to insert BFT round state events:`, error);
+          console.error(`BFT round state events sample:`, JSON.stringify(result.bftRoundStates.slice(0, 2), null, 2));
+        }
+      }
+
       // Store legacy consensus events (for compatibility)
       if (result.consensusEvents.length > 0) {
           try {
@@ -271,9 +290,9 @@ export class DataIngestionService extends EventEmitter {
       }
 
       const processingTime = Date.now() - startTime;
-      const totalEvents = (result.blockProposalEvents?.length || 0) + (result.qcParticipationEvents?.length || 0);
-      
-      console.log(`Batch ${batchId} processed successfully in ${processingTime}ms - Generated ${totalEvents} events`);
+      const totalEvents = (result.blockProposalEvents?.length || 0) + (result.qcParticipationEvents?.length || 0) + (result.bftVoteEvents?.length || 0) + (result.bftRoundStates?.length || 0);
+
+      console.log(`Batch ${batchId} processed successfully in ${processingTime}ms - Generated ${totalEvents} events (${result.bftVoteEvents?.length || 0} votes, ${result.bftRoundStates?.length || 0} round states)`);
       
       // Emit progress event for monitoring
       this.emit('batchProcessed', {
