@@ -308,7 +308,147 @@ export class MonadClickHouseClient {
       PARTITION BY toYYYYMM(block_timestamp)
       ORDER BY (validator_id, event_type, block_number)
       TTL toDateTime(block_timestamp) + INTERVAL 90 DAY
-      SETTINGS index_granularity = 8192`
+      SETTINGS index_granularity = 8192`,
+
+      // =============================================
+      // VALIDATOR REGISTRY TABLES
+      // =============================================
+
+      `CREATE TABLE IF NOT EXISTS validator_registry (
+        validator_id String,
+        node_id String,
+        auth_address String DEFAULT '',
+        epoch UInt32,
+        precompile_validator_id String DEFAULT '',
+
+        stake UInt64,
+        position UInt16,
+        is_active UInt8 DEFAULT 1,
+        is_staking_active UInt8 DEFAULT 0,
+        real_time_stake_wei String DEFAULT '0',
+        commission String DEFAULT '0',
+        consensus_commission String DEFAULT '0',
+        snapshot_commission String DEFAULT '0',
+
+        dns_address String DEFAULT '',
+        dns_host String DEFAULT '',
+        dns_port UInt16 DEFAULT 8000,
+
+        validator_name LowCardinality(String) DEFAULT 'unknown',
+
+        keybase_id LowCardinality(String) DEFAULT '',
+        keybase_logo_url String DEFAULT '',
+
+        provider LowCardinality(String) DEFAULT 'unknown',
+        location LowCardinality(String) DEFAULT 'unknown',
+        country LowCardinality(String) DEFAULT 'unknown',
+        datacenter LowCardinality(String) DEFAULT 'unknown',
+
+        first_seen DateTime64(3, 'UTC') DEFAULT now(),
+        last_updated DateTime64(3, 'UTC') DEFAULT now(),
+
+        INDEX idx_precompile_validator_id precompile_validator_id TYPE bloom_filter(0.01) GRANULARITY 1,
+        INDEX idx_is_staking_active is_staking_active TYPE set(2) GRANULARITY 1
+      ) ENGINE = ReplacingMergeTree(last_updated)
+      PARTITION BY epoch
+      ORDER BY (validator_id, epoch)
+      SETTINGS index_granularity = 8192`,
+
+      `CREATE TABLE IF NOT EXISTS validator_registry_latest (
+        validator_id String,
+        auth_address String,
+        validator_name LowCardinality(String),
+        provider LowCardinality(String),
+        location LowCardinality(String),
+        country LowCardinality(String),
+        datacenter LowCardinality(String),
+        stake UInt64,
+        real_time_stake_wei String,
+        commission String,
+        consensus_commission String,
+        snapshot_commission String,
+        is_staking_active UInt8,
+        keybase_id LowCardinality(String),
+        keybase_logo_url String,
+        last_updated DateTime64(3, 'UTC')
+      ) ENGINE = ReplacingMergeTree(last_updated)
+      ORDER BY validator_id
+      SETTINGS index_granularity = 8192`,
+
+      `CREATE MATERIALIZED VIEW IF NOT EXISTS validator_registry_latest_mv
+      TO validator_registry_latest
+      AS
+      SELECT
+        validator_id,
+        tupleElement(latest_record, 1) AS auth_address,
+        tupleElement(latest_record, 2) AS validator_name,
+        tupleElement(latest_record, 3) AS provider,
+        tupleElement(latest_record, 4) AS location,
+        tupleElement(latest_record, 5) AS country,
+        tupleElement(latest_record, 6) AS datacenter,
+        tupleElement(latest_record, 7) AS stake,
+        tupleElement(latest_record, 8) AS real_time_stake_wei,
+        tupleElement(latest_record, 9) AS commission,
+        tupleElement(latest_record, 10) AS consensus_commission,
+        tupleElement(latest_record, 11) AS snapshot_commission,
+        tupleElement(latest_record, 12) AS is_staking_active,
+        tupleElement(latest_record, 13) AS keybase_id,
+        tupleElement(latest_record, 14) AS keybase_logo_url,
+        tupleElement(latest_record, 15) AS last_updated
+      FROM (
+        SELECT
+          validator_id,
+          argMax((
+            auth_address,
+            validator_name,
+            provider,
+            location,
+            country,
+            datacenter,
+            stake,
+            real_time_stake_wei,
+            commission,
+            consensus_commission,
+            snapshot_commission,
+            is_staking_active,
+            keybase_id,
+            keybase_logo_url,
+            last_updated
+          ), last_updated) AS latest_record
+        FROM validator_registry
+        WHERE is_active = 1
+        GROUP BY validator_id
+      )`,
+
+      // =============================================
+      // BFT CONSENSUS TRACKING TABLES
+      // =============================================
+
+      `CREATE TABLE IF NOT EXISTS bft_votes (
+        ts DateTime64(3, 'UTC'),
+        epoch UInt64,
+        round UInt64,
+        author FixedString(66),
+        sig String,
+        vote_id String,
+        event_id FixedString(40),
+        INDEX idx_event_id event_id TYPE bloom_filter GRANULARITY 1
+      ) ENGINE = ReplacingMergeTree(ts)
+      ORDER BY (epoch, round, author)
+      TTL toDateTime(ts) + INTERVAL 7 DAY`,
+
+      `CREATE TABLE IF NOT EXISTS bft_round_state (
+        ts DateTime64(3, 'UTC'),
+        epoch UInt64,
+        round UInt64,
+        current_stake UInt128,
+        total_stake UInt128,
+        stake_ratio Float64,
+        event_id FixedString(40),
+        INDEX idx_event_id event_id TYPE bloom_filter GRANULARITY 1
+      ) ENGINE = ReplacingMergeTree(ts)
+      ORDER BY (epoch, round)
+      TTL toDateTime(ts) + INTERVAL 7 DAY`
     ];
   }
 

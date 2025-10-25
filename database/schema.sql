@@ -94,6 +94,7 @@ CREATE TABLE validator_registry_latest (
     commission String,
     consensus_commission String,
     snapshot_commission String,
+    is_staking_active UInt8,
     keybase_id LowCardinality(String),
     keybase_logo_url String,
     last_updated DateTime64(3, 'UTC')
@@ -117,9 +118,10 @@ SELECT
     tupleElement(latest_record, 9) AS commission,
     tupleElement(latest_record, 10) AS consensus_commission,
     tupleElement(latest_record, 11) AS snapshot_commission,
-    tupleElement(latest_record, 12) AS keybase_id,
-    tupleElement(latest_record, 13) AS keybase_logo_url,
-    tupleElement(latest_record, 14) AS last_updated
+    tupleElement(latest_record, 12) AS is_staking_active,
+    tupleElement(latest_record, 13) AS keybase_id,
+    tupleElement(latest_record, 14) AS keybase_logo_url,
+    tupleElement(latest_record, 15) AS last_updated
 FROM (
     SELECT
         validator_id,
@@ -135,6 +137,7 @@ FROM (
           commission,
           consensus_commission,
           snapshot_commission,
+          is_staking_active,
           keybase_id,
           keybase_logo_url,
           last_updated
