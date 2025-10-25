@@ -432,7 +432,7 @@ ALTER TABLE geographic_metrics_hourly MODIFY COMMENT 'Geographic distribution an
 -- 12. BFT CONSENSUS TRACKING (Vote Messages & Round State)
 -- =============================================
 
--- BFT Validator Votes (İmza kayıtları - "vote message" events)
+-- BFT Validator Votes (Signature records - "vote message" events)
 CREATE TABLE IF NOT EXISTS bft_votes (
   ts DateTime64(3, 'UTC'),
   epoch UInt64,
@@ -441,7 +441,7 @@ CREATE TABLE IF NOT EXISTS bft_votes (
   sig String COMMENT 'BLS signature',
   vote_id String COMMENT 'Vote ID (truncated hash format)',
   event_id FixedString(40) COMMENT 'SHA1 hash for deduplication'
-) ENGINE = ReplacingMergeTree(event_id)
+) ENGINE = ReplacingMergeTree(ts)
 ORDER BY (epoch, round, author)
 TTL toDateTime(ts) + INTERVAL 7 DAY
 SETTINGS index_granularity = 8192;
@@ -449,6 +449,7 @@ SETTINGS index_granularity = 8192;
 -- Indexes for bft_votes
 ALTER TABLE bft_votes ADD INDEX IF NOT EXISTS idx_epoch_round (epoch, round) TYPE minmax GRANULARITY 1;
 ALTER TABLE bft_votes ADD INDEX IF NOT EXISTS idx_author (author) TYPE bloom_filter(0.01) GRANULARITY 1;
+ALTER TABLE bft_votes ADD INDEX IF NOT EXISTS idx_event_id (event_id) TYPE bloom_filter(0.01) GRANULARITY 1;
 
 -- BFT Round State (Stake quorum - "collecting vote" events)
 CREATE TABLE IF NOT EXISTS bft_round_state (
@@ -459,7 +460,7 @@ CREATE TABLE IF NOT EXISTS bft_round_state (
   total_stake UInt128 COMMENT 'Total possible stake',
   stake_ratio Float64 COMMENT 'Quorum percentage (0-100)',
   event_id FixedString(40) COMMENT 'SHA1 hash for deduplication'
-) ENGINE = ReplacingMergeTree(event_id)
+) ENGINE = ReplacingMergeTree(ts)
 ORDER BY (epoch, round)
 TTL toDateTime(ts) + INTERVAL 7 DAY
 SETTINGS index_granularity = 8192;
@@ -467,6 +468,7 @@ SETTINGS index_granularity = 8192;
 -- Indexes for bft_round_state
 ALTER TABLE bft_round_state ADD INDEX IF NOT EXISTS idx_epoch_round (epoch, round) TYPE minmax GRANULARITY 1;
 ALTER TABLE bft_round_state ADD INDEX IF NOT EXISTS idx_stake_ratio (stake_ratio) TYPE minmax GRANULARITY 1;
+ALTER TABLE bft_round_state ADD INDEX IF NOT EXISTS idx_event_id (event_id) TYPE bloom_filter(0.01) GRANULARITY 1;
 
 -- Table comments
 ALTER TABLE bft_votes MODIFY COMMENT 'BFT consensus validator vote signatures from vote message events';
