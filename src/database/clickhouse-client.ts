@@ -52,26 +52,72 @@ export class MonadClickHouseClient {
 
   async initializeSchema(): Promise<void> {
     console.log('Initializing ClickHouse schema...');
-    
+
     try {
       // Create database
       await this.client.command({
         query: `CREATE DATABASE IF NOT EXISTS ${this.config.database}`
       });
 
+      // Run migrations before schema creation
+      await this.runMigrations();
+
       // Execute schema creation
       const schemaStatements = await this.loadSchemaStatements();
-      
+
       for (const statement of schemaStatements) {
         if (statement.trim().length > 0) {
           await this.client.command({ query: statement });
         }
       }
-      
+
       console.log('Schema initialized successfully');
     } catch (error) {
       console.error('Failed to initialize schema:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Run database migrations to handle schema changes
+   */
+  private async runMigrations(): Promise<void> {
+    console.log('Running database migrations...');
+
+    try {
+      // Migration 1: Fix validator_registry_latest to include is_staking_active
+      const checkColumn = await this.client.query({
+        query: `
+          SELECT name
+          FROM system.columns
+          WHERE database = '${this.config.database}'
+            AND table = 'validator_registry_latest'
+            AND name = 'is_staking_active'
+        `,
+        format: 'JSONEachRow'
+      });
+
+      const result = await checkColumn.json() as any[];
+
+      if (result.length === 0) {
+        console.log('Migration: Adding is_staking_active column to validator_registry_latest...');
+
+        // Drop materialized view first (depends on the table)
+        await this.client.command({
+          query: `DROP VIEW IF EXISTS ${this.config.database}.validator_registry_latest_mv`
+        });
+
+        // Drop and recreate the table with new schema
+        await this.client.command({
+          query: `DROP TABLE IF EXISTS ${this.config.database}.validator_registry_latest`
+        });
+
+        console.log('✅ Migration completed: validator_registry_latest will be recreated with new schema');
+      } else {
+        console.log('✅ Migration check: validator_registry_latest already has is_staking_active column');
+      }
+    } catch (error) {
+      console.warn('Migration check failed (this is normal for new installations):', error);
     }
   }
 
