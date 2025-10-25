@@ -549,15 +549,22 @@ export class FocusedLogProcessor {
     }
 
     try {
-      const values = events.map(event => ({
-        ts: event.timestamp.toISOString(),
-        epoch: event.epoch,
-        round: event.round,
-        author: event.author,
-        sig: event.sig,
-        vote_id: event.voteId,
-        event_id: event.eventId
-      }));
+      const values = events.map(event => {
+        // Format timestamp for ClickHouse DateTime64
+        const timestamp = event.timestamp instanceof Date
+          ? event.timestamp.toISOString().replace('T', ' ').replace('Z', '')
+          : new Date(event.timestamp).toISOString().replace('T', ' ').replace('Z', '');
+
+        return {
+          ts: timestamp,
+          epoch: event.epoch,
+          round: event.round,
+          author: event.author,
+          sig: event.sig,
+          vote_id: event.voteId,
+          event_id: event.eventId
+        };
+      });
 
       await this.clickhouseClient.getClient().insert({
         table: 'bft_votes',
@@ -586,15 +593,22 @@ export class FocusedLogProcessor {
     }
 
     try {
-      const values = events.map(event => ({
-        ts: event.timestamp.toISOString(),
-        epoch: event.epoch,
-        round: event.round,
-        current_stake: event.currentStake.toString(),
-        total_stake: event.totalStake.toString(),
-        stake_ratio: event.stakeRatio,
-        event_id: event.eventId
-      }));
+      const values = events.map(event => {
+        // Format timestamp for ClickHouse DateTime64
+        const timestamp = event.timestamp instanceof Date
+          ? event.timestamp.toISOString().replace('T', ' ').replace('Z', '')
+          : new Date(event.timestamp).toISOString().replace('T', ' ').replace('Z', '');
+
+        return {
+          ts: timestamp,
+          epoch: event.epoch,
+          round: event.round,
+          current_stake: event.currentStake.toString(),
+          total_stake: event.totalStake.toString(),
+          stake_ratio: event.stakeRatio,
+          event_id: event.eventId
+        };
+      });
 
       await this.clickhouseClient.getClient().insert({
         table: 'bft_round_state',

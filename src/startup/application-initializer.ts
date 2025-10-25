@@ -100,8 +100,45 @@ export class ApplicationInitializer {
 
         await clickhouseClient.ensureValidatorRegistryAuthColumns();
 
-        // 1. Determine and set the correct epoch
-        const actualCurrentEpoch = await epochService.getCurrentEpoch();
+        // 1. Determine and set the correct epoch with database fallback
+        let actualCurrentEpoch = await epochService.getCurrentEpoch();
+
+        // FALLBACK: If RPC returns a very low epoch (chain halted), use latest epoch from database or validator registry
+        if (actualCurrentEpoch < 10) {
+          logger.warn(`⚠️  RPC returned low epoch (${actualCurrentEpoch}), checking for fallback epoch...`);
+
+          // Try database first
+          try {
+            const dbEpochQuery = await clickhouseClient.executeRawQuery(
+              'SELECT MAX(epoch) as max_epoch FROM validator_registry'
+            );
+
+            if (dbEpochQuery && dbEpochQuery.length > 0 && dbEpochQuery[0].max_epoch) {
+              const dbEpoch = Number(dbEpochQuery[0].max_epoch);
+              if (dbEpoch > actualCurrentEpoch) {
+                logger.info(`📊 Using database epoch ${dbEpoch} instead of RPC epoch ${actualCurrentEpoch}`);
+                actualCurrentEpoch = dbEpoch;
+              }
+            }
+          } catch (error) {
+            logger.warn('Could not fetch epoch from database', error);
+          }
+
+          // If still low, try validator registry available epochs
+          if (actualCurrentEpoch < 10) {
+            try {
+              const availableEpochs = validatorService.getAvailableEpochs();
+              if (availableEpochs && availableEpochs.length > 0) {
+                const maxEpoch = Math.max(...availableEpochs);
+                logger.info(`📊 Using validator registry epoch ${maxEpoch} instead of RPC epoch ${actualCurrentEpoch}`);
+                actualCurrentEpoch = maxEpoch;
+              }
+            } catch (error) {
+              logger.warn('Could not fetch epoch from validator registry', error);
+            }
+          }
+        }
+
         validatorService.setCurrentEpoch(actualCurrentEpoch);
         logger.info(`✅ Current epoch set to ${actualCurrentEpoch} from RPC.`);
 
