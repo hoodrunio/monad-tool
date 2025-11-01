@@ -91,10 +91,17 @@ export class ValidatorRegistry {
         continue;
       }
 
-      // Parse stake
-      const stakeMatch = line.match(/^stake = (\d+)$/);
+      // Parse stake (supports both decimal number and hex string)
+      const stakeMatch = line.match(/^stake = (.+)$/);
       if (stakeMatch && currentValidator.node_id) {
-        currentValidator.stake = parseInt(stakeMatch[1]);
+        const stakeValue = stakeMatch[1].trim().replace(/"/g, ''); // Remove quotes if present
+        if (stakeValue.startsWith('0x')) {
+          // Hex string format: "0x15934fc..."
+          currentValidator.stake = parseInt(stakeValue, 16);
+        } else {
+          // Decimal number format: 200
+          currentValidator.stake = parseInt(stakeValue, 10);
+        }
         continue;
       }
 
