@@ -562,6 +562,8 @@ export class StakingService {
           // Check if validator is currently active
           const isActive = this.stakingInfo?.activeValidators.has(validatorId.toString()) || false;
 
+          const stakeString = this.normalizeBigIntLike(validatorInfo.stake);
+
           // Insert into database with new staking columns
           await clickhouseClient.executeCommand(`
             INSERT INTO validator_registry (
@@ -585,10 +587,10 @@ export class StakingService {
               '${authAddress}',
               '${validatorId}',
               ${currentEpoch},
-              ${validatorInfo.stake.toString()},
+              ${stakeString},
               ${isActive ? 1 : 0},
               ${isActive ? 1 : 0},
-              '${validatorInfo.stake.toString()}',
+              '${stakeString}',
               '${commissionString}',
               '${consensusCommissionString}',
               '${snapshotCommissionString}',
@@ -668,6 +670,7 @@ export class StakingService {
 
           const isConsensus = consensusValidators.has(validatorId.toString());
           const authAddress = this.normalizeAuthAddress(validatorInfo.authAddress);
+          const stakeString = this.normalizeBigIntLike(validatorInfo.stake);
           const commissionString = this.normalizeBigIntLike(validatorInfo.commission);
           const consensusCommissionString = this.normalizeBigIntLike(validatorInfo.consensusCommission);
           const snapshotCommissionString = this.normalizeBigIntLike(validatorInfo.snapshotCommission);
@@ -695,10 +698,10 @@ export class StakingService {
               '${authAddress}',
               '${validatorId}',
               ${currentEpoch},
-              ${validatorInfo.stake.toString()},
+              ${stakeString},
               ${isConsensus ? 1 : 0},
               ${isConsensus ? 1 : 0},
-              '${validatorInfo.stake.toString()}',
+              '${stakeString}',
               '${commissionString}',
               '${consensusCommissionString}',
               '${snapshotCommissionString}',
@@ -1562,7 +1565,7 @@ export class StakingService {
     try {
       const timestamp = nextTimestampString();
       const stakeBigInt = this.stakingInfo?.validatorStakes.get(validatorId) ?? validatorInfo.stake;
-      const stakeString = stakeBigInt?.toString() ?? '0';
+      const stakeString = this.normalizeBigIntLike(stakeBigInt ?? '0');
       const authAddress = this.normalizeAuthAddress(validatorInfo.authAddress);
 
       return {

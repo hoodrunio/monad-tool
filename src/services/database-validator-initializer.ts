@@ -671,7 +671,8 @@ export class DatabaseValidatorInitializer {
       if (!Number.isFinite(value)) {
         return fallback;
       }
-      return Math.trunc(value).toString();
+      // Use toFixed(0) to prevent scientific notation for very large numbers
+      return value.toFixed(0);
     }
 
     if (typeof value === 'string') {
@@ -749,7 +750,8 @@ export class DatabaseValidatorInitializer {
 
       if (typeof value === 'number') {
         if (Number.isFinite(value)) {
-          return Math.trunc(value).toString();
+          // Use toFixed(0) to prevent scientific notation for very large numbers
+          return value.toFixed(0);
         }
         continue;
       }
@@ -774,7 +776,8 @@ export class DatabaseValidatorInitializer {
         return value.trim();
       }
       if (typeof value === 'number') {
-        return Math.trunc(value).toString();
+        // Use toFixed(0) to prevent scientific notation for very large numbers
+        return value.toFixed(0);
       }
       if (typeof value === 'bigint') {
         return value.toString();

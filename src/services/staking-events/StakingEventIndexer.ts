@@ -476,7 +476,7 @@ export class StakingEventIndexer {
       switch (event.eventType) {
         case 'ValidatorCreated':
           baseRecord.validator_id = event.validatorId.toString();
-          baseRecord.commission = event.commission.toString();
+          baseRecord.commission = this.normalizeNumericValue(event.commission);
           break;
 
         case 'ValidatorStatusChanged':
@@ -487,46 +487,46 @@ export class StakingEventIndexer {
         case 'Delegate':
           baseRecord.validator_id = event.validatorId.toString();
           baseRecord.delegator = event.delegator;
-          baseRecord.amount = event.amount.toString();
-          baseRecord.activation_epoch = event.activationEpoch.toString();
+          baseRecord.amount = this.normalizeNumericValue(event.amount);
+          baseRecord.activation_epoch = this.normalizeNumericValue(event.activationEpoch);
           break;
 
         case 'Undelegate':
           baseRecord.validator_id = event.validatorId.toString();
           baseRecord.delegator = event.delegator;
-          baseRecord.amount = event.amount.toString();
+          baseRecord.amount = this.normalizeNumericValue(event.amount);
           baseRecord.withdraw_id = event.withdrawId;
-          baseRecord.activation_epoch = event.activationEpoch.toString();
+          baseRecord.activation_epoch = this.normalizeNumericValue(event.activationEpoch);
           break;
 
         case 'Withdraw':
           baseRecord.validator_id = event.validatorId.toString();
           baseRecord.delegator = event.delegator;
-          baseRecord.amount = event.amount.toString();
+          baseRecord.amount = this.normalizeNumericValue(event.amount);
           baseRecord.withdraw_id = event.withdrawId;
           break;
 
         case 'ClaimRewards':
           baseRecord.validator_id = event.validatorId.toString();
           baseRecord.delegator = event.delegator;
-          baseRecord.amount = event.amount.toString();
+          baseRecord.amount = this.normalizeNumericValue(event.amount);
           break;
 
         case 'CommissionChanged':
           baseRecord.validator_id = event.validatorId.toString();
-          baseRecord.old_commission = event.oldCommission.toString();
-          baseRecord.new_commission = event.newCommission.toString();
+          baseRecord.old_commission = this.normalizeNumericValue(event.oldCommission);
+          baseRecord.new_commission = this.normalizeNumericValue(event.newCommission);
           break;
 
         case 'ValidatorRewarded':
           baseRecord.validator_id = event.validatorId.toString();
           baseRecord.from_address = event.from;
-          baseRecord.amount = event.amount.toString();
+          baseRecord.amount = this.normalizeNumericValue(event.amount);
           break;
 
         case 'EpochChanged':
-          baseRecord.old_epoch = event.oldEpoch.toString();
-          baseRecord.new_epoch = event.newEpoch.toString();
+          baseRecord.old_epoch = this.normalizeNumericValue(event.oldEpoch);
+          baseRecord.new_epoch = this.normalizeNumericValue(event.newEpoch);
           break;
       }
 
@@ -568,20 +568,20 @@ export class StakingEventIndexer {
         // Update based on event type
         if (event.eventType === 'Delegate') {
           const amount = event.amount;
-          record.current_amount = (BigInt(record.current_amount) + amount).toString();
-          record.total_delegated = (BigInt(record.total_delegated) + amount).toString();
+          record.current_amount = this.normalizeNumericValue(BigInt(record.current_amount) + amount);
+          record.total_delegated = this.normalizeNumericValue(BigInt(record.total_delegated) + amount);
         } else if (event.eventType === 'Undelegate') {
           const amount = event.amount;
-          record.current_amount = (BigInt(record.current_amount) - amount).toString();
-          record.total_undelegated = (BigInt(record.total_undelegated) + amount).toString();
+          record.current_amount = this.normalizeNumericValue(BigInt(record.current_amount) - amount);
+          record.total_undelegated = this.normalizeNumericValue(BigInt(record.total_undelegated) + amount);
           record.pending_withdrawals += 1;
         } else if (event.eventType === 'Withdraw') {
           const amount = event.amount;
-          record.total_withdrawn = (BigInt(record.total_withdrawn) + amount).toString();
+          record.total_withdrawn = this.normalizeNumericValue(BigInt(record.total_withdrawn) + amount);
           record.pending_withdrawals = Math.max(0, record.pending_withdrawals - 1);
         } else if (event.eventType === 'ClaimRewards') {
           const amount = event.amount;
-          record.total_rewards_claimed = (BigInt(record.total_rewards_claimed) + amount).toString();
+          record.total_rewards_claimed = this.normalizeNumericValue(BigInt(record.total_rewards_claimed) + amount);
         }
 
         records.push(record);
@@ -609,9 +609,9 @@ export class StakingEventIndexer {
           validator_id: event.validatorId.toString(),
           delegator: event.delegator,
           action,
-          amount: event.amount.toString(),
+          amount: this.normalizeNumericValue(event.amount),
           epoch: event.epoch.toString(),
-          activation_epoch: 'activationEpoch' in event ? event.activationEpoch.toString() : null,
+          activation_epoch: 'activationEpoch' in event ? this.normalizeNumericValue(event.activationEpoch) : null,
           withdraw_id: 'withdrawId' in event ? event.withdrawId : null,
           block_number: event.blockNumber,
           block_timestamp: this.formatTimestamp(event.blockTimestamp),
@@ -635,7 +635,7 @@ export class StakingEventIndexer {
           event_id: `${event.transactionHash}:${event.logIndex}`,
           validator_id: event.validatorId.toString(),
           delegator: event.delegator,
-          amount: event.amount.toString(),
+          amount: this.normalizeNumericValue(event.amount),
           epoch: event.epoch.toString(),
           event_type: 'claim',
           old_commission: null,
@@ -652,8 +652,8 @@ export class StakingEventIndexer {
           amount: '0',
           epoch: event.epoch.toString(),
           event_type: 'commission_change',
-          old_commission: event.oldCommission.toString(),
-          new_commission: event.newCommission.toString(),
+          old_commission: this.normalizeNumericValue(event.oldCommission),
+          new_commission: this.normalizeNumericValue(event.newCommission),
           block_number: event.blockNumber,
           block_timestamp: this.formatTimestamp(event.blockTimestamp),
           transaction_hash: event.transactionHash
@@ -663,7 +663,7 @@ export class StakingEventIndexer {
           event_id: `${event.transactionHash}:${event.logIndex}`,
           validator_id: event.validatorId.toString(),
           delegator: null,
-          amount: event.amount.toString(),
+          amount: this.normalizeNumericValue(event.amount),
           epoch: event.epoch.toString(),
           event_type: 'validator_reward',
           old_commission: null,
@@ -705,5 +705,33 @@ export class StakingEventIndexer {
    */
   isIndexerRunning(): boolean {
     return this.isRunning;
+  }
+
+  /**
+   * Safely converts BigInt or number values to string without scientific notation
+   */
+  private normalizeNumericValue(value: any): string {
+    if (value === null || value === undefined) {
+      return '0';
+    }
+
+    if (typeof value === 'bigint') {
+      return value.toString();
+    }
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return '0';
+      }
+      // Use toFixed(0) to prevent scientific notation for very large numbers
+      return value.toFixed(0);
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : '0';
+    }
+
+    return '0';
   }
 }
