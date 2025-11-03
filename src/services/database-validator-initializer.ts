@@ -210,8 +210,9 @@ export class DatabaseValidatorInitializer {
       return true;
     }
 
-    // Check completion rate - we want at least 80% of validators to have location data
-    if (stats.completionRate < 80) {
+    // Check completion rate - we want at least 60% of validators to have location data
+    // Lowered from 80% to be more realistic - some validators may not have DNS addresses
+    if (stats.completionRate < 60) {
       logger.info(`❌ Only ${stats.completionRate.toFixed(1)}% of validators have location data - initialization required`);
       return true;
     }
@@ -260,20 +261,33 @@ export class DatabaseValidatorInitializer {
     // VALIDATION: Ensure all validators have necessary data
     let validatorsWithLocation = 0;
     let validatorsWithProvider = 0;
-    
+    const validatorsWithoutLocation: string[] = [];
+
     for (const validator of allValidators) {
       if (validator.location) {
         validatorsWithLocation++;
         if (validator.location.isp && validator.location.isp !== 'unknown') {
           validatorsWithProvider++;
         }
+      } else {
+        const validatorId = this.getValidatorPrimaryId(validator);
+        if (validatorId) {
+          validatorsWithoutLocation.push(validatorId);
+        }
       }
     }
-    
+
     logger.info(`📊 Data validation: ${validatorsWithLocation}/${allValidators.length} validators have location, ${validatorsWithProvider}/${allValidators.length} have provider data`);
-    
-    if (validatorsWithLocation < allValidators.length * 0.8) {
-      throw new Error(`CRITICAL: Only ${validatorsWithLocation}/${allValidators.length} validators have location data - expected at least 80%`);
+
+    if (validatorsWithoutLocation.length > 0) {
+      logger.warn(`⚠️ Validators without location data (${validatorsWithoutLocation.length}):`, validatorsWithoutLocation.slice(0, 10));
+    }
+
+    // Lowered threshold from 80% to 60% - some validators may not have DNS addresses in the TOML file
+    // or their geolocation lookups may fail due to rate limits or network issues
+    const requiredCompletionRate = 0.6;
+    if (validatorsWithLocation < allValidators.length * requiredCompletionRate) {
+      throw new Error(`CRITICAL: Only ${validatorsWithLocation}/${allValidators.length} validators have location data - expected at least ${requiredCompletionRate * 100}%`);
     }
 
     // Batch process validators for database insertion
