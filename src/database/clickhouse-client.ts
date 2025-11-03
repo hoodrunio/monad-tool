@@ -1281,7 +1281,8 @@ POPULATE
           if (!Number.isFinite(value)) {
             return '0';
           }
-          return Math.trunc(value).toString();
+          // Use toFixed(0) to prevent scientific notation for very large numbers
+          return value.toFixed(0);
         }
         if (typeof value === 'bigint') {
           return value.toString();
