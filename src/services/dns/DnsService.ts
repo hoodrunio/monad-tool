@@ -97,9 +97,15 @@ export class DnsService implements IDnsService {
   async resolveHostnames(hostnames: string[]): Promise<Map<string, string>> {
     const results = new Map<string, string>();
     const batchSize = 10; // Process in batches to avoid overwhelming the system
+    const totalBatches = Math.ceil(hostnames.length / batchSize);
+    
+    console.log(`🔄 Starting DNS resolution in ${totalBatches} batches of ${batchSize}...`);
     
     for (let i = 0; i < hostnames.length; i += batchSize) {
       const batch = hostnames.slice(i, i + batchSize);
+      const currentBatch = Math.floor(i / batchSize) + 1;
+      
+      console.log(`📡 Processing batch ${currentBatch}/${totalBatches} (${batch.length} hostnames)...`);
       
       const batchPromises = batch.map(async (hostname) => {
         const ip = await this.resolveHostname(hostname);
@@ -108,11 +114,15 @@ export class DnsService implements IDnsService {
       
       const batchResults = await Promise.allSettled(batchPromises);
       
+      let batchSuccesses = 0;
       batchResults.forEach((result) => {
         if (result.status === 'fulfilled' && result.value.ip) {
           results.set(result.value.hostname, result.value.ip);
+          batchSuccesses++;
         }
       });
+      
+      console.log(`   ✓ Batch ${currentBatch} complete: ${batchSuccesses}/${batch.length} resolved`);
       
       // Add small delay between batches
       if (i + batchSize < hostnames.length) {
@@ -120,6 +130,7 @@ export class DnsService implements IDnsService {
       }
     }
     
+    console.log(`✅ All DNS resolution complete: ${results.size}/${hostnames.length} total successful`);
     return results;
   }
   

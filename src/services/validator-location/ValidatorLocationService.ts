@@ -156,22 +156,39 @@ export class ValidatorLocationService implements IValidatorLocationService {
     const startTime = Date.now();
     const results: LocationProcessResult[] = [];
     
-    // Step 1: Resolve all hostnames to IPs in parallel (DNS rarely rate limits)
-    console.log('🌐 Step 1: Resolving all hostnames to IPs...');
-    const hostnameToIpMap = new Map<string, string>();
+    // Step 1: Resolve hostnames to IPs (skip if already IP)
+    console.log('🌐 Step 1: Resolving hostnames to IPs...');
+    console.log(`📝 Total validators to process: ${mappings.length}`);
     
+    const hostnameToIpMap = new Map<string, string>();
+    const needsResolution: string[] = [];
+    
+    // Separate IPs from hostnames
     for (const mapping of mappings) {
-      try {
-        const ip = await this.dnsService.resolveHostname(mapping.hostname);
-        if (ip) {
-          hostnameToIpMap.set(mapping.hostname, ip);
-          this.dnsSuccesses++;
-        }
-      } catch (error) {
-        console.warn(`DNS resolution failed for ${mapping.hostname}:`, error);
+      if (this.isValidIp(mapping.hostname)) {
+        // Already an IP address, no DNS resolution needed
+        hostnameToIpMap.set(mapping.hostname, mapping.hostname);
+        this.dnsSuccesses++;
+      } else {
+        // Actual hostname, needs DNS resolution
+        needsResolution.push(mapping.hostname);
       }
-      this.totalProcessed++;
     }
+    
+    console.log(`   ✓ ${hostnameToIpMap.size} are already IP addresses`);
+    console.log(`   📡 ${needsResolution.length} hostnames need DNS resolution`);
+    
+    // Resolve actual hostnames
+    if (needsResolution.length > 0) {
+      const resolvedMap = await this.dnsService.resolveHostnames(needsResolution);
+      
+      resolvedMap.forEach((ip, hostname) => {
+        hostnameToIpMap.set(hostname, ip);
+        this.dnsSuccesses++;
+      });
+    }
+    
+    this.totalProcessed += mappings.length;
     
     console.log(`✅ DNS resolution complete: ${hostnameToIpMap.size}/${mappings.length} successful`);
     
@@ -450,5 +467,27 @@ export class ValidatorLocationService implements IValidatorLocationService {
     });
     
     return distribution;
+  }
+  
+  /**
+   * Check if a string is a valid IP address (IPv4 or IPv6)
+   */
+  private isValidIp(address: string): boolean {
+    // IPv4 pattern
+    const ipv4Pattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+    
+    // IPv6 pattern (simplified)
+    const ipv6Pattern = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
+    
+    if (ipv4Pattern.test(address)) {
+      // Validate IPv4 octets are in range 0-255
+      const octets = address.split('.');
+      return octets.every(octet => {
+        const num = parseInt(octet, 10);
+        return num >= 0 && num <= 255;
+      });
+    }
+    
+    return ipv6Pattern.test(address);
   }
 } 
