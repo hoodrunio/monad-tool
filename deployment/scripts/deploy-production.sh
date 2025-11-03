@@ -222,7 +222,7 @@ deploy_application() {
     
     # Start Docker containers (ClickHouse and Redis)
     log_info "Starting Docker containers..."
-    docker-compose up -d clickhouse redis
+    sudo docker-compose up -d clickhouse redis
     
     # Wait for containers to be ready
     sleep 10
