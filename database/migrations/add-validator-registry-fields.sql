@@ -2,23 +2,24 @@
 -- Date: 2025-11-03
 -- Description: Adds validator_website, validator_logo_url, validator_description, and validator_x_handle fields
 
--- Add new columns to validator_registry table
+-- Step 1: Drop the materialized view first (it references the columns)
+DROP VIEW IF EXISTS validator_registry_latest_mv;
+
+-- Step 2: Add new columns to validator_registry table
 ALTER TABLE validator_registry
 ADD COLUMN IF NOT EXISTS validator_website String DEFAULT '',
 ADD COLUMN IF NOT EXISTS validator_logo_url String DEFAULT '',
 ADD COLUMN IF NOT EXISTS validator_description String DEFAULT '',
 ADD COLUMN IF NOT EXISTS validator_x_handle String DEFAULT '';
 
--- Add new columns to validator_registry_latest table
+-- Step 3: Add new columns to validator_registry_latest table
 ALTER TABLE validator_registry_latest
 ADD COLUMN IF NOT EXISTS validator_website String DEFAULT '',
 ADD COLUMN IF NOT EXISTS validator_logo_url String DEFAULT '',
 ADD COLUMN IF NOT EXISTS validator_description String DEFAULT '',
 ADD COLUMN IF NOT EXISTS validator_x_handle String DEFAULT '';
 
--- Note: The materialized view validator_registry_latest_mv needs to be recreated
--- Drop and recreate the materialized view with updated columns
-DROP VIEW IF EXISTS validator_registry_latest_mv;
+-- Step 4: Recreate the materialized view with updated columns
 
 CREATE MATERIALIZED VIEW validator_registry_latest_mv
 TO validator_registry_latest
