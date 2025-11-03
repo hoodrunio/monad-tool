@@ -559,35 +559,44 @@ export class DatabaseValidatorInitializer {
     }
 
     const escapedList = Array.from(new Set(validatorIds)).map(id => `'${this.escapeString(id)}'`).join(',');
+
+    // Use window function to get the latest row per validator_id
+    // This avoids nested aggregation issues with argMax/MAX
     const query = `
+      WITH ranked_validators AS (
+        SELECT
+          *,
+          ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) AS rn
+        FROM validator_registry
+        WHERE validator_id IN (${escapedList})
+      )
       SELECT
         validator_id,
-        argMax(precompile_validator_id, last_updated) AS precompile_validator_id,
-        argMax(epoch, last_updated) AS epoch,
-        argMax(stake, last_updated) AS stake,
-        argMax(position, last_updated) AS position,
-        argMax(is_active, last_updated) AS is_active,
-        argMax(is_staking_active, last_updated) AS is_staking_active,
-        COALESCE(argMaxIf(real_time_stake_wei, last_updated, real_time_stake_wei != ''), argMax(real_time_stake_wei, last_updated)) AS real_time_stake_wei,
-        COALESCE(argMaxIf(commission, last_updated, commission != '' AND commission != '0'), argMax(commission, last_updated)) AS commission,
-        COALESCE(argMaxIf(consensus_commission, last_updated, consensus_commission != '' AND consensus_commission != '0'), argMax(consensus_commission, last_updated)) AS consensus_commission,
-        COALESCE(argMaxIf(snapshot_commission, last_updated, snapshot_commission != '' AND snapshot_commission != '0'), argMax(snapshot_commission, last_updated)) AS snapshot_commission,
-        COALESCE(argMaxIf(auth_address, last_updated, auth_address != ''), argMax(auth_address, last_updated)) AS auth_address,
-        COALESCE(argMaxIf(dns_address, last_updated, dns_address != ''), argMax(dns_address, last_updated)) AS dns_address,
-        COALESCE(argMaxIf(dns_host, last_updated, dns_host != ''), argMax(dns_host, last_updated)) AS dns_host,
-        COALESCE(argMaxIf(dns_port, last_updated, dns_port != 0), argMax(dns_port, last_updated)) AS dns_port,
-        COALESCE(argMaxIf(validator_name, last_updated, validator_name != '' AND validator_name != 'unknown'), argMax(validator_name, last_updated)) AS validator_name,
-        COALESCE(argMaxIf(provider, last_updated, provider != '' AND provider != 'unknown'), argMax(provider, last_updated)) AS provider,
-        COALESCE(argMaxIf(location, last_updated, location != '' AND location != 'unknown'), argMax(location, last_updated)) AS location,
-        COALESCE(argMaxIf(country, last_updated, country != '' AND country != 'unknown'), argMax(country, last_updated)) AS country,
-        COALESCE(argMaxIf(datacenter, last_updated, datacenter != '' AND datacenter != 'unknown'), argMax(datacenter, last_updated)) AS datacenter,
-        COALESCE(argMaxIf(keybase_id, last_updated, keybase_id != ''), argMax(keybase_id, last_updated)) AS keybase_id,
-        COALESCE(argMaxIf(keybase_logo_url, last_updated, keybase_logo_url != ''), argMax(keybase_logo_url, last_updated)) AS keybase_logo_url,
-        argMax(first_seen, last_updated) AS first_seen,
-        MAX(last_updated) AS last_updated
-      FROM validator_registry
-      WHERE validator_id IN (${escapedList})
-      GROUP BY validator_id
+        precompile_validator_id,
+        epoch,
+        stake,
+        position,
+        is_active,
+        is_staking_active,
+        real_time_stake_wei,
+        commission,
+        consensus_commission,
+        snapshot_commission,
+        auth_address,
+        dns_address,
+        dns_host,
+        dns_port,
+        validator_name,
+        provider,
+        location,
+        country,
+        datacenter,
+        keybase_id,
+        keybase_logo_url,
+        first_seen,
+        last_updated
+      FROM ranked_validators
+      WHERE rn = 1
     `;
 
     const rows = await this.clickhouseClient.executeRawQuery(query);
