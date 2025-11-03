@@ -1297,7 +1297,7 @@ POPULATE
           validator_id: v.nodeId,
           node_id: v.nodeId,
           epoch: v.epoch,
-          stake: v.stake,
+          stake: preserveNumericString(v.stake),
           position: v.position,
           is_active: v.isActive ? 1 : 0,
           real_time_stake_wei: preserveNumericString(existing?.real_time_stake_wei),
