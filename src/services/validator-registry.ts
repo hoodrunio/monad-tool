@@ -95,13 +95,20 @@ export class ValidatorRegistry {
       const stakeMatch = line.match(/^stake = (.+)$/);
       if (stakeMatch && currentValidator.node_id) {
         const stakeValue = stakeMatch[1].trim().replace(/"/g, ''); // Remove quotes if present
+        let stakeWei: bigint;
+
         if (stakeValue.startsWith('0x')) {
-          // Hex string format: "0x15934fc..."
-          currentValidator.stake = parseInt(stakeValue, 16);
+          // Hex string format: "0x15934fc..." (in wei)
+          stakeWei = BigInt(stakeValue);
         } else {
-          // Decimal number format: 200
-          currentValidator.stake = parseInt(stakeValue, 10);
+          // Decimal number format: 200 (in wei)
+          stakeWei = BigInt(stakeValue);
         }
+
+        // Convert from wei to ether (divide by 10^18)
+        // Use Number() after division to get a reasonable number
+        const stakeEther = Number(stakeWei / BigInt(10 ** 18));
+        currentValidator.stake = stakeEther;
         continue;
       }
 
