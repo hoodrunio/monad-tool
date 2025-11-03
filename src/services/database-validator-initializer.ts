@@ -584,7 +584,7 @@ export class DatabaseValidatorInitializer {
         COALESCE(argMaxIf(keybase_id, last_updated, keybase_id != ''), argMax(keybase_id, last_updated)) AS keybase_id,
         COALESCE(argMaxIf(keybase_logo_url, last_updated, keybase_logo_url != ''), argMax(keybase_logo_url, last_updated)) AS keybase_logo_url,
         argMax(first_seen, last_updated) AS first_seen,
-        argMax(last_updated, last_updated) AS last_updated
+        MAX(last_updated) AS last_updated
       FROM validator_registry
       WHERE validator_id IN (${escapedList})
       GROUP BY validator_id
