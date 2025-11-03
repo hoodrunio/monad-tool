@@ -236,7 +236,7 @@ export class AnalyticsAPIServer {
     const rpcUrl = process.env.RPC_URL || 'http://localhost:8080';
     const rpcTimeout = parseInt(process.env.RPC_TIMEOUT || '10000');
     const rpcClient = new NodeRpcClient(rpcUrl, rpcTimeout);
-    const epochInterval = parseInt(process.env.EPOCH_INTERVAL || '5000');
+    const epochInterval = parseInt(process.env.EPOCH_INTERVAL || '50000');
     
     this.enhancedEpochController = new EnhancedEpochController(
       this.redisClient,

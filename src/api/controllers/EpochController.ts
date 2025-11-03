@@ -342,7 +342,7 @@ export class EpochController {
         success: true,
         data: {
           epochInterval: this.epochService.getEpochInterval(),
-          blocksPerEpoch: 5000,
+          blocksPerEpoch: 50000,
           description: 'Monad blockchain epoch configuration'
         },
         timestamp: new Date().toISOString()

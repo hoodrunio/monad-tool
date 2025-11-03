@@ -44,7 +44,7 @@ export class EnhancedEpochService {
   constructor(
     private readonly clickhouse: ClickHouseClient,
     private readonly rpcClient: NodeRpcClient,
-    epochInterval: number = 5000
+    epochInterval: number = 50000
   ) {
     this.config = EpochConfig.getInstance();
     this.epochInterval = epochInterval;
