@@ -10,7 +10,7 @@ import { ValidatorService } from './unified-validator';
 import { ServiceContainer } from './service-container';
 import { logger } from '../utils/logger';
 import { ValidatorLocation } from './validator-location/types';
-import { ValidatorInfoRegistry } from './ValidatorInfoRegistry.js';
+import { ValidatorInfoRegistry, ValidatorNetwork } from './ValidatorInfoRegistry.js';
 
 export interface ValidatorDatabaseRecord {
   validator_id: string;
@@ -65,7 +65,17 @@ export class DatabaseValidatorInitializer {
     // Get ValidatorService from service container instead of creating new instance
     const serviceContainer = ServiceContainer.getInstance();
     this.validatorService = serviceContainer.getValidatorService();
-    this.validatorInfoRegistry = new ValidatorInfoRegistry();
+
+    // Initialize ValidatorInfoRegistry with network from env
+    const network = (process.env.VALIDATOR_NETWORK || 'testnet') as ValidatorNetwork;
+    const githubToken = process.env.GITHUB_TOKEN;
+
+    this.validatorInfoRegistry = new ValidatorInfoRegistry({
+      network,
+      githubToken
+    });
+
+    logger.info(`[DatabaseValidatorInitializer] Initialized with network: ${network}`);
   }
 
   /**

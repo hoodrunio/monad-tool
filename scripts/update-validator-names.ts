@@ -12,10 +12,17 @@
  */
 
 import { MonadClickHouseClient } from '../src/database/clickhouse-client';
-import { ValidatorInfoRegistry } from '../src/services/ValidatorInfoRegistry.js';
+import { ValidatorInfoRegistry, ValidatorNetwork } from '../src/services/ValidatorInfoRegistry.js';
 
 async function updateValidatorNames() {
   console.log('🏷️  Updating Validator Names in Database\n');
+
+  // Get network from environment
+  const network = (process.env.VALIDATOR_NETWORK || 'testnet') as ValidatorNetwork;
+  const githubToken = process.env.GITHUB_TOKEN;
+
+  console.log(`📡 Network: ${network}`);
+  console.log(`🔑 GitHub Token: ${githubToken ? 'Configured ✅' : 'Not configured ⚠️  (rate limits will apply)'}\n`);
   
   const config = {
     host: process.env.CLICKHOUSE_HOST || 'localhost',
@@ -29,16 +36,16 @@ async function updateValidatorNames() {
   };
   
   const clickhouseClient = new MonadClickHouseClient(config);
-  const validatorInfoRegistry = new ValidatorInfoRegistry();
+  const validatorInfoRegistry = new ValidatorInfoRegistry({ network, githubToken });
 
   try {
     console.log('🔌 Connecting to ClickHouse...');
 
     // Step 0: Load GitHub validator registry cache
-    console.log('🌐 Loading validator info from GitHub registry...');
+    console.log(`🌐 Loading validator info from GitHub registry (${network})...`);
     await validatorInfoRegistry.forceRefresh();
     const cacheStats = validatorInfoRegistry.getCacheStats();
-    console.log(`✅ Loaded ${cacheStats.size} validators from GitHub registry\n`);
+    console.log(`✅ Loaded ${cacheStats.size} validators from GitHub ${network} registry\n`);
 
     // Step 1: Get all validators from database
     console.log('📋 Loading validators from database...');

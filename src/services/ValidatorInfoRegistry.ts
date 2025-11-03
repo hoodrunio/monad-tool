@@ -38,13 +38,19 @@ interface GitHubContentItem {
   type: string;
 }
 
+export type ValidatorNetwork = 'testnet' | 'mainnet';
+
+export interface ValidatorInfoRegistryConfig {
+  network?: ValidatorNetwork;
+  githubToken?: string;
+}
+
 export class ValidatorInfoRegistry {
   private static readonly GITHUB_API_BASE = 'https://api.github.com';
   private static readonly GITHUB_RAW_BASE = 'https://raw.githubusercontent.com';
   private static readonly REPO_OWNER = 'monad-developers';
   private static readonly REPO_NAME = 'validator-info';
   private static readonly BRANCH = 'main';
-  private static readonly TESTNET_DIR = 'testnet';
 
   private static readonly CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
   private static readonly BATCH_SIZE = 20; // Process 20 validators at a time
@@ -55,9 +61,19 @@ export class ValidatorInfoRegistry {
   private isFetching: boolean = false;
   private domainExtractor: DomainExtractor;
   private refreshTimer?: NodeJS.Timeout;
+  private network: ValidatorNetwork;
+  private githubToken?: string;
 
-  constructor() {
+  constructor(config?: ValidatorInfoRegistryConfig) {
     this.domainExtractor = new DomainExtractor();
+    this.network = config?.network || 'testnet';
+    this.githubToken = config?.githubToken || process.env.GITHUB_TOKEN;
+
+    if (!this.githubToken) {
+      console.warn('[ValidatorInfoRegistry] No GitHub token provided. Rate limits will be restrictive (60 requests/hour).');
+      console.warn('[ValidatorInfoRegistry] Set GITHUB_TOKEN environment variable to increase limit to 5000 requests/hour.');
+    }
+
     this.startPeriodicRefresh();
   }
 
@@ -65,7 +81,7 @@ export class ValidatorInfoRegistry {
    * Get validator info by node_id (SECP public key)
    * Returns null if not found in registry (caller should fall back to hostname extraction)
    */
-  async getValidatorInfo(nodeId: string, hostname?: string): Promise<ValidatorInfo | null> {
+  async getValidatorInfo(nodeId: string, _hostname?: string): Promise<ValidatorInfo | null> {
     // Ensure cache is fresh
     await this.ensureCacheLoaded();
 
@@ -127,11 +143,11 @@ export class ValidatorInfoRegistry {
     const startTime = Date.now();
 
     try {
-      console.log('[ValidatorInfoRegistry] Refreshing validator info cache from GitHub...');
+      console.log(`[ValidatorInfoRegistry] Refreshing validator info cache from GitHub (${this.network})...`);
 
-      // Step 1: Get list of JSON files in the testnet directory
-      const files = await this.fetchTestnetDirectory();
-      console.log(`[ValidatorInfoRegistry] Found ${files.length} validator files in registry`);
+      // Step 1: Get list of JSON files in the network directory
+      const files = await this.fetchNetworkDirectory();
+      console.log(`[ValidatorInfoRegistry] Found ${files.length} validator files in ${this.network} registry`);
 
       // Step 2: Batch download and parse JSON files
       const validatorInfos = await this.batchFetchValidatorFiles(files);
@@ -158,20 +174,26 @@ export class ValidatorInfoRegistry {
   }
 
   /**
-   * Fetch the list of validator JSON files from GitHub
+   * Fetch the list of validator JSON files from GitHub for the configured network
    */
-  private async fetchTestnetDirectory(): Promise<GitHubContentItem[]> {
-    const url = `${ValidatorInfoRegistry.GITHUB_API_BASE}/repos/${ValidatorInfoRegistry.REPO_OWNER}/${ValidatorInfoRegistry.REPO_NAME}/contents/${ValidatorInfoRegistry.TESTNET_DIR}`;
+  private async fetchNetworkDirectory(): Promise<GitHubContentItem[]> {
+    const url = `${ValidatorInfoRegistry.GITHUB_API_BASE}/repos/${ValidatorInfoRegistry.REPO_OWNER}/${ValidatorInfoRegistry.REPO_NAME}/contents/${this.network}`;
 
-    const response = await fetch(url, {
-      headers: {
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'monad-validator-service'
-      }
-    });
+    const headers: Record<string, string> = {
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'monad-validator-service'
+    };
+
+    // Add GitHub token if available
+    if (this.githubToken) {
+      headers['Authorization'] = `Bearer ${this.githubToken}`;
+    }
+
+    const response = await fetch(url, { headers });
 
     if (!response.ok) {
-      throw new Error(`GitHub API request failed: ${response.status} ${response.statusText}`);
+      const errorBody = await response.text().catch(() => 'Unable to read error body');
+      throw new Error(`GitHub API request failed: ${response.status} ${response.statusText} - ${errorBody}`);
     }
 
     const items = await response.json() as GitHubContentItem[];
@@ -222,14 +244,19 @@ export class ValidatorInfoRegistry {
    */
   private async fetchValidatorFile(file: GitHubContentItem): Promise<ValidatorInfo | null> {
     try {
-      // Use raw.githubusercontent.com for direct file access (no rate limiting)
-      const url = `${ValidatorInfoRegistry.GITHUB_RAW_BASE}/${ValidatorInfoRegistry.REPO_OWNER}/${ValidatorInfoRegistry.REPO_NAME}/${ValidatorInfoRegistry.BRANCH}/${ValidatorInfoRegistry.TESTNET_DIR}/${file.name}`;
+      // Use raw.githubusercontent.com for direct file access
+      const url = `${ValidatorInfoRegistry.GITHUB_RAW_BASE}/${ValidatorInfoRegistry.REPO_OWNER}/${ValidatorInfoRegistry.REPO_NAME}/${ValidatorInfoRegistry.BRANCH}/${this.network}/${file.name}`;
 
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'monad-validator-service'
-        }
-      });
+      const headers: Record<string, string> = {
+        'User-Agent': 'monad-validator-service'
+      };
+
+      // Add GitHub token if available (also works for raw.githubusercontent.com)
+      if (this.githubToken) {
+        headers['Authorization'] = `Bearer ${this.githubToken}`;
+      }
+
+      const response = await fetch(url, { headers });
 
       if (!response.ok) {
         console.warn(`[ValidatorInfoRegistry] Failed to fetch ${file.name}: ${response.status}`);
