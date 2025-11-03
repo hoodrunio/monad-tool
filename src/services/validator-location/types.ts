@@ -11,6 +11,10 @@ export interface ValidatorLocation {
   hostname: string;
   port: number;
   validatorName?: string;
+  validatorWebsite?: string;
+  validatorLogoUrl?: string;
+  validatorDescription?: string;
+  validatorXHandle?: string;
   ip?: string;
   country?: string;
   region?: string;

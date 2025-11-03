@@ -10,6 +10,7 @@ import { ValidatorService } from './unified-validator';
 import { ServiceContainer } from './service-container';
 import { logger } from '../utils/logger';
 import { ValidatorLocation } from './validator-location/types';
+import { ValidatorInfoRegistry } from './ValidatorInfoRegistry.js';
 
 export interface ValidatorDatabaseRecord {
   validator_id: string;
@@ -25,6 +26,10 @@ export interface ValidatorDatabaseRecord {
   dns_host: string;
   dns_port: number;
   validator_name: string;
+  validator_website?: string;
+  validator_logo_url?: string;
+  validator_description?: string;
+  validator_x_handle?: string;
   provider: string;
   location: string;
   country: string;
@@ -53,12 +58,14 @@ export interface DatabaseValidatorStats {
 export class DatabaseValidatorInitializer {
   private clickhouseClient: MonadClickHouseClient;
   private validatorService: ValidatorService;
+  private validatorInfoRegistry: ValidatorInfoRegistry;
 
   constructor(clickhouseClient: MonadClickHouseClient) {
     this.clickhouseClient = clickhouseClient;
     // Get ValidatorService from service container instead of creating new instance
     const serviceContainer = ServiceContainer.getInstance();
     this.validatorService = serviceContainer.getValidatorService();
+    this.validatorInfoRegistry = new ValidatorInfoRegistry();
   }
 
   /**
@@ -340,6 +347,12 @@ export class DatabaseValidatorInitializer {
       const existing = existingRows.get(validatorId);
       const location = validator.location as (ValidatorLocation | undefined);
 
+      // Fetch validator info from GitHub registry
+      const validatorInfo = await this.validatorInfoRegistry.getValidatorInfo(
+        validator.node_id || validatorId,
+        location?.hostname
+      );
+
       const stakeValue = this.getStakeValue(validator, existing);
       const realTimeStakeValue = this.getRealTimeStakeValue(validator, existing, stakeValue);
       const commissionValue = this.normalizeNumericString(
@@ -407,10 +420,35 @@ export class DatabaseValidatorInitializer {
           existing?.dns_port
         ], 8000),
         validator_name: this.chooseString([
+          validatorInfo?.name,
           location?.validatorName,
           validator.validator_name,
           existing?.validator_name
         ], 'unknown'),
+        validator_website: this.chooseString([
+          validatorInfo?.website,
+          location?.validatorWebsite,
+          validator.validator_website,
+          existing?.validator_website
+        ]),
+        validator_logo_url: this.chooseString([
+          validatorInfo?.logo,
+          location?.validatorLogoUrl,
+          validator.validator_logo_url,
+          existing?.validator_logo_url
+        ]),
+        validator_description: this.chooseString([
+          validatorInfo?.description,
+          location?.validatorDescription,
+          validator.validator_description,
+          existing?.validator_description
+        ]),
+        validator_x_handle: this.chooseString([
+          validatorInfo?.x,
+          location?.validatorXHandle,
+          validator.validator_x_handle,
+          existing?.validator_x_handle
+        ]),
         keybase_id: this.chooseString([
           validator.keybase_id,
           existing?.keybase_id

@@ -58,7 +58,13 @@ CREATE TABLE validator_registry (
     
     -- Validator identification (extracted from domain)
     validator_name LowCardinality(String) DEFAULT 'unknown',
-    
+
+    -- Validator info from GitHub registry
+    validator_website String DEFAULT '',
+    validator_logo_url String DEFAULT '',
+    validator_description String DEFAULT '',
+    validator_x_handle String DEFAULT '',
+
     -- Keybase integration
     keybase_id LowCardinality(String) DEFAULT '',
     keybase_logo_url String DEFAULT '',
@@ -85,6 +91,10 @@ CREATE TABLE validator_registry_latest (
     validator_id String,
     auth_address String,
     validator_name LowCardinality(String),
+    validator_website String,
+    validator_logo_url String,
+    validator_description String,
+    validator_x_handle String,
     provider LowCardinality(String),
     location LowCardinality(String),
     country LowCardinality(String),
@@ -109,25 +119,33 @@ SELECT
     validator_id,
     tupleElement(latest_record, 1) AS auth_address,
     tupleElement(latest_record, 2) AS validator_name,
-    tupleElement(latest_record, 3) AS provider,
-    tupleElement(latest_record, 4) AS location,
-    tupleElement(latest_record, 5) AS country,
-    tupleElement(latest_record, 6) AS datacenter,
-    tupleElement(latest_record, 7) AS stake,
-    tupleElement(latest_record, 8) AS real_time_stake_wei,
-    tupleElement(latest_record, 9) AS commission,
-    tupleElement(latest_record, 10) AS consensus_commission,
-    tupleElement(latest_record, 11) AS snapshot_commission,
-    tupleElement(latest_record, 12) AS is_staking_active,
-    tupleElement(latest_record, 13) AS keybase_id,
-    tupleElement(latest_record, 14) AS keybase_logo_url,
-    tupleElement(latest_record, 15) AS last_updated
+    tupleElement(latest_record, 3) AS validator_website,
+    tupleElement(latest_record, 4) AS validator_logo_url,
+    tupleElement(latest_record, 5) AS validator_description,
+    tupleElement(latest_record, 6) AS validator_x_handle,
+    tupleElement(latest_record, 7) AS provider,
+    tupleElement(latest_record, 8) AS location,
+    tupleElement(latest_record, 9) AS country,
+    tupleElement(latest_record, 10) AS datacenter,
+    tupleElement(latest_record, 11) AS stake,
+    tupleElement(latest_record, 12) AS real_time_stake_wei,
+    tupleElement(latest_record, 13) AS commission,
+    tupleElement(latest_record, 14) AS consensus_commission,
+    tupleElement(latest_record, 15) AS snapshot_commission,
+    tupleElement(latest_record, 16) AS is_staking_active,
+    tupleElement(latest_record, 17) AS keybase_id,
+    tupleElement(latest_record, 18) AS keybase_logo_url,
+    tupleElement(latest_record, 19) AS last_updated
 FROM (
     SELECT
         validator_id,
         argMax((
           auth_address,
           validator_name,
+          validator_website,
+          validator_logo_url,
+          validator_description,
+          validator_x_handle,
           provider,
           location,
           country,

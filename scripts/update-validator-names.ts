@@ -2,16 +2,17 @@
 
 /**
  * Update Validator Names
- * 
- * Updates the validator_registry table with extracted validator names from DNS hostnames.
+ *
+ * Updates the validator_registry table with validator information from GitHub registry.
  * This script:
  * 1. Loads all validators from the database
- * 2. Extracts validator names from their DNS hostnames
- * 3. Updates the validator_name field in the database
+ * 2. Fetches validator info from monad-developers/validator-info GitHub repo
+ * 3. Falls back to DNS hostname extraction for validators not in registry
+ * 4. Updates validator_name and related fields (website, logo, description, x) in the database
  */
 
 import { MonadClickHouseClient } from '../src/database/clickhouse-client';
-import { DomainExtractor } from '../src/services/dns/DomainExtractor';
+import { ValidatorInfoRegistry } from '../src/services/ValidatorInfoRegistry.js';
 
 async function updateValidatorNames() {
   console.log('🏷️  Updating Validator Names in Database\n');
@@ -28,21 +29,32 @@ async function updateValidatorNames() {
   };
   
   const clickhouseClient = new MonadClickHouseClient(config);
-  const domainExtractor = new DomainExtractor();
-  
+  const validatorInfoRegistry = new ValidatorInfoRegistry();
+
   try {
     console.log('🔌 Connecting to ClickHouse...');
-    
+
+    // Step 0: Load GitHub validator registry cache
+    console.log('🌐 Loading validator info from GitHub registry...');
+    await validatorInfoRegistry.forceRefresh();
+    const cacheStats = validatorInfoRegistry.getCacheStats();
+    console.log(`✅ Loaded ${cacheStats.size} validators from GitHub registry\n`);
+
     // Step 1: Get all validators from database
     console.log('📋 Loading validators from database...');
     const query = `
-      SELECT 
+      SELECT
         validator_id,
+        node_id,
         dns_address,
         dns_host,
         validator_name,
+        validator_website,
+        validator_logo_url,
+        validator_description,
+        validator_x_handle,
         last_updated
-      FROM validator_registry 
+      FROM validator_registry
       WHERE is_active = 1
       ORDER BY validator_id
     `;
@@ -74,27 +86,83 @@ async function updateValidatorNames() {
     console.log(`   Needing update: ${validatorsNeedingUpdate}`);
     console.log(`   Current completion: ${((validatorsWithNames / validators.length) * 100).toFixed(1)}%`);
     
-    // Step 3: Extract validator names and prepare updates
-    console.log('\n🔧 Extracting validator names...');
-    const updates: Array<{validator_id: string, validator_name: string, hostname: string}> = [];
-    
+    // Step 3: Fetch validator info from GitHub registry and prepare updates
+    console.log('\n🔧 Fetching validator info from GitHub registry...');
+    const updates: Array<{
+      validator_id: string,
+      validator_name: string,
+      validator_website: string,
+      validator_logo_url: string,
+      validator_description: string,
+      validator_x_handle: string,
+      hostname: string,
+      source: 'github' | 'hostname'
+    }> = [];
+
     for (const validator of validators) {
-      if (!validator.dns_host) continue;
-      
-      const extractedName = domainExtractor.extractValidatorName(validator.dns_host);
+      // Get validator info from GitHub registry (with fallback to hostname extraction)
+      const validatorInfo = await validatorInfoRegistry.getValidatorInfo(
+        validator.node_id || validator.validator_id,
+        validator.dns_host
+      );
+
+      // Determine the name and source
+      let extractedName: string;
+      let source: 'github' | 'hostname';
+      let website = '';
+      let logoUrl = '';
+      let description = '';
+      let xHandle = '';
+
+      if (validatorInfo) {
+        // Found in GitHub registry
+        extractedName = validatorInfo.name;
+        website = validatorInfo.website || '';
+        logoUrl = validatorInfo.logo || '';
+        description = validatorInfo.description || '';
+        xHandle = validatorInfo.x || '';
+        source = 'github';
+      } else if (validator.dns_host) {
+        // Fallback to hostname extraction
+        extractedName = await validatorInfoRegistry.getValidatorName(
+          validator.node_id || validator.validator_id,
+          validator.dns_host
+        );
+        source = 'hostname';
+      } else {
+        continue;
+      }
+
       const currentName = validator.validator_name;
-      
-      // Update if name is missing or different
-      if (!currentName || currentName === 'unknown' || currentName !== extractedName) {
+
+      // Update if anything changed
+      const needsUpdate = !currentName ||
+        currentName === 'unknown' ||
+        currentName !== extractedName ||
+        validator.validator_website !== website ||
+        validator.validator_logo_url !== logoUrl ||
+        validator.validator_description !== description ||
+        validator.validator_x_handle !== xHandle;
+
+      if (needsUpdate) {
         updates.push({
           validator_id: validator.validator_id,
           validator_name: extractedName,
-          hostname: validator.dns_host
+          validator_website: website,
+          validator_logo_url: logoUrl,
+          validator_description: description,
+          validator_x_handle: xHandle,
+          hostname: validator.dns_host || '',
+          source
         });
       }
     }
-    
-    console.log(`✅ Found ${updates.length} validators needing name updates`);
+
+    console.log(`✅ Found ${updates.length} validators needing updates`);
+    const githubUpdates = updates.filter(u => u.source === 'github').length;
+    const hostnameUpdates = updates.filter(u => u.source === 'hostname').length;
+    console.log(`   From GitHub registry: ${githubUpdates}`);
+    console.log(`   From hostname extraction: ${hostnameUpdates}`);
     
     if (updates.length === 0) {
       console.log('🎉 All validators already have correct names!');
@@ -103,19 +171,21 @@ async function updateValidatorNames() {
     
     // Step 4: Show sample of what will be updated
     console.log('\n📝 Sample of updates to be made:');
-    console.log('VALIDATOR_ID'.padEnd(20) + 'HOSTNAME'.padEnd(40) + 'EXTRACTED_NAME');
-    console.log('='.repeat(80));
-    
+    console.log('VALIDATOR_ID'.padEnd(20) + 'NAME'.padEnd(30) + 'SOURCE'.padEnd(12) + 'WEBSITE');
+    console.log('='.repeat(100));
+
     const sampleUpdates = updates.slice(0, 10);
     for (const update of sampleUpdates) {
       const validatorIdShort = update.validator_id.slice(0, 16) + '...';
+      const websiteShort = update.validator_website ? update.validator_website.substring(0, 35) : '-';
       console.log(
-        validatorIdShort.padEnd(20) + 
-        update.hostname.padEnd(40) + 
-        update.validator_name
+        validatorIdShort.padEnd(20) +
+        update.validator_name.padEnd(30) +
+        update.source.padEnd(12) +
+        websiteShort
       );
     }
-    
+
     if (updates.length > 10) {
       console.log(`... and ${updates.length - 10} more`);
     }
@@ -141,11 +211,12 @@ async function updateValidatorNames() {
       for (const update of batch) {
         const nowTs = formatTimestamp(new Date());
         const updateQuery = `
-          INSERT INTO validator_registry 
+          INSERT INTO validator_registry
           (validator_id, node_id, precompile_validator_id, epoch, stake, position, is_active, is_staking_active, real_time_stake_wei,
-           dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url,
+           dns_address, dns_host, dns_port, validator_name, validator_website, validator_logo_url, validator_description, validator_x_handle,
+           provider, location, country, datacenter, keybase_id, keybase_logo_url,
            first_seen, last_updated)
-          SELECT 
+          SELECT
             validator_id,
             node_id,
             precompile_validator_id,
@@ -159,6 +230,10 @@ async function updateValidatorNames() {
             dns_host,
             dns_port,
             '${escapeString(update.validator_name)}',
+            '${escapeString(update.validator_website)}',
+            '${escapeString(update.validator_logo_url)}',
+            '${escapeString(update.validator_description)}',
+            '${escapeString(update.validator_x_handle)}',
             provider,
             location,
             country,
