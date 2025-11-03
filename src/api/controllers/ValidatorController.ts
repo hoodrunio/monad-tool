@@ -373,13 +373,17 @@ export class ValidatorController {
       
       // Get block proposal metrics with provider info from validator_registry
       const blockProposalQuery = `
-        SELECT 
+        SELECT
           b.validator_id,
           COUNT(*) as total_proposals,
           COUNT(CASE WHEN b.status = 'proposed' THEN 1 END) as successful_proposals,
           COUNT(CASE WHEN b.status = 'skipped' THEN 1 END) as skipped_proposals,
           (COUNT(CASE WHEN b.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio,
           COALESCE(vr.validator_name, 'unknown') as validator_name,
+          COALESCE(vr.validator_website, '') as validator_website,
+          COALESCE(vr.validator_logo_url, '') as validator_logo_url,
+          COALESCE(vr.validator_description, '') as validator_description,
+          COALESCE(vr.validator_x_handle, '') as validator_x_handle,
           COALESCE(vr.provider, 'unknown') as provider,
           COALESCE(vr.location, 'unknown') as location,
           COALESCE(vr.auth_address, '') as auth_address,
@@ -395,9 +399,13 @@ export class ValidatorController {
         LEFT JOIN validator_registry_latest vr ON vr.validator_id = b.validator_id
         WHERE b.validator_id = '${validatorId}'
           AND b.timestamp >= now() - INTERVAL ${timeWindow}
-        GROUP BY 
+        GROUP BY
           b.validator_id,
           vr.validator_name,
+          vr.validator_website,
+          vr.validator_logo_url,
+          vr.validator_description,
+          vr.validator_x_handle,
           vr.provider,
           vr.location,
           vr.auth_address,
@@ -539,6 +547,10 @@ export class ValidatorController {
         },
         infrastructure: {
           validator_name: blockData?.validator_name || 'unknown',
+          validator_website: blockData?.validator_website || null,
+          validator_logo_url: blockData?.validator_logo_url || null,
+          validator_description: blockData?.validator_description || null,
+          validator_x_handle: blockData?.validator_x_handle || null,
           provider: blockData?.provider || 'unknown',
           location: blockData?.location || 'unknown'
         },
@@ -734,7 +746,7 @@ export class ValidatorController {
           WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
           GROUP BY qc.validator_id
         )
-      SELECT 
+      SELECT
         av.validator_id as validator_id,
         COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
         COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
@@ -745,6 +757,10 @@ export class ValidatorController {
         COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
         COALESCE(q.qc_participations, 0) as qc_participations,
         av.validator_name as validator_name,
+        av.validator_website as validator_website,
+        av.validator_logo_url as validator_logo_url,
+        av.validator_description as validator_description,
+        av.validator_x_handle as validator_x_handle,
         av.provider as provider,
         av.location as location,
         av.stake as stake,
@@ -809,6 +825,10 @@ export class ValidatorController {
         },
         infrastructure: {
           validator_name: r.validator_name || 'unknown',
+          validator_website: r.validator_website || null,
+          validator_logo_url: r.validator_logo_url || null,
+          validator_description: r.validator_description || null,
+          validator_x_handle: r.validator_x_handle || null,
           provider: r.provider || 'unknown',
           location: r.location || 'unknown'
         },
@@ -844,6 +864,22 @@ export class ValidatorController {
             argMaxIf(validator_name, last_updated, validator_name != '' AND validator_name != 'unknown'),
             argMax(validator_name, last_updated)
           ) AS validator_name,
+          COALESCE(
+            argMaxIf(validator_website, last_updated, validator_website != ''),
+            argMax(validator_website, last_updated)
+          ) AS validator_website,
+          COALESCE(
+            argMaxIf(validator_logo_url, last_updated, validator_logo_url != ''),
+            argMax(validator_logo_url, last_updated)
+          ) AS validator_logo_url,
+          COALESCE(
+            argMaxIf(validator_description, last_updated, validator_description != ''),
+            argMax(validator_description, last_updated)
+          ) AS validator_description,
+          COALESCE(
+            argMaxIf(validator_x_handle, last_updated, validator_x_handle != ''),
+            argMax(validator_x_handle, last_updated)
+          ) AS validator_x_handle,
           COALESCE(
             argMaxIf(provider, last_updated, provider != '' AND provider != 'unknown'),
             argMax(provider, last_updated)
@@ -1003,7 +1039,7 @@ export class ValidatorController {
             AND timestamp >= now() - INTERVAL ${intervalClause}
           GROUP BY validator_id
         )
-      SELECT 
+      SELECT
         COALESCE(b.validator_id, q.validator_id) as validator_id,
         COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
         COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
@@ -1014,6 +1050,10 @@ export class ValidatorController {
         COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
         COALESCE(q.qc_participations, 0) as qc_participations,
         COALESCE(vr.validator_name, 'unknown') as validator_name,
+        COALESCE(vr.validator_website, '') as validator_website,
+        COALESCE(vr.validator_logo_url, '') as validator_logo_url,
+        COALESCE(vr.validator_description, '') as validator_description,
+        COALESCE(vr.validator_x_handle, '') as validator_x_handle,
         COALESCE(vr.provider, 'unknown') as provider,
         COALESCE(vr.location, 'unknown') as location,
         COALESCE(vr.auth_address, '') as auth_address,
@@ -1050,6 +1090,10 @@ export class ValidatorController {
       },
       infrastructure: {
         validator_name: v.validator_name || 'unknown',
+        validator_website: v.validator_website || null,
+        validator_logo_url: v.validator_logo_url || null,
+        validator_description: v.validator_description || null,
+        validator_x_handle: v.validator_x_handle || null,
         provider: v.provider || 'unknown',
         location: v.location || 'unknown'
       },
