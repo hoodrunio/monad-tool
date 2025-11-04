@@ -230,6 +230,17 @@ export class ApplicationInitializer {
       logger.info('✅ Final validation completed');
 
       // =============================================
+      // PHASE 4: START BACKGROUND SERVICES
+      // =============================================
+
+      logger.info('🚀 Phase 4: Starting background services...');
+
+      // Start validator info update service (hourly GitHub sync)
+      const validatorInfoUpdateService = this.serviceContainer.getValidatorInfoUpdateService();
+      validatorInfoUpdateService.start();
+      logger.info('✅ Validator info update service started (1 hour interval)');
+
+      // =============================================
       // STARTUP COMPLETE
       // =============================================
       

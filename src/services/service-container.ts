@@ -13,6 +13,8 @@ import { DatabaseValidatorInitializer } from './database-validator-initializer';
 import { logger } from '../utils/logger';
 import { ProviderPerformanceCacheService } from './provider-performance-cache';
 import { StakingUpdateService, StakingUpdateConfig } from './staking/StakingUpdateService';
+import { ValidatorInfoUpdateService } from './ValidatorInfoUpdateService';
+import { ValidatorInfoRegistry, ValidatorNetwork } from './ValidatorInfoRegistry';
 import { MigrationRunner } from '../database/migration-runner';
 import dotenv from 'dotenv';
 
@@ -33,6 +35,7 @@ export class ServiceContainer {
   private _databaseValidator: DatabaseValidatorInitializer | null = null;
   private _providerCacheService: ProviderPerformanceCacheService | null = null;
   private _stakingUpdateService: StakingUpdateService | null = null;
+  private _validatorInfoUpdateService: ValidatorInfoUpdateService | null = null;
   
   private isInitialized: boolean = false;
   private config: ServiceContainerConfig;
@@ -189,6 +192,24 @@ export class ServiceContainer {
   }
 
   /**
+   * Get ValidatorInfoUpdateService instance
+   */
+  getValidatorInfoUpdateService(): ValidatorInfoUpdateService {
+    if (!this._validatorInfoUpdateService) {
+      const network = (process.env.VALIDATOR_NETWORK || 'testnet') as ValidatorNetwork;
+      const githubToken = process.env.GITHUB_TOKEN;
+
+      const validatorInfoRegistry = new ValidatorInfoRegistry({ network, githubToken });
+      this._validatorInfoUpdateService = new ValidatorInfoUpdateService(
+        this.getClickHouseClient(),
+        validatorInfoRegistry,
+        60 * 60 * 1000 // 1 hour
+      );
+    }
+    return this._validatorInfoUpdateService;
+  }
+
+  /**
    * Cleanup all services
    */
   async shutdown(): Promise<void> {
@@ -213,7 +234,12 @@ export class ServiceContainer {
         this._stakingUpdateService.stop();
         this._stakingUpdateService = null;
       }
-      
+
+      if (this._validatorInfoUpdateService) {
+        this._validatorInfoUpdateService.stop();
+        this._validatorInfoUpdateService = null;
+      }
+
       this.isInitialized = false;
 
       logger.info('✅ ServiceContainer shutdown complete');
