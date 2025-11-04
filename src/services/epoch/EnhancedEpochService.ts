@@ -6,7 +6,7 @@
  * 2. DB round/seq_num for progress calculation
  * 3. Robust ABT with outlier handling
  * 4. Staleness detection and degradation
- * 5. Delay period tracking (500 rounds configurable)
+ * 5. Delay period tracking (5000 rounds configurable)
  * 
  * State machine:
  * - Normal phase: progress to boundary using rounds

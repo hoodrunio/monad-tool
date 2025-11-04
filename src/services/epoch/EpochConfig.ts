@@ -37,7 +37,7 @@ export class EpochConfig {
   private constructor() {
     this.config = {
       // Delay period: 500 rounds after boundary before new validator set activates
-      delayPeriodRounds: parseInt(process.env.EPOCH_DELAY_ROUNDS || '500'),
+      delayPeriodRounds: parseInt(process.env.EPOCH_DELAY_ROUNDS || '5000'),
       
       // ABT computation: analyze last 10,000 blocks
       abtSampleSize: parseInt(process.env.ABT_SAMPLE_SIZE || '10000'),
