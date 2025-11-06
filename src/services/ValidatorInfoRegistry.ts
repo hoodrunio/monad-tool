@@ -265,11 +265,30 @@ export class ValidatorInfoRegistry {
 
       const validatorInfo = await response.json() as ValidatorInfo;
 
-      // Validate required fields
-      if (!validatorInfo.name || !validatorInfo.secp) {
-        console.warn(`[ValidatorInfoRegistry] Invalid validator info in ${file.name}: missing required fields`);
+      // Validate required fields (only secp and bls are mandatory)
+      const missingFields: string[] = [];
+
+      if (!validatorInfo.secp || validatorInfo.secp.trim() === '') {
+        missingFields.push('secp');
+      }
+      if (!validatorInfo.bls || validatorInfo.bls.trim() === '') {
+        missingFields.push('bls');
+      }
+
+      if (missingFields.length > 0) {
+        console.warn(
+          `[ValidatorInfoRegistry] Skipping ${file.name}: missing or empty required fields [${missingFields.join(', ')}]. ` +
+          `This validator will be excluded until all required fields are properly filled.`
+        );
         return null;
       }
+
+      // Normalize optional fields to empty string if missing
+      validatorInfo.name = validatorInfo.name?.trim() || '';
+      validatorInfo.website = validatorInfo.website?.trim() || '';
+      validatorInfo.description = validatorInfo.description?.trim() || '';
+      validatorInfo.logo = validatorInfo.logo?.trim() || '';
+      validatorInfo.x = validatorInfo.x?.trim() || '';
 
       return validatorInfo;
     } catch (error) {
