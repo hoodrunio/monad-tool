@@ -58,6 +58,30 @@ export class ConsensusController {
    */
   async getLatestVotes(req: Request, res: Response): Promise<void> {
     try {
+      // First check if we have any round data
+      const latestRoundQuery = `
+        SELECT epoch, round
+        FROM bft_round_state
+        ORDER BY epoch DESC, round DESC
+        LIMIT 1
+      `;
+
+      const latestRound = await this.clickhouseClient.executeRawQuery(latestRoundQuery);
+
+      if (!latestRound || latestRound.length === 0) {
+        res.json({
+          success: true,
+          data: {
+            votes: [],
+            count: 0
+          },
+          message: 'No consensus round data available'
+        });
+        return;
+      }
+
+      const { epoch, round } = latestRound[0];
+
       const query = `
         SELECT
           v.ts,
@@ -70,12 +94,7 @@ export class ConsensusController {
           r.location
         FROM bft_votes v
         LEFT JOIN validator_registry_latest r ON v.author = r.validator_id
-        WHERE (v.epoch, v.round) = (
-          SELECT epoch, round
-          FROM bft_round_state
-          ORDER BY epoch DESC, round DESC
-          LIMIT 1
-        )
+        WHERE v.epoch = ${epoch} AND v.round = ${round}
         ORDER BY v.ts ASC
       `;
 
@@ -104,13 +123,31 @@ export class ConsensusController {
    */
   async getLatestMissing(req: Request, res: Response): Promise<void> {
     try {
+      // First check if we have any round data
+      const latestRoundQuery = `
+        SELECT epoch, round
+        FROM bft_round_state
+        ORDER BY epoch DESC, round DESC
+        LIMIT 1
+      `;
+
+      const latestRound = await this.clickhouseClient.executeRawQuery(latestRoundQuery);
+
+      if (!latestRound || latestRound.length === 0) {
+        res.json({
+          success: true,
+          data: {
+            missing: [],
+            count: 0
+          },
+          message: 'No consensus round data available'
+        });
+        return;
+      }
+
+      const { epoch, round } = latestRound[0];
+
       const query = `
-        WITH latest_round AS (
-          SELECT epoch, round
-          FROM bft_round_state
-          ORDER BY epoch DESC, round DESC
-          LIMIT 1
-        )
         SELECT
           v.validator_id,
           v.validator_name,
@@ -124,7 +161,7 @@ export class ConsensusController {
           AND v.validator_id NOT IN (
             SELECT author
             FROM bft_votes
-            WHERE (epoch, round) = (SELECT epoch, round FROM latest_round)
+            WHERE epoch = ${epoch} AND round = ${round}
           )
         ORDER BY v.stake DESC
       `;
@@ -152,27 +189,41 @@ export class ConsensusController {
    * GET /api/consensus/summary
    * Get consensus summary statistics for the latest round
    */
-  async getSummary(req: Request, res: Response): Promise<void> {
+  async getSummary(_req: Request, res: Response): Promise<void> {
     try {
+      // First check if we have any round data
+      const latestRoundQuery = `
+        SELECT
+          epoch,
+          round,
+          stake_ratio,
+          current_stake,
+          total_stake,
+          ts
+        FROM bft_round_state
+        ORDER BY epoch DESC, round DESC
+        LIMIT 1
+      `;
+
+      const latestRound = await this.clickhouseClient.executeRawQuery(latestRoundQuery);
+
+      if (!latestRound || latestRound.length === 0) {
+        res.json({
+          success: true,
+          data: null,
+          message: 'No consensus data available'
+        });
+        return;
+      }
+
+      const latest = latestRound[0];
+
       const query = `
-        WITH latest_round AS (
+        WITH vote_stats AS (
           SELECT
-            epoch,
-            round,
-            stake_ratio,
-            current_stake,
-            total_stake,
-            ts
-          FROM bft_round_state
-          ORDER BY epoch DESC, round DESC
-          LIMIT 1
-        ),
-        vote_stats AS (
-          SELECT
-            COUNT(DISTINCT v.author) AS signed_count
-          FROM bft_votes v
-          CROSS JOIN latest_round l
-          WHERE v.epoch = l.epoch AND v.round = l.round
+            COUNT(DISTINCT author) AS signed_count
+          FROM bft_votes
+          WHERE epoch = ${latest.epoch} AND round = ${latest.round}
         ),
         validator_stats AS (
           SELECT
@@ -181,32 +232,22 @@ export class ConsensusController {
           FROM validator_registry_latest
         )
         SELECT
-          l.epoch,
-          l.round,
-          l.stake_ratio,
-          l.current_stake,
-          l.total_stake,
-          l.ts AS last_update,
+          ${latest.epoch} AS epoch,
+          ${latest.round} AS round,
+          ${latest.stake_ratio} AS stake_ratio,
+          '${latest.current_stake}' AS current_stake,
+          '${latest.total_stake}' AS total_stake,
+          '${latest.ts}' AS last_update,
           v.signed_count,
           vs.total_validators,
           vs.active_validators,
           vs.active_validators - v.signed_count AS missing_count,
           (v.signed_count * 100.0 / vs.active_validators) AS participation_rate
-        FROM latest_round l
-        CROSS JOIN vote_stats v
+        FROM vote_stats v
         CROSS JOIN validator_stats vs
       `;
 
       const result = await this.clickhouseClient.executeRawQuery(query);
-
-      if (!result || result.length === 0) {
-        res.json({
-          success: true,
-          data: null,
-          message: 'No consensus data available'
-        });
-        return;
-      }
 
       res.json({
         success: true,
