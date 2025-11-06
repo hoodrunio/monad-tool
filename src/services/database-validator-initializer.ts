@@ -227,18 +227,13 @@ export class DatabaseValidatorInitializer {
       return true;
     }
 
-    // Check completion rate - we want at least 60% of validators to have location data
-    // Lowered from 80% to be more realistic - some validators may not have DNS addresses
+    // Location and provider data are optional - log stats but don't fail initialization
     if (stats.completionRate < 60) {
-      logger.info(`❌ Only ${stats.completionRate.toFixed(1)}% of validators have location data - initialization required`);
-      return true;
+      logger.info(`⚠️ Only ${stats.completionRate.toFixed(1)}% of validators have location data (${stats.validatorsWithLocation}/${stats.totalValidators}) - this is optional and won't block startup`);
     }
 
-    // CRITICAL: Check provider data quality - we want at least 20% of validators to have real provider data
-    // TODO: Investigate why provider completion is low and potentially improve fallback logic
     if (stats.providerCompletionRate < 20) {
-      logger.info(`❌ Only ${stats.providerCompletionRate.toFixed(1)}% of validators have provider data (${stats.validatorsWithProvider}/${stats.totalValidators}) - initialization required`);
-      return true;
+      logger.info(`⚠️ Only ${stats.providerCompletionRate.toFixed(1)}% of validators have provider data (${stats.validatorsWithProvider}/${stats.totalValidators}) - this is optional and won't block startup`);
     }
 
     // Check if data is too old (more than 24 hours)
@@ -262,9 +257,9 @@ export class DatabaseValidatorInitializer {
     // Verify location processing worked
     const locationStats = this.validatorService.getStats();
     logger.info(`✅ Location processing complete: ${locationStats.validatorsWithLocation}/${locationStats.totalValidators} validators have location data`);
-    
+
     if (locationStats.validatorsWithLocation === 0) {
-      throw new Error('CRITICAL: Location processing failed - no validators have location data');
+      logger.warn('⚠️ No validators have location data - this is optional and will not block initialization');
     }
 
     // Get all validators from the service (now with proper location data)
@@ -298,14 +293,11 @@ export class DatabaseValidatorInitializer {
 
     if (validatorsWithoutLocation.length > 0) {
       logger.warn(`⚠️ Validators without location data (${validatorsWithoutLocation.length}):`, validatorsWithoutLocation.slice(0, 10));
+      logger.info('ℹ️ Location data is optional - validators without location data will still be processed');
     }
 
-    // Lowered threshold from 80% to 60% - some validators may not have DNS addresses in the TOML file
-    // or their geolocation lookups may fail due to rate limits or network issues
-    const requiredCompletionRate = 0.6;
-    if (validatorsWithLocation < allValidators.length * requiredCompletionRate) {
-      throw new Error(`CRITICAL: Only ${validatorsWithLocation}/${allValidators.length} validators have location data - expected at least ${requiredCompletionRate * 100}%`);
-    }
+    // Location data is optional - no longer enforcing a minimum threshold
+    // Validators without location data will have 'unknown' as their location/provider
 
     // Batch process validators for database insertion
     const batchSize = 50;
@@ -573,13 +565,14 @@ export class DatabaseValidatorInitializer {
     if (stats.totalValidators === 0) {
       issues.push('No validators found in database');
     }
-    
+
+    // Location and provider data are optional - just log warnings, don't mark as unhealthy
     if (stats.completionRate < 80) {
-      issues.push(`Low location completion rate: ${stats.completionRate.toFixed(1)}%`);
+      logger.info(`ℹ️ Location completion rate is ${stats.completionRate.toFixed(1)}% - this is informational only`);
     }
-    
+
     if (stats.providerCompletionRate < 20) {
-      issues.push(`Low provider completion rate: ${stats.providerCompletionRate.toFixed(1)}%`);
+      logger.info(`ℹ️ Provider completion rate is ${stats.providerCompletionRate.toFixed(1)}% - this is informational only`);
     }
     
     if (stats.lastUpdated && (Date.now() - stats.lastUpdated.getTime()) > 24 * 60 * 60 * 1000) {
