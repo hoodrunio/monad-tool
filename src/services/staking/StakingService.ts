@@ -835,7 +835,9 @@ export class StakingService {
         let stakeBigInt = this.stakingInfo?.validatorStakes.get(validatorId) ?? null;
         let validatorInfo: StakingValidator | null = null;
 
-        const needsValidatorInfo = stakeBigInt === null || !baseRow.auth_address;
+        // Always fetch validator info to ensure commission data is up to date
+        // Commission rates can change via governance, so we need to fetch them on every update
+        const needsValidatorInfo = true;
 
         if (needsValidatorInfo) {
           try {
