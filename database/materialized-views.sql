@@ -28,10 +28,10 @@ SELECT
     
     -- Combined uptime score (will be calculated in final aggregation)
     0 as uptime_score,
-    
+
     -- Infrastructure metadata from validator_registry
-    any(vr.provider) as provider,
-    any(vr.location) as location
+    COALESCE(any(vr.provider), 'unknown') as provider,
+    COALESCE(any(vr.location), 'unknown') as location
 
 FROM block_proposals bp
 LEFT JOIN validator_registry_latest vr ON bp.validator_id = vr.validator_id
@@ -59,10 +59,10 @@ SELECT
     
     -- Combined uptime score (will be calculated in final aggregation)
     0 as uptime_score,
-    
+
     -- Infrastructure metadata from validator_registry
-    any(vr.provider) as provider,
-    any(vr.location) as location
+    COALESCE(any(vr.provider), 'unknown') as provider,
+    COALESCE(any(vr.location), 'unknown') as location
 
 FROM qc_participation qc
 LEFT JOIN validator_registry_latest vr ON qc.validator_id = vr.validator_id
