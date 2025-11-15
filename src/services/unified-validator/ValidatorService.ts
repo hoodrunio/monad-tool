@@ -277,13 +277,13 @@ export class ValidatorService {
     if (this.clickhouseClient) {
       try {
         const query = `
-          SELECT 
+          SELECT
             location,
             COUNT(*) as validator_count
-          FROM validator_registry 
-          WHERE is_active = 1
-            AND location IS NOT NULL 
-            AND location != '' 
+          FROM validator_registry_latest
+          WHERE is_staking_active = 1
+            AND location IS NOT NULL
+            AND location != ''
             AND location != 'unknown'
           GROUP BY location
         `;
@@ -312,13 +312,13 @@ export class ValidatorService {
     if (this.clickhouseClient) {
       try {
         const query = `
-          SELECT 
+          SELECT
             provider,
             COUNT(*) as validator_count
-          FROM validator_registry 
-          WHERE is_active = 1
-            AND provider IS NOT NULL 
-            AND provider != '' 
+          FROM validator_registry_latest
+          WHERE is_staking_active = 1
+            AND provider IS NOT NULL
+            AND provider != ''
             AND provider != 'unknown'
           GROUP BY provider
         `;
