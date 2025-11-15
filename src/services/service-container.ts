@@ -98,6 +98,11 @@ export class ServiceContainer {
     // Initialize database validator with ClickHouse client only
     this._databaseValidator = new DatabaseValidatorInitializer(this._clickhouseClient);
 
+    // Sync location data to database after processing
+    logger.info('🔄 Syncing location data to database...');
+    await this._databaseValidator.syncLocationDataToDatabase();
+    logger.info('✅ Location data synced to database');
+
     // Initialize staking update service
     const rpcUrl = process.env.MONAD_RPC_URL || 'http://localhost:8080';
     const stakingConfig: StakingUpdateConfig = {

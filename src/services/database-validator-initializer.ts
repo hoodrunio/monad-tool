@@ -850,4 +850,128 @@ export class DatabaseValidatorInitializer {
 
     return fallbackStake;
   }
+
+  /**
+   * Sync location data from ValidatorService to database
+   * This is called after location processing to ensure all geo data is persisted
+   */
+  async syncLocationDataToDatabase(): Promise<void> {
+    logger.info('🔄 Syncing location data from ValidatorService to database...');
+
+    try {
+      // Get all validators with their location data from ValidatorService
+      const allValidators = await this.validatorService.getAllValidators();
+
+      if (allValidators.length === 0) {
+        logger.warn('⚠️ No validators found in ValidatorService');
+        return;
+      }
+
+      logger.info(`📋 Found ${allValidators.length} validators to sync`);
+
+      // Filter validators that have location data
+      const validatorsWithLocation = allValidators.filter(v => v.location);
+      logger.info(`🌍 ${validatorsWithLocation.length} validators have location data`);
+
+      if (validatorsWithLocation.length === 0) {
+        logger.warn('⚠️ No validators with location data to sync');
+        return;
+      }
+
+      // Get all existing validator records from database
+      const validatorIds = validatorsWithLocation
+        .map(v => this.getValidatorPrimaryId(v))
+        .filter((id): id is string => Boolean(id));
+
+      const existingRows = await this.fetchExistingRegistryRows(validatorIds);
+
+      // Prepare batch updates
+      const updates: string[] = [];
+      const now = new Date();
+      const nowFormatted = this.formatTimestamp(now);
+
+      for (const validator of validatorsWithLocation) {
+        const validatorId = this.getValidatorPrimaryId(validator);
+        if (!validatorId) continue;
+
+        const existing = existingRows.get(validatorId);
+        if (!existing) {
+          logger.debug(`Skipping ${validatorId} - not found in database`);
+          continue;
+        }
+
+        const location = validator.location as ValidatorLocation;
+
+        // Build UPDATE query for this validator
+        const locationString = this.buildLocationString(location);
+
+        const updateQuery = `
+          INSERT INTO validator_registry
+          (validator_id, node_id, precompile_validator_id, epoch, stake, position, is_active, is_staking_active,
+           real_time_stake_wei, dns_address, dns_host, dns_port,
+           validator_name, validator_website, validator_logo_url, validator_description, validator_x_handle,
+           provider, location, country, datacenter, keybase_id, keybase_logo_url, auth_address,
+           commission, consensus_commission, snapshot_commission,
+           first_seen, last_updated)
+          SELECT
+            validator_id,
+            node_id,
+            precompile_validator_id,
+            epoch,
+            stake,
+            position,
+            is_active,
+            is_staking_active,
+            real_time_stake_wei,
+            '${this.escapeString(location.dnsAddress || existing.dns_address)}',
+            '${this.escapeString(location.hostname || existing.dns_host)}',
+            ${location.port || existing.dns_port || 8000},
+            validator_name,
+            validator_website,
+            validator_logo_url,
+            validator_description,
+            validator_x_handle,
+            '${this.escapeString(location.isp || existing.provider || 'unknown')}',
+            '${this.escapeString(locationString || existing.location || 'unknown')}',
+            '${this.escapeString(location.country || existing.country || 'unknown')}',
+            '${this.escapeString(location.isp || existing.datacenter || 'unknown')}',
+            keybase_id,
+            keybase_logo_url,
+            auth_address,
+            commission,
+            consensus_commission,
+            snapshot_commission,
+            first_seen,
+            '${nowFormatted}'
+          FROM validator_registry
+          WHERE validator_id = '${this.escapeString(validatorId)}'
+          ORDER BY last_updated DESC
+          LIMIT 1
+        `;
+
+        updates.push(updateQuery);
+      }
+
+      // Execute all updates
+      logger.info(`📤 Executing ${updates.length} location updates...`);
+
+      for (let i = 0; i < updates.length; i++) {
+        await this.clickhouseClient.executeCommand(updates[i]);
+
+        if ((i + 1) % 50 === 0) {
+          logger.debug(`Progress: ${i + 1}/${updates.length} updates completed`);
+        }
+      }
+
+      // Rebuild latest snapshot
+      logger.info('🔄 Rebuilding validator_registry_latest snapshot...');
+      await this.clickhouseClient.rebuildValidatorRegistryLatest();
+
+      logger.info(`✅ Location data sync complete: ${updates.length} validators updated`);
+
+    } catch (error) {
+      logger.error('❌ Failed to sync location data to database:', error);
+      throw error;
+    }
+  }
 }
