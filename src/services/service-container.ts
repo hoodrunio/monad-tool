@@ -16,6 +16,8 @@ import { StakingUpdateService, StakingUpdateConfig } from './staking/StakingUpda
 import { ValidatorInfoUpdateService } from './ValidatorInfoUpdateService';
 import { ValidatorInfoRegistry, ValidatorNetwork } from './ValidatorInfoRegistry';
 import { MigrationRunner } from '../database/migration-runner';
+import { IpcPollingService } from './ipc/IpcPollingService.js';
+import { IpcLocationMapper } from './validator-location/mappers/IpcLocationMapper.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -36,7 +38,8 @@ export class ServiceContainer {
   private _providerCacheService: ProviderPerformanceCacheService | null = null;
   private _stakingUpdateService: StakingUpdateService | null = null;
   private _validatorInfoUpdateService: ValidatorInfoUpdateService | null = null;
-  
+  private _ipcPollingService: IpcPollingService | null = null;
+
   private isInitialized: boolean = false;
   private config: ServiceContainerConfig;
 
@@ -119,6 +122,29 @@ export class ServiceContainer {
         enableFallbackData: true
       }
     );
+
+    // Initialize IPC polling service for hourly validator IP updates
+    const socketPath = process.env.IPC_SOCKET_PATH;
+    if (socketPath) {
+      const pollIntervalMs = parseInt(process.env.IPC_POLL_INTERVAL_MS || '3600000'); // Default: 1 hour
+      const ipcMapper = new IpcLocationMapper(socketPath);
+
+      // Get the ValidatorLocationService from UnifiedLocationService
+      const validatorLocationService = (this._locationService as any).validatorLocationService;
+
+      this._ipcPollingService = new IpcPollingService(
+        ipcMapper,
+        validatorLocationService,
+        this._clickhouseClient,
+        pollIntervalMs
+      );
+
+      // Start IPC polling
+      await this._ipcPollingService.start();
+      logger.info('✅ IPC polling service started successfully');
+    } else {
+      logger.warn('⚠️ IPC_SOCKET_PATH not configured, IPC polling disabled');
+    }
 
     this.isInitialized = true;
     logger.info('✅ ServiceContainer initialized successfully');
@@ -238,6 +264,11 @@ export class ServiceContainer {
       if (this._validatorInfoUpdateService) {
         this._validatorInfoUpdateService.stop();
         this._validatorInfoUpdateService = null;
+      }
+
+      if (this._ipcPollingService) {
+        this._ipcPollingService.stop();
+        this._ipcPollingService = null;
       }
 
       this.isInitialized = false;

@@ -6,25 +6,28 @@ import { IGeolocationService } from '../geolocation/interfaces/IGeolocationServi
 import { IDnsService } from '../dns/interfaces/IDnsService';
 import { ValidatorLocation, ValidatorLocationStats } from '../validator-location/types';
 import { GeolocationData } from '../geolocation/types';
+import { IpcLocationMapper } from '../validator-location/mappers/IpcLocationMapper.js';
 
 /**
  * Unified Location Service
- * 
+ *
  * This service replaces all the old DNS and geolocation functionality:
  * - dns-mapper.ts
- * - enhanced-dns-processor.ts  
+ * - enhanced-dns-processor.ts
  * - network-discovery.ts
  * - dns-cache.ts
  * - dns-parser.ts
- * 
+ *
  * It provides a single, clean interface following SOLID principles
  * and relies solely on the ip-api service for geolocation data.
+ *
+ * Now uses IPC GetPeers to fetch validator IP addresses in real-time.
  */
 export class UnifiedLocationService {
   private readonly validatorLocationService: IValidatorLocationService;
   private readonly geolocationService: IGeolocationService;
   private readonly dnsService: IDnsService;
-  
+
   constructor(
     validatorLocationService?: IValidatorLocationService,
     geolocationService?: IGeolocationService,
@@ -32,8 +35,17 @@ export class UnifiedLocationService {
   ) {
     this.geolocationService = geolocationService || new GeolocationService();
     this.dnsService = dnsService || new DnsService();
+
+    // Use IPC location mapper instead of TOML
+    const socketPath = process.env.IPC_SOCKET_PATH;
+    if (!socketPath) {
+      throw new Error('IPC_SOCKET_PATH environment variable is required');
+    }
+
+    const ipcMapper = new IpcLocationMapper(socketPath);
+
     this.validatorLocationService = validatorLocationService || new ValidatorLocationService(
-      undefined, // Use default TomlLocationMapper
+      ipcMapper,
       this.dnsService,
       this.geolocationService
     );

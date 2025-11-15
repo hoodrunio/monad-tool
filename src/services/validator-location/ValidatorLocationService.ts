@@ -2,14 +2,13 @@ import { IValidatorLocationService } from './interfaces/IValidatorLocationServic
 import { ILocationMapper } from './interfaces/ILocationMapper';
 import { IDnsService } from '../dns/interfaces/IDnsService';
 import { IGeolocationService } from '../geolocation/interfaces/IGeolocationService';
-import { 
-  ValidatorLocation, 
-  ValidatorLocationStats, 
-  LocationProcessResult, 
+import {
+  ValidatorLocation,
+  ValidatorLocationStats,
+  LocationProcessResult,
   ValidatorLocationServiceConfig,
-  ValidatorMapping 
+  ValidatorMapping
 } from './types';
-import { TomlLocationMapper } from './mappers/TomlLocationMapper';
 import { DnsService } from '../dns/DnsService';
 import { GeolocationService } from '../geolocation/GeolocationService';
 import { DomainExtractor } from '../dns/DomainExtractor';
@@ -31,13 +30,13 @@ export class ValidatorLocationService implements IValidatorLocationService {
   private totalProcessingTime = 0;
   
   constructor(
-    locationMapper?: ILocationMapper,
+    locationMapper: ILocationMapper,
     dnsService?: IDnsService,
     geolocationService?: IGeolocationService,
     config?: Partial<ValidatorLocationServiceConfig>
   ) {
     this.config = {
-      tomlFilePath: 'validators/node.toml',
+      tomlFilePath: 'validators/node.toml', // Kept for backward compatibility but not used
       enableCaching: true,
       batchSize: 50,
       processingDelay: 1500,
@@ -45,8 +44,12 @@ export class ValidatorLocationService implements IValidatorLocationService {
       maxRetries: 2,
       ...config
     };
-    
-    this.locationMapper = locationMapper || new TomlLocationMapper(this.config.tomlFilePath);
+
+    if (!locationMapper) {
+      throw new Error('locationMapper is required - must provide IpcLocationMapper');
+    }
+
+    this.locationMapper = locationMapper;
     this.dnsService = dnsService || new DnsService();
     this.geolocationService = geolocationService || new GeolocationService();
     this.domainExtractor = new DomainExtractor();
@@ -56,13 +59,13 @@ export class ValidatorLocationService implements IValidatorLocationService {
     if (this.isInitialized) {
       return;
     }
-    
+
     console.log('🔧 Initializing Validator Location Service...');
-    
+
     try {
-      // Load validator mappings from TOML
+      // Load validator mappings from IPC
       await this.locationMapper.loadMappings();
-      
+
       console.log('✅ Validator Location Service initialized successfully');
       this.isInitialized = true;
     } catch (error) {
@@ -296,14 +299,45 @@ export class ValidatorLocationService implements IValidatorLocationService {
   
   async refreshValidatorLocation(nodeId: string): Promise<ValidatorLocation | null> {
     const normalizedId = this.normalizeNodeId(nodeId);
-    
+
     // Remove from cache to force refresh
     this.validatorLocations.delete(normalizedId);
-    
+
     // Get fresh location data
     return await this.getValidatorLocation(normalizedId);
   }
-  
+
+  /**
+   * Refresh location data for multiple validators (used during IPC polling)
+   * Returns updated ValidatorLocation objects
+   */
+  async refreshValidatorLocations(nodeIds: string[]): Promise<LocationProcessResult[]> {
+    console.log(`🔄 Refreshing location data for ${nodeIds.length} validators...`);
+
+    // Get current mappings for these validators
+    const mappings: ValidatorMapping[] = [];
+    for (const nodeId of nodeIds) {
+      const mapping = this.locationMapper.getMapping(nodeId);
+      if (mapping) {
+        // Clear from cache to force refresh
+        this.validatorLocations.delete(this.normalizeNodeId(nodeId));
+        mappings.push(mapping);
+      }
+    }
+
+    if (mappings.length === 0) {
+      console.log('⚠️ No mappings found for provided nodeIds');
+      return [];
+    }
+
+    // Process locations using batch API
+    const results = await this.processValidatorLocationsBatch(mappings);
+
+    console.log(`✅ Refreshed ${results.filter(r => r.success).length}/${results.length} validator locations`);
+
+    return results;
+  }
+
   getStats(): ValidatorLocationStats {
     const totalValidators = this.locationMapper.getAllMappings().length;
     const validatorsWithLocation = this.validatorLocations.size;
