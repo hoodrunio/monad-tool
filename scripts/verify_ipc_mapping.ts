@@ -56,20 +56,25 @@ async function getDbNodeIds(): Promise<Set<string>> {
     username: process.env.CLICKHOUSE_USERNAME || 'default',
     password: process.env.CLICKHOUSE_PASSWORD || '',
     database: process.env.CLICKHOUSE_DATABASE || 'monad_analytics',
-    maxConnections: 10,
-    queryTimeout: 30000,
+    max_open_connections: 10,
+    max_query_timeout: 30000,
     compression: true
   });
 
   console.log(`🗄️  Connecting to ClickHouse...`);
 
   const query = `SELECT DISTINCT node_id FROM validator_registry WHERE node_id != ''`;
-  const result = await clickhouseClient.query(query);
+  const resultSet = await clickhouseClient.getClient().query({
+    query,
+    format: 'JSONEachRow'
+  });
 
-  console.log(`✅ Retrieved ${result.length} unique node_ids from database`);
+  const rows = await resultSet.json<Array<{ node_id: string }>>();
+
+  console.log(`✅ Retrieved ${rows.length} unique node_ids from database`);
 
   const nodeIds = new Set<string>();
-  for (const row of result) {
+  for (const row of rows) {
     const normalized = normalizeNodeId(row.node_id);
     nodeIds.add(normalized);
   }
