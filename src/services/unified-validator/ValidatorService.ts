@@ -106,7 +106,7 @@ export class ValidatorService {
           node_id,
           auth_address,
           stake,
-          cert_pubkey,
+          position,
           is_active
         FROM validator_registry_latest
         WHERE node_id = '${normalizedId}'
@@ -119,8 +119,8 @@ export class ValidatorService {
         validator = {
           node_id: dbValidator.node_id,
           stake: parseFloat(dbValidator.stake || '0'),
-          cert_pubkey: dbValidator.cert_pubkey,
-          position: -1 // Position not available from DB
+          cert_pubkey: '', // Not needed, using empty string
+          position: parseInt(dbValidator.position || '-1')
         };
       }
     }
