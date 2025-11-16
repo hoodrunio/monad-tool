@@ -852,55 +852,48 @@ export class DatabaseValidatorInitializer {
   }
 
   /**
-   * Sync location data from ValidatorService to database
+   * Sync location data from LocationService to database
    * This is called after location processing to ensure all geo data is persisted
    */
   async syncLocationDataToDatabase(): Promise<void> {
-    logger.info('🔄 Syncing location data from ValidatorService to database...');
+    logger.info('🔄 Syncing location data from LocationService to database...');
 
     try {
-      // Get all validators with their location data from ValidatorService
-      const allValidators = await this.validatorService.getAllValidators();
+      // Get LocationService from ServiceContainer
+      const serviceContainer = ServiceContainer.getInstance();
+      const locationService = serviceContainer.getLocationService();
 
-      if (allValidators.length === 0) {
-        logger.warn('⚠️ No validators found in ValidatorService');
+      // Get all validator locations directly from LocationService
+      const allLocations = await locationService.getAllValidatorLocations();
+
+      if (allLocations.length === 0) {
+        logger.warn('⚠️ No validator locations found in LocationService');
         return;
       }
 
-      logger.info(`📋 Found ${allValidators.length} validators to sync`);
+      logger.info(`📋 Found ${allLocations.length} validator locations to sync`);
 
-      // Filter validators that have location data
-      const validatorsWithLocation = allValidators.filter(v => v.location);
-      logger.info(`🌍 ${validatorsWithLocation.length} validators have location data`);
-
-      if (validatorsWithLocation.length === 0) {
-        logger.warn('⚠️ No validators with location data to sync');
-        return;
-      }
-
-      // Get all existing validator records from database
-      const validatorIds = validatorsWithLocation
-        .map(v => this.getValidatorPrimaryId(v))
-        .filter((id): id is string => Boolean(id));
-
-      const existingRows = await this.fetchExistingRegistryRows(validatorIds);
+      // Get all existing validator records from database (using node_id)
+      const nodeIds = allLocations.map(loc => loc.nodeId);
+      const existingRows = await this.fetchExistingRegistryRows(nodeIds);
 
       // Prepare batch updates
       const updates: string[] = [];
       const now = new Date();
       const nowFormatted = this.formatTimestamp(now);
 
-      for (const validator of validatorsWithLocation) {
-        const validatorId = this.getValidatorPrimaryId(validator);
-        if (!validatorId) continue;
+      let skippedCount = 0;
+      let updatedCount = 0;
 
-        const existing = existingRows.get(validatorId);
+      for (const location of allLocations) {
+        const nodeId = location.nodeId;
+        if (!nodeId) continue;
+
+        const existing = existingRows.get(nodeId);
         if (!existing) {
-          logger.debug(`Skipping ${validatorId} - not found in database`);
+          skippedCount++;
           continue;
         }
-
-        const location = validator.location as ValidatorLocation;
 
         // Build UPDATE query for this validator
         const locationString = this.buildLocationString(location);
@@ -923,18 +916,18 @@ export class DatabaseValidatorInitializer {
             is_active,
             is_staking_active,
             real_time_stake_wei,
-            '${this.escapeString(location.dnsAddress || existing.dns_address)}',
-            '${this.escapeString(location.hostname || existing.dns_host)}',
-            ${location.port || existing.dns_port || 8000},
+            '${this.escapeString(location.dnsAddress || '')}',
+            '${this.escapeString(location.hostname || '')}',
+            ${location.port || 8000},
             validator_name,
             validator_website,
             validator_logo_url,
             validator_description,
             validator_x_handle,
-            '${this.escapeString(location.isp || existing.provider || 'unknown')}',
-            '${this.escapeString(locationString || existing.location || 'unknown')}',
-            '${this.escapeString(location.country || existing.country || 'unknown')}',
-            '${this.escapeString(location.isp || existing.datacenter || 'unknown')}',
+            '${this.escapeString(location.isp || 'unknown')}',
+            '${this.escapeString(locationString || 'unknown')}',
+            '${this.escapeString(location.country || 'unknown')}',
+            '${this.escapeString(location.isp || 'unknown')}',
             keybase_id,
             keybase_logo_url,
             auth_address,
@@ -944,16 +937,17 @@ export class DatabaseValidatorInitializer {
             first_seen,
             '${nowFormatted}'
           FROM validator_registry
-          WHERE validator_id = '${this.escapeString(validatorId)}'
+          WHERE node_id = '${this.escapeString(nodeId)}'
           ORDER BY last_updated DESC
           LIMIT 1
         `;
 
         updates.push(updateQuery);
+        updatedCount++;
       }
 
       // Execute all updates
-      logger.info(`📤 Executing ${updates.length} location updates...`);
+      logger.info(`📤 Executing ${updatedCount} location updates (${skippedCount} skipped - not in DB)...`);
 
       for (let i = 0; i < updates.length; i++) {
         await this.clickhouseClient.executeCommand(updates[i]);

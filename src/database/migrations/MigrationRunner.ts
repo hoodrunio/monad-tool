@@ -8,10 +8,12 @@
 import { ClickHouseClient } from '@clickhouse/client';
 import { Migration } from './Migration';
 import { AddIsStakingActiveMigration } from './20251025_add_is_staking_active';
+import { RebuildValidatorRegistryLatestMigration } from './20251116_rebuild_validator_registry_latest';
 
 export class MigrationRunner {
   private migrations: Migration[] = [
     new AddIsStakingActiveMigration(),
+    new RebuildValidatorRegistryLatestMigration(),
     // Add new migrations here
   ];
 

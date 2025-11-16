@@ -361,23 +361,42 @@ export class MonadClickHouseClient {
 
       `CREATE TABLE IF NOT EXISTS validator_registry_latest (
         validator_id String,
-        auth_address String,
-        validator_name LowCardinality(String),
-        provider LowCardinality(String),
-        location LowCardinality(String),
-        country LowCardinality(String),
-        datacenter LowCardinality(String),
+        node_id String,
+        auth_address String DEFAULT '',
+        epoch UInt32,
+        precompile_validator_id String DEFAULT '',
+
         stake UInt64,
-        real_time_stake_wei String,
-        commission String,
-        consensus_commission String,
-        snapshot_commission String,
-        is_staking_active UInt8,
-        keybase_id LowCardinality(String),
-        keybase_logo_url String,
-        last_updated DateTime64(3, 'UTC')
+        position UInt16,
+        is_active UInt8 DEFAULT 1,
+        is_staking_active UInt8 DEFAULT 0,
+        real_time_stake_wei String DEFAULT '0',
+        commission String DEFAULT '0',
+        consensus_commission String DEFAULT '0',
+        snapshot_commission String DEFAULT '0',
+
+        dns_address String DEFAULT '',
+        dns_host String DEFAULT '',
+        dns_port UInt16 DEFAULT 8000,
+
+        validator_name LowCardinality(String) DEFAULT 'unknown',
+        validator_website String DEFAULT '',
+        validator_logo_url String DEFAULT '',
+        validator_description String DEFAULT '',
+        validator_x_handle String DEFAULT '',
+
+        keybase_id LowCardinality(String) DEFAULT '',
+        keybase_logo_url String DEFAULT '',
+
+        provider LowCardinality(String) DEFAULT 'unknown',
+        location LowCardinality(String) DEFAULT 'unknown',
+        country LowCardinality(String) DEFAULT 'unknown',
+        datacenter LowCardinality(String) DEFAULT 'unknown',
+
+        first_seen DateTime64(3, 'UTC') DEFAULT now(),
+        last_updated DateTime64(3, 'UTC') DEFAULT now()
       ) ENGINE = ReplacingMergeTree(last_updated)
-      ORDER BY validator_id
+      ORDER BY (node_id, validator_id)
       SETTINGS index_granularity = 8192`,
 
       `CREATE MATERIALIZED VIEW IF NOT EXISTS validator_registry_latest_mv
@@ -385,44 +404,70 @@ export class MonadClickHouseClient {
       AS
       SELECT
         validator_id,
+        node_id,
         tupleElement(latest_record, 1) AS auth_address,
-        tupleElement(latest_record, 2) AS validator_name,
-        tupleElement(latest_record, 3) AS provider,
-        tupleElement(latest_record, 4) AS location,
-        tupleElement(latest_record, 5) AS country,
-        tupleElement(latest_record, 6) AS datacenter,
-        tupleElement(latest_record, 7) AS stake,
+        tupleElement(latest_record, 2) AS epoch,
+        tupleElement(latest_record, 3) AS precompile_validator_id,
+        tupleElement(latest_record, 4) AS stake,
+        tupleElement(latest_record, 5) AS position,
+        tupleElement(latest_record, 6) AS is_active,
+        tupleElement(latest_record, 7) AS is_staking_active,
         tupleElement(latest_record, 8) AS real_time_stake_wei,
         tupleElement(latest_record, 9) AS commission,
         tupleElement(latest_record, 10) AS consensus_commission,
         tupleElement(latest_record, 11) AS snapshot_commission,
-        tupleElement(latest_record, 12) AS is_staking_active,
-        tupleElement(latest_record, 13) AS keybase_id,
-        tupleElement(latest_record, 14) AS keybase_logo_url,
-        tupleElement(latest_record, 15) AS last_updated
+        tupleElement(latest_record, 12) AS dns_address,
+        tupleElement(latest_record, 13) AS dns_host,
+        tupleElement(latest_record, 14) AS dns_port,
+        tupleElement(latest_record, 15) AS validator_name,
+        tupleElement(latest_record, 16) AS validator_website,
+        tupleElement(latest_record, 17) AS validator_logo_url,
+        tupleElement(latest_record, 18) AS validator_description,
+        tupleElement(latest_record, 19) AS validator_x_handle,
+        tupleElement(latest_record, 20) AS keybase_id,
+        tupleElement(latest_record, 21) AS keybase_logo_url,
+        tupleElement(latest_record, 22) AS provider,
+        tupleElement(latest_record, 23) AS location,
+        tupleElement(latest_record, 24) AS country,
+        tupleElement(latest_record, 25) AS datacenter,
+        tupleElement(latest_record, 26) AS first_seen,
+        tupleElement(latest_record, 27) AS last_updated
       FROM (
         SELECT
           validator_id,
+          node_id,
           argMax((
             auth_address,
-            validator_name,
-            provider,
-            location,
-            country,
-            datacenter,
+            epoch,
+            precompile_validator_id,
             stake,
+            position,
+            is_active,
+            is_staking_active,
             real_time_stake_wei,
             commission,
             consensus_commission,
             snapshot_commission,
-            is_staking_active,
+            dns_address,
+            dns_host,
+            dns_port,
+            validator_name,
+            validator_website,
+            validator_logo_url,
+            validator_description,
+            validator_x_handle,
             keybase_id,
             keybase_logo_url,
+            provider,
+            location,
+            country,
+            datacenter,
+            first_seen,
             last_updated
           ), last_updated) AS latest_record
         FROM validator_registry
         WHERE is_active = 1
-        GROUP BY validator_id
+        GROUP BY validator_id, node_id
       )`,
 
       // =============================================
