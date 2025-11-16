@@ -382,51 +382,12 @@ export class DNSAnalyticsController {
         return;
       }
 
-      // Try to get from cache first
-      let validator = await this.validatorService.getValidator(validatorId);
+      const validator = await this.validatorService.getValidator(validatorId);
 
-      // If not in cache, fallback to database
       if (!validator) {
-        const query = `
-          SELECT
-            validator_id,
-            node_id,
-            dns_address,
-            dns_host,
-            dns_port,
-            country,
-            provider,
-            location,
-            last_updated
-          FROM validator_registry_latest
-          WHERE node_id = '${validatorId}'
-          LIMIT 1
-        `;
-
-        const result = await this.clickhouseClient.executeRawQuery(query);
-
-        if (!result || result.length === 0) {
-          res.status(404).json({
-            success: false,
-            error: 'Validator infrastructure not found'
-          });
-          return;
-        }
-
-        const dbValidator = result[0];
-
-        res.json({
-          success: true,
-          data: {
-            validatorId: dbValidator.node_id,
-            dnsAddress: dbValidator.dns_address || '',
-            dnsHost: dbValidator.dns_host || '',
-            dnsPort: dbValidator.dns_port || 8000,
-            country: dbValidator.country || 'unknown',
-            provider: dbValidator.provider || 'unknown',
-            location: dbValidator.location || 'unknown',
-            lastUpdated: dbValidator.last_updated
-          }
+        res.status(404).json({
+          success: false,
+          error: 'Validator infrastructure not found'
         });
         return;
       }

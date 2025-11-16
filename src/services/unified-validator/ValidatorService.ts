@@ -91,10 +91,40 @@ export class ValidatorService {
 
   /**
    * Get complete validator information (registry + location)
+   * Falls back to database if not found in memory
    */
   async getValidator(nodeId: string, epoch?: number): Promise<CompleteValidator | null> {
-    // Get core validator data
-    const validator = this.validatorRegistry.getValidatorById(nodeId, epoch);
+    // Get core validator data from in-memory registry
+    let validator = this.validatorRegistry.getValidatorById(nodeId, epoch);
+
+    // If not found in memory and we have database client, try database
+    if (!validator && this.clickhouseClient) {
+      const normalizedId = nodeId.toLowerCase().replace(/^0x/, '');
+      const query = `
+        SELECT
+          validator_id,
+          node_id,
+          auth_address,
+          stake,
+          cert_pubkey,
+          is_active
+        FROM validator_registry_latest
+        WHERE node_id = '${normalizedId}'
+        LIMIT 1
+      `;
+
+      const result = await this.clickhouseClient.executeRawQuery(query);
+      if (result && result.length > 0) {
+        const dbValidator = result[0];
+        validator = {
+          node_id: dbValidator.node_id,
+          stake: parseFloat(dbValidator.stake || '0'),
+          cert_pubkey: dbValidator.cert_pubkey,
+          position: -1 // Position not available from DB
+        };
+      }
+    }
+
     if (!validator) {
       return null;
     }
