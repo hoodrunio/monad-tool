@@ -373,7 +373,7 @@ export class DNSAnalyticsController {
   async getValidatorInfrastructure(req: Request, res: Response): Promise<void> {
     try {
       const { validatorId } = req.params;
-      
+
       if (!validatorId) {
         res.status(400).json({
           success: false,
@@ -382,9 +382,35 @@ export class DNSAnalyticsController {
         return;
       }
 
-      const validator = await this.validatorService.getValidator(validatorId);
-      
-      if (!validator) {
+      // Validate node_id format (hex string)
+      if (!/^[a-fA-F0-9]{66}$/.test(validatorId)) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid validator ID format'
+        });
+        return;
+      }
+
+      // Query database directly instead of relying on in-memory cache
+      const query = `
+        SELECT
+          validator_id,
+          node_id,
+          dns_address,
+          dns_host,
+          dns_port,
+          country,
+          provider,
+          location,
+          last_updated
+        FROM validator_registry_latest
+        WHERE node_id = '${validatorId}'
+        LIMIT 1
+      `;
+
+      const result = await this.clickhouseClient.executeRawQuery(query);
+
+      if (!result || result.length === 0) {
         res.status(404).json({
           success: false,
           error: 'Validator infrastructure not found'
@@ -392,14 +418,19 @@ export class DNSAnalyticsController {
         return;
       }
 
+      const validator = result[0];
+
       res.json({
         success: true,
         data: {
-          validatorId: validator.nodeId,
-          stake: validator.stake,
-          position: validator.position,
-          location: validator.location,
-          lastUpdated: validator.lastUpdated
+          validatorId: validator.node_id,
+          dnsAddress: validator.dns_address || '',
+          dnsHost: validator.dns_host || '',
+          dnsPort: validator.dns_port || 8000,
+          country: validator.country || 'unknown',
+          provider: validator.provider || 'unknown',
+          location: validator.location || 'unknown',
+          lastUpdated: validator.last_updated
         }
       });
 
