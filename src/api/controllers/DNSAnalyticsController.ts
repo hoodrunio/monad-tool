@@ -382,55 +382,63 @@ export class DNSAnalyticsController {
         return;
       }
 
-      // Validate node_id format (hex string)
-      if (!/^[a-fA-F0-9]{66}$/.test(validatorId)) {
-        res.status(400).json({
-          success: false,
-          error: 'Invalid validator ID format'
+      // Try to get from cache first
+      let validator = await this.validatorService.getValidator(validatorId);
+
+      // If not in cache, fallback to database
+      if (!validator) {
+        const query = `
+          SELECT
+            validator_id,
+            node_id,
+            dns_address,
+            dns_host,
+            dns_port,
+            country,
+            provider,
+            location,
+            last_updated
+          FROM validator_registry_latest
+          WHERE node_id = '${validatorId}'
+          LIMIT 1
+        `;
+
+        const result = await this.clickhouseClient.executeRawQuery(query);
+
+        if (!result || result.length === 0) {
+          res.status(404).json({
+            success: false,
+            error: 'Validator infrastructure not found'
+          });
+          return;
+        }
+
+        const dbValidator = result[0];
+
+        res.json({
+          success: true,
+          data: {
+            validatorId: dbValidator.node_id,
+            dnsAddress: dbValidator.dns_address || '',
+            dnsHost: dbValidator.dns_host || '',
+            dnsPort: dbValidator.dns_port || 8000,
+            country: dbValidator.country || 'unknown',
+            provider: dbValidator.provider || 'unknown',
+            location: dbValidator.location || 'unknown',
+            lastUpdated: dbValidator.last_updated
+          }
         });
         return;
       }
-
-      // Query database directly instead of relying on in-memory cache
-      const query = `
-        SELECT
-          validator_id,
-          node_id,
-          dns_address,
-          dns_host,
-          dns_port,
-          country,
-          provider,
-          location,
-          last_updated
-        FROM validator_registry_latest
-        WHERE node_id = '${validatorId}'
-        LIMIT 1
-      `;
-
-      const result = await this.clickhouseClient.executeRawQuery(query);
-
-      if (!result || result.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Validator infrastructure not found'
-        });
-        return;
-      }
-
-      const validator = result[0];
 
       res.json({
         success: true,
         data: {
-          validatorId: validator.node_id,
-          dnsAddress: validator.dns_address || '',
-          dnsHost: validator.dns_host || '',
-          dnsPort: validator.dns_port || 8000,
-          country: validator.country || 'unknown',
-          provider: validator.provider || 'unknown',
-          location: validator.location || 'unknown',
-          lastUpdated: validator.last_updated
+          validatorId: validator.nodeId,
+          stake: validator.stake,
+          position: validator.position,
+          location: validator.location,
+          lastUpdated: validator.lastUpdated
         }
       });
 
