@@ -156,7 +156,7 @@ export class ConsensusController {
           v.location,
           v.stake,
           v.real_time_stake_wei
-        FROM validator_registry_latest FINAL AS v
+        FROM validator_registry_latest AS v FINAL
         WHERE v.is_staking_active = 1
           AND v.validator_id NOT IN (
             SELECT author
