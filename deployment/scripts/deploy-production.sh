@@ -101,7 +101,7 @@ check_requirements() {
     log_info "Configured npm to allow root user execution"
     
     # Check for other required commands
-    local required_commands=("systemctl" "git" "curl" "docker" "docker-compose")
+    local required_commands=("systemctl" "git" "curl" "docker" "docker compose")
     for cmd in "${required_commands[@]}"; do
         if ! command -v "$cmd" &> /dev/null; then
             log_error "Required command '$cmd' not found"
