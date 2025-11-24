@@ -101,13 +101,19 @@ check_requirements() {
     log_info "Configured npm to allow root user execution"
     
     # Check for other required commands
-    local required_commands=("systemctl" "git" "curl" "docker" "docker compose")
+    local required_commands=("systemctl" "git" "curl" "docker")
     for cmd in "${required_commands[@]}"; do
         if ! command -v "$cmd" &> /dev/null; then
             log_error "Required command '$cmd' not found"
             exit 1
         fi
     done
+
+    # Check for docker compose separately (it's a docker subcommand, not a standalone command)
+    if ! docker compose version &> /dev/null; then
+        log_error "Docker Compose is not available. Please install Docker Compose V2"
+        exit 1
+    fi
     
     # Check Node.js version
     local node_version=$("$node_path" --version | sed 's/v//')
