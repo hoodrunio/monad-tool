@@ -6,6 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=monad
+Group=monad
+WorkingDirectory=/opt/monad-analytics
 ExecStart=/usr/bin/node dist/index.js
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
