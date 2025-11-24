@@ -559,7 +559,7 @@ export class DNSAnalyticsController {
       // Get total ACTIVE validators from validator_registry only
       const totalValidatorsQuery = `
         SELECT COUNT(*) as total_validators
-        FROM validator_registry_latest
+        FROM validator_registry_latest FINAL
       `;
 
       // Get validators with location data - only active ones
@@ -568,7 +568,7 @@ export class DNSAnalyticsController {
           COUNT(DISTINCT vr.validator_id) as validators_with_location,
           COUNT(DISTINCT vr.location) as unique_locations,
           COUNT(DISTINCT vr.provider) as unique_providers
-        FROM validator_registry_latest vr
+        FROM validator_registry_latest FINAL vr
         WHERE vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'
           AND vr.provider IS NOT NULL AND vr.provider != '' AND vr.provider != 'unknown'
       `;

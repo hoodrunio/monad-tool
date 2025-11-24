@@ -51,7 +51,7 @@ export class NetworkController {
       // Get total active validators directly from registry
       const activeValidatorsQuery = `
         SELECT COUNT(*) as total_active_validators
-        FROM validator_registry_latest
+        FROM validator_registry_latest FINAL
       `;
 
       // Get block proposal summary - ONLY active validators

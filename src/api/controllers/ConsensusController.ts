@@ -156,7 +156,7 @@ export class ConsensusController {
           v.location,
           v.stake,
           v.real_time_stake_wei
-        FROM validator_registry_latest v
+        FROM validator_registry_latest FINAL v
         WHERE v.is_staking_active = 1
           AND v.validator_id NOT IN (
             SELECT author
@@ -229,7 +229,7 @@ export class ConsensusController {
           SELECT
             COUNT() AS total_validators,
             COUNT(CASE WHEN is_staking_active = 1 THEN 1 END) AS active_validators
-          FROM validator_registry_latest
+          FROM validator_registry_latest FINAL
         )
         SELECT
           ${latest.epoch} AS epoch,

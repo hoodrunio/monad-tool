@@ -2,6 +2,7 @@
 // High-performance database client with connection pooling and query optimization
 
 import { createClient, ClickHouseClient } from '@clickhouse/client';
+import { Mutex } from 'async-mutex';
 import { ConsensusEvent, LedgerEvent, QCParticipationData, ValidatorInfrastructure, BlockProposalEvent, QCParticipationEvent } from '../log-processor/types';
 import { CompleteValidator } from '../services/unified-validator';
 import { logger } from '../utils/logger';
@@ -22,6 +23,7 @@ export class MonadClickHouseClient {
   private client: ClickHouseClient;
   private config: ClickHouseConfig;
   private authAddressColumnEnsured = false;
+  private rebuildMutex = new Mutex();
 
   constructor(config: ClickHouseConfig) {
     this.config = config;
@@ -396,7 +398,7 @@ export class MonadClickHouseClient {
         first_seen DateTime64(3, 'UTC') DEFAULT now(),
         last_updated DateTime64(3, 'UTC') DEFAULT now()
       ) ENGINE = ReplacingMergeTree(last_updated)
-      ORDER BY (node_id, validator_id)
+      ORDER BY (validator_id)
       SETTINGS index_granularity = 8192`,
 
       `CREATE MATERIALIZED VIEW IF NOT EXISTS validator_registry_latest_mv
@@ -1135,42 +1137,60 @@ POPULATE
       WITH ranked_validators AS (
         SELECT
           validator_id,
+          node_id,
           auth_address,
-          validator_name,
-          provider,
-          location,
-          country,
-          datacenter,
+          epoch,
+          precompile_validator_id,
           stake,
+          position,
+          is_active,
+          is_staking_active,
           real_time_stake_wei,
           commission,
           consensus_commission,
           snapshot_commission,
-          is_staking_active,
+          dns_address,
+          dns_host,
+          dns_port,
+          validator_name,
           keybase_id,
           keybase_logo_url,
+          provider,
+          location,
+          country,
+          datacenter,
+          first_seen,
           last_updated,
           ROW_NUMBER() OVER (PARTITION BY validator_id ORDER BY last_updated DESC) AS rn
-        FROM ${database}.validator_registry
+        FROM ${database}.validator_registry FINAL
         WHERE is_active = 1
         ${additionalFilter}
       )
       SELECT
         validator_id,
+        node_id,
         auth_address,
-        validator_name,
-        provider,
-        location,
-        country,
-        datacenter,
+        epoch,
+        precompile_validator_id,
         stake,
+        position,
+        is_active,
+        is_staking_active,
         real_time_stake_wei,
         commission,
         consensus_commission,
         snapshot_commission,
-        is_staking_active,
+        dns_address,
+        dns_host,
+        dns_port,
+        validator_name,
         keybase_id,
         keybase_logo_url,
+        provider,
+        location,
+        country,
+        datacenter,
+        first_seen,
         last_updated
       FROM ranked_validators
       WHERE rn = 1
@@ -1184,54 +1204,66 @@ POPULATE
   }
 
   async rebuildValidatorRegistryLatest(validatorIds?: string[]): Promise<void> {
-    const database = this.getDatabaseName();
+    // Use mutex to prevent race conditions during concurrent rebuilds
+    return this.rebuildMutex.runExclusive(async () => {
+      const database = this.getDatabaseName();
 
-    if (validatorIds && validatorIds.length === 0) {
-      return;
-    }
-
-    const uniqueValidatorIds = validatorIds && validatorIds.length > 0
-      ? Array.from(new Set(validatorIds))
-      : undefined;
-
-    const filter = uniqueValidatorIds && uniqueValidatorIds.length > 0
-      ? `validator_id IN (${this.buildValidatorIdList(uniqueValidatorIds)})`
-      : undefined;
-
-    try {
-      if (!uniqueValidatorIds || uniqueValidatorIds.length === 0) {
-        await this.executeCommand(`TRUNCATE TABLE ${database}.validator_registry_latest`);
-      } else {
-        await this.executeCommand(`ALTER TABLE ${database}.validator_registry_latest DELETE WHERE validator_id IN (${this.buildValidatorIdList(uniqueValidatorIds)}) SETTINGS mutations_sync = 2`);
+      if (validatorIds && validatorIds.length === 0) {
+        return;
       }
 
-      const selectQuery = this.buildValidatorRegistryLatestSelect(filter);
-      const columnList = [
-        'validator_id',
-        'auth_address',
-        'validator_name',
-        'provider',
-        'location',
-        'country',
-        'datacenter',
-        'stake',
-        'real_time_stake_wei',
-        'commission',
-        'consensus_commission',
-        'snapshot_commission',
-        'is_staking_active',
-        'keybase_id',
-        'keybase_logo_url',
-        'last_updated'
-      ].join(', ');
+      const uniqueValidatorIds = validatorIds && validatorIds.length > 0
+        ? Array.from(new Set(validatorIds))
+        : undefined;
 
-      await this.executeCommand(
-        `INSERT INTO ${database}.validator_registry_latest (${columnList}) ${selectQuery}`
-      );
-    } catch (error) {
-      logger.error('Failed to rebuild validator_registry_latest snapshot:', error);
-      throw error;
-    }
+      const filter = uniqueValidatorIds && uniqueValidatorIds.length > 0
+        ? `validator_id IN (${this.buildValidatorIdList(uniqueValidatorIds)})`
+        : undefined;
+
+      try {
+        if (!uniqueValidatorIds || uniqueValidatorIds.length === 0) {
+          await this.executeCommand(`TRUNCATE TABLE ${database}.validator_registry_latest`);
+        } else {
+          await this.executeCommand(`ALTER TABLE ${database}.validator_registry_latest DELETE WHERE validator_id IN (${this.buildValidatorIdList(uniqueValidatorIds)}) SETTINGS mutations_sync = 2`);
+        }
+
+        const selectQuery = this.buildValidatorRegistryLatestSelect(filter);
+        const columnList = [
+          'validator_id',
+          'node_id',
+          'auth_address',
+          'epoch',
+          'precompile_validator_id',
+          'stake',
+          'position',
+          'is_active',
+          'is_staking_active',
+          'real_time_stake_wei',
+          'commission',
+          'consensus_commission',
+          'snapshot_commission',
+          'dns_address',
+          'dns_host',
+          'dns_port',
+          'validator_name',
+          'keybase_id',
+          'keybase_logo_url',
+          'provider',
+          'location',
+          'country',
+          'datacenter',
+          'first_seen',
+          'last_updated'
+        ].join(', ');
+
+        await this.executeCommand(
+          `INSERT INTO ${database}.validator_registry_latest (${columnList}) ${selectQuery}`
+        );
+      } catch (error) {
+        logger.error('Failed to rebuild validator_registry_latest snapshot:', error);
+        throw error;
+      }
+    });
   }
 
   // =============================================

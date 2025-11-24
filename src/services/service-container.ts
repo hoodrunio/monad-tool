@@ -18,6 +18,7 @@ import { ValidatorInfoRegistry, ValidatorNetwork } from './ValidatorInfoRegistry
 import { MigrationRunner } from '../database/migration-runner';
 import { IpcPollingService } from './ipc/IpcPollingService.js';
 import { IpcLocationMapper } from './validator-location/mappers/IpcLocationMapper.js';
+import { TableOptimizerService } from './table-optimizer';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -39,6 +40,7 @@ export class ServiceContainer {
   private _stakingUpdateService: StakingUpdateService | null = null;
   private _validatorInfoUpdateService: ValidatorInfoUpdateService | null = null;
   private _ipcPollingService: IpcPollingService | null = null;
+  private _tableOptimizer: TableOptimizerService | null = null;
 
   private isInitialized: boolean = false;
   private config: ServiceContainerConfig;
@@ -151,6 +153,11 @@ export class ServiceContainer {
       logger.warn('⚠️ IPC_SOCKET_PATH not configured, IPC polling disabled');
     }
 
+    // Initialize and start table optimizer service
+    this._tableOptimizer = new TableOptimizerService(this._clickhouseClient);
+    this._tableOptimizer.start();
+    logger.info('✅ Table optimizer service initialized successfully');
+
     this.isInitialized = true;
     logger.info('✅ ServiceContainer initialized successfully');
   }
@@ -241,6 +248,13 @@ export class ServiceContainer {
   }
 
   /**
+   * Get TableOptimizerService instance
+   */
+  getTableOptimizer(): TableOptimizerService | null {
+    return this._tableOptimizer;
+  }
+
+  /**
    * Cleanup all services
    */
   async shutdown(): Promise<void> {
@@ -274,6 +288,11 @@ export class ServiceContainer {
       if (this._ipcPollingService) {
         this._ipcPollingService.stop();
         this._ipcPollingService = null;
+      }
+
+      if (this._tableOptimizer) {
+        this._tableOptimizer.stop();
+        this._tableOptimizer = null;
       }
 
       this.isInitialized = false;

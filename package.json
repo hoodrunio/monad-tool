@@ -51,6 +51,7 @@
   "license": "MIT",
   "dependencies": {
     "@clickhouse/client": "^0.2.5",
+    "async-mutex": "^0.5.0",
     "axios": "^1.10.0",
     "compression": "^1.7.4",
     "cors": "^2.8.5",

@@ -277,7 +277,7 @@ export class ProviderPerformanceCacheService extends EventEmitter {
           COUNT(DISTINCT validator_id) as validator_count,
           arrayDistinct(groupArray(location)) as regions,
           COUNT(DISTINCT location) as unique_locations
-        FROM validator_registry_latest
+        FROM validator_registry_latest FINAL
         WHERE provider IS NOT NULL 
           AND provider != '' 
           AND provider != 'unknown'

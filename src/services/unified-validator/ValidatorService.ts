@@ -108,7 +108,7 @@ export class ValidatorService {
           stake,
           position,
           is_active
-        FROM validator_registry_latest
+        FROM validator_registry_latest FINAL
         WHERE node_id = '${normalizedId}'
         LIMIT 1
       `;
@@ -310,7 +310,7 @@ export class ValidatorService {
           SELECT
             location,
             COUNT(*) as validator_count
-          FROM validator_registry_latest
+          FROM validator_registry_latest FINAL
           WHERE is_staking_active = 1
             AND location IS NOT NULL
             AND location != ''
@@ -345,7 +345,7 @@ export class ValidatorService {
           SELECT
             provider,
             COUNT(*) as validator_count
-          FROM validator_registry_latest
+          FROM validator_registry_latest FINAL
           WHERE is_staking_active = 1
             AND provider IS NOT NULL
             AND provider != ''

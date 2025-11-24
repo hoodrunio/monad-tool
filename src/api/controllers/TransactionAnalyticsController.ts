@@ -100,7 +100,7 @@ export class TransactionAnalyticsController {
             argMax(provider, last_updated) as provider,
             argMax(location, last_updated) as location,
             argMax(stake, last_updated) as stake
-          FROM validator_registry 
+          FROM validator_registry FINAL
           WHERE validator_id = '${validatorId}' AND is_active = 1
           GROUP BY validator_id
         )
@@ -366,8 +366,8 @@ export class TransactionAnalyticsController {
         FROM block_proposals bp
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
           AND bp.validator_id IN (
-            SELECT DISTINCT validator_id 
-            FROM validator_registry 
+            SELECT DISTINCT validator_id
+            FROM validator_registry FINAL
             WHERE is_active = 1
           )
       `;
@@ -502,8 +502,8 @@ export class TransactionAnalyticsController {
         FROM block_proposals bp
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
           AND bp.validator_id IN (
-            SELECT DISTINCT validator_id 
-            FROM validator_registry 
+            SELECT DISTINCT validator_id
+            FROM validator_registry FINAL
             WHERE is_active = 1
           )
         GROUP BY time_bucket
@@ -639,8 +639,8 @@ export class TransactionAnalyticsController {
         FROM block_proposals bp
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
           AND bp.validator_id IN (
-            SELECT DISTINCT validator_id 
-            FROM validator_registry 
+            SELECT DISTINCT validator_id
+            FROM validator_registry FINAL
             WHERE is_active = 1
           )
       `;
@@ -654,7 +654,7 @@ export class TransactionAnalyticsController {
             argMax(provider, last_updated) as provider,
             argMax(location, last_updated) as location,
             argMax(stake, last_updated) as stake
-          FROM validator_registry 
+          FROM validator_registry FINAL
           WHERE is_active = 1
           GROUP BY validator_id
         )
@@ -677,8 +677,8 @@ export class TransactionAnalyticsController {
         LEFT JOIN latest_validator_info vr ON bp.validator_id = vr.validator_id
         WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
           AND bp.validator_id IN (
-            SELECT DISTINCT validator_id 
-            FROM validator_registry 
+            SELECT DISTINCT validator_id
+            FROM validator_registry FINAL
             WHERE is_active = 1
           )
         GROUP BY bp.validator_id, vr.validator_name, vr.provider, vr.location, vr.stake
@@ -1080,7 +1080,7 @@ export class TransactionAnalyticsController {
           SELECT 
             validator_id,
             argMax(location, last_updated) as location
-          FROM validator_registry 
+          FROM validator_registry FINAL
           WHERE is_active = 1
           GROUP BY validator_id
         )
@@ -1195,7 +1195,7 @@ export class TransactionAnalyticsController {
             validator_id,
             argMax(provider, last_updated) as provider,
             argMax(location, last_updated) as location
-          FROM validator_registry 
+          FROM validator_registry FINAL
           WHERE is_active = 1
           GROUP BY validator_id
         )

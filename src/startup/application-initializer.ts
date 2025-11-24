@@ -125,7 +125,7 @@ export class ApplicationInitializer {
           if (actualCurrentEpoch < 10) {
             try {
               const dbEpochQuery = await clickhouseClient.executeRawQuery(
-                'SELECT MAX(epoch) as max_epoch FROM validator_registry'
+                'SELECT MAX(epoch) as max_epoch FROM validator_registry FINAL'
               );
 
               if (dbEpochQuery && dbEpochQuery.length > 0 && dbEpochQuery[0].max_epoch) {

@@ -746,7 +746,7 @@ export class ValidatorController {
           WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
           GROUP BY qc.validator_id
         )
-      SELECT
+      SELECT DISTINCT
         av.validator_id as validator_id,
         COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
         COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
@@ -915,7 +915,7 @@ export class ValidatorController {
             argMaxIf(snapshot_commission, last_updated, snapshot_commission != ''),
             argMax(snapshot_commission, last_updated)
           ) AS snapshot_commission
-        FROM validator_registry
+        FROM validator_registry FINAL
         GROUP BY validator_id
       ) latest_validators
       ${statusFilter}
