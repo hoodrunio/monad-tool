@@ -94,17 +94,17 @@ export class TransactionAnalyticsController {
       // Get validator transaction metrics with latest registry data
       const metricsQuery = `
         WITH latest_validator_info AS (
-          SELECT 
+          SELECT
             validator_id,
             argMax(validator_name, last_updated) as validator_name,
             argMax(provider, last_updated) as provider,
             argMax(location, last_updated) as location,
             argMax(stake, last_updated) as stake
-          FROM validator_registry 
-          WHERE validator_id = '${validatorId}' AND is_active = 1
+          FROM validator_registry
+          WHERE validator_id = {validatorId} AND is_active = 1
           GROUP BY validator_id
         )
-        SELECT 
+        SELECT
           bp.validator_id,
           COUNT(*) as total_proposals,
           COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as successful_proposals,
@@ -122,12 +122,12 @@ export class TransactionAnalyticsController {
           COALESCE(vr.stake, 0) as stake
         FROM block_proposals bp
         LEFT JOIN latest_validator_info vr ON bp.validator_id = vr.validator_id
-        WHERE bp.validator_id = '${validatorId}'
-          AND bp.timestamp >= now() - INTERVAL ${intervalClause}
+        WHERE bp.validator_id = {validatorId}
+          AND bp.timestamp >= now() - INTERVAL {intervalClause}
         GROUP BY bp.validator_id, vr.validator_name, vr.provider, vr.location, vr.stake
       `;
 
-      const result = await this.clickhouseClient.executeRawQuery(metricsQuery);
+      const result = await this.clickhouseClient.executeQuery(metricsQuery, { validatorId, intervalClause });
       
       if (result.length === 0) {
         res.status(404).json({
@@ -251,9 +251,9 @@ export class TransactionAnalyticsController {
 
       const intervalClause = this.getIntervalClause(timeWindow);
       const timeGrouping = this.getTimeGrouping(granularity);
-      
+
       const trendsQuery = `
-        SELECT 
+        SELECT
           ${timeGrouping} as time_bucket,
           COUNT(*) as total_proposals,
           COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_proposals,
@@ -262,13 +262,13 @@ export class TransactionAnalyticsController {
           MAX(num_tx) as max_transactions_in_block,
           COUNT(CASE WHEN num_tx > 0 THEN 1 END) as blocks_with_transactions
         FROM block_proposals
-        WHERE validator_id = '${validatorId}'
-          AND timestamp >= now() - INTERVAL ${intervalClause}
+        WHERE validator_id = {validatorId}
+          AND timestamp >= now() - INTERVAL {intervalClause}
         GROUP BY time_bucket
         ORDER BY time_bucket
       `;
 
-      const result = await this.clickhouseClient.executeRawQuery(trendsQuery);
+      const result = await this.clickhouseClient.executeQuery(trendsQuery, { validatorId, intervalClause });
       
       const trends = result.map(row => ({
         timestamp: row.time_bucket,
@@ -351,10 +351,10 @@ export class TransactionAnalyticsController {
       }
 
       const intervalClause = this.getIntervalClause(timeWindow);
-      
+
       // Network transaction summary - NO JOIN to avoid duplicates
       const summaryQuery = `
-        SELECT 
+        SELECT
           COUNT(*) as total_proposals,
           COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_blocks,
           SUM(num_tx) as total_transactions,
@@ -364,27 +364,27 @@ export class TransactionAnalyticsController {
           COUNT(DISTINCT validator_id) as active_validators,
           (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_success_rate
         FROM block_proposals bp
-        WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+        WHERE bp.timestamp >= now() - INTERVAL {intervalClause}
           AND bp.validator_id IN (
-            SELECT DISTINCT validator_id 
-            FROM validator_registry 
+            SELECT DISTINCT validator_id
+            FROM validator_registry
             WHERE is_active = 1
           )
       `;
 
       // Peak transaction rate (max transactions in any hour) - NO JOIN to avoid duplicates
       const peakQuery = `
-        SELECT 
+        SELECT
           MAX(hourly_tx) as peak_transaction_rate
         FROM (
-          SELECT 
+          SELECT
             toStartOfHour(timestamp) as hour,
             SUM(num_tx) as hourly_tx
           FROM block_proposals bp
-          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          WHERE bp.timestamp >= now() - INTERVAL {intervalClause}
             AND bp.validator_id IN (
-              SELECT DISTINCT validator_id 
-              FROM validator_registry 
+              SELECT DISTINCT validator_id
+              FROM validator_registry
               WHERE is_active = 1
             )
           GROUP BY hour
@@ -392,8 +392,8 @@ export class TransactionAnalyticsController {
       `;
 
       const [summaryResult, peakResult] = await Promise.all([
-        this.clickhouseClient.executeRawQuery(summaryQuery),
-        this.clickhouseClient.executeRawQuery(peakQuery)
+        this.clickhouseClient.executeQuery(summaryQuery, { intervalClause }),
+        this.clickhouseClient.executeQuery(peakQuery, { intervalClause })
       ]);
 
       if (summaryResult.length === 0) {
@@ -489,9 +489,9 @@ export class TransactionAnalyticsController {
 
       const intervalClause = this.getIntervalClause(timeWindow);
       const timeGrouping = this.getTimeGrouping(granularity);
-      
+
       const trendsQuery = `
-        SELECT 
+        SELECT
           ${timeGrouping} as time_bucket,
           COUNT(CASE WHEN status = 'proposed' THEN 1 END) as successful_blocks,
           SUM(num_tx) as total_transactions,
@@ -500,17 +500,17 @@ export class TransactionAnalyticsController {
           COUNT(CASE WHEN num_tx > 0 THEN 1 END) as blocks_with_transactions,
           (COUNT(CASE WHEN num_tx > 0 THEN 1 END) * 100.0 / COUNT(CASE WHEN status = 'proposed' THEN 1 END)) as network_utilization_rate
         FROM block_proposals bp
-        WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+        WHERE bp.timestamp >= now() - INTERVAL {intervalClause}
           AND bp.validator_id IN (
-            SELECT DISTINCT validator_id 
-            FROM validator_registry 
+            SELECT DISTINCT validator_id
+            FROM validator_registry
             WHERE is_active = 1
           )
         GROUP BY time_bucket
         ORDER BY time_bucket
       `;
 
-      const result = await this.clickhouseClient.executeRawQuery(trendsQuery);
+      const result = await this.clickhouseClient.executeQuery(trendsQuery, { intervalClause });
       
       const trends: TransactionTrend[] = result.map(row => ({
         timestamp: row.time_bucket,
@@ -632,15 +632,16 @@ export class TransactionAnalyticsController {
       const intervalClause = this.getIntervalClause(timeWindow);
       const offset = (page - 1) * limit;
       const timeWindowHours = this.getTimeWindowHours(timeWindow);
-      
+      const sortClause = this.getTransactionSortClause(sortBy);
+
       // Get total count for pagination - use subquery to avoid JOIN duplication
       const countQuery = `
         SELECT COUNT(DISTINCT bp.validator_id) as total_count
         FROM block_proposals bp
-        WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+        WHERE bp.timestamp >= now() - INTERVAL {intervalClause}
           AND bp.validator_id IN (
-            SELECT DISTINCT validator_id 
-            FROM validator_registry 
+            SELECT DISTINCT validator_id
+            FROM validator_registry
             WHERE is_active = 1
           )
       `;
@@ -648,17 +649,17 @@ export class TransactionAnalyticsController {
       // Main ranking query with latest validator data - no JOIN duplication
       const rankingQuery = `
         WITH latest_validator_info AS (
-          SELECT 
+          SELECT
             validator_id,
             argMax(validator_name, last_updated) as validator_name,
             argMax(provider, last_updated) as provider,
             argMax(location, last_updated) as location,
             argMax(stake, last_updated) as stake
-          FROM validator_registry 
+          FROM validator_registry
           WHERE is_active = 1
           GROUP BY validator_id
         )
-        SELECT 
+        SELECT
           bp.validator_id,
           COUNT(*) as total_proposals,
           COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as successful_proposals,
@@ -668,27 +669,27 @@ export class TransactionAnalyticsController {
           COUNT(CASE WHEN bp.num_tx > 0 THEN 1 END) as blocks_with_transactions,
           (COUNT(CASE WHEN bp.num_tx > 0 THEN 1 END) * 100.0 / COUNT(*)) as block_utilization_rate,
           (SUM(bp.num_tx) / COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END)) as transaction_efficiency,
-          (SUM(bp.num_tx) / ${timeWindowHours}) as transaction_throughput,
+          (SUM(bp.num_tx) / {timeWindowHours}) as transaction_throughput,
           COALESCE(vr.validator_name, 'unknown') as validator_name,
           COALESCE(vr.provider, 'unknown') as provider,
           COALESCE(vr.location, 'unknown') as location,
           COALESCE(vr.stake, 0) as stake
         FROM block_proposals bp
         LEFT JOIN latest_validator_info vr ON bp.validator_id = vr.validator_id
-        WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+        WHERE bp.timestamp >= now() - INTERVAL {intervalClause}
           AND bp.validator_id IN (
-            SELECT DISTINCT validator_id 
-            FROM validator_registry 
+            SELECT DISTINCT validator_id
+            FROM validator_registry
             WHERE is_active = 1
           )
         GROUP BY bp.validator_id, vr.validator_name, vr.provider, vr.location, vr.stake
-        ORDER BY ${this.getTransactionSortClause(sortBy)} DESC
-        LIMIT ${limit} OFFSET ${offset}
+        ORDER BY ${sortClause} DESC
+        LIMIT {limit} OFFSET {offset}
       `;
 
       const [countResult, rankingResult] = await Promise.all([
-        this.clickhouseClient.executeRawQuery(countQuery),
-        this.clickhouseClient.executeRawQuery(rankingQuery)
+        this.clickhouseClient.executeQuery(countQuery, { intervalClause }),
+        this.clickhouseClient.executeQuery(rankingQuery, { intervalClause, timeWindowHours, limit, offset })
       ]);
 
       const totalCount = countResult[0]?.total_count || 0;
@@ -810,17 +811,17 @@ export class TransactionAnalyticsController {
 
       const intervalClause = this.getIntervalClause(timeWindow);
       const timeGrouping = this.getTimeGrouping(granularity);
-      
+
       // Calculate seconds per time bucket based on granularity
       const secondsPerBucket = this.getSecondsPerTimeBucket(granularity);
-      
+
       // Build query based on whether we want specific validator or network-wide
-      let tpsQuery: string;
-      
+      let result;
+
       if (validatorId) {
         // Validator-specific TPS
-        tpsQuery = `
-          SELECT 
+        const tpsQuery = `
+          SELECT
             ${timeGrouping} as time_bucket,
             SUM(bp.num_tx) as total_transactions,
             COUNT(*) as total_blocks,
@@ -831,19 +832,20 @@ export class TransactionAnalyticsController {
             (COUNT(CASE WHEN bp.num_tx > 0 THEN 1 END) * 100.0 / COUNT(*)) as block_utilization_rate
           FROM block_proposals bp
           INNER JOIN (
-            SELECT DISTINCT validator_id 
-            FROM validator_registry 
+            SELECT DISTINCT validator_id
+            FROM validator_registry
             WHERE is_active = 1
           ) vr ON bp.validator_id = vr.validator_id
-          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
-            AND bp.validator_id = '${validatorId}'
+          WHERE bp.timestamp >= now() - INTERVAL {intervalClause}
+            AND bp.validator_id = {validatorId}
           GROUP BY time_bucket
           ORDER BY time_bucket
         `;
+        result = await this.clickhouseClient.executeQuery(tpsQuery, { intervalClause, validatorId });
       } else {
         // Network-wide TPS
-        tpsQuery = `
-          SELECT 
+        const tpsQuery = `
+          SELECT
             ${timeGrouping} as time_bucket,
             SUM(bp.num_tx) as total_transactions,
             COUNT(*) as total_blocks,
@@ -855,17 +857,16 @@ export class TransactionAnalyticsController {
             (COUNT(CASE WHEN bp.num_tx > 0 THEN 1 END) * 100.0 / COUNT(*)) as network_utilization_rate
           FROM block_proposals bp
           INNER JOIN (
-            SELECT DISTINCT validator_id 
-            FROM validator_registry 
+            SELECT DISTINCT validator_id
+            FROM validator_registry
             WHERE is_active = 1
           ) vr ON bp.validator_id = vr.validator_id
-          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          WHERE bp.timestamp >= now() - INTERVAL {intervalClause}
           GROUP BY time_bucket
           ORDER BY time_bucket
         `;
+        result = await this.clickhouseClient.executeQuery(tpsQuery, { intervalClause });
       }
-
-      const result = await this.clickhouseClient.executeRawQuery(tpsQuery);
       
       const tpsData = result.map(row => ({
         timestamp: row.time_bucket,
@@ -967,26 +968,26 @@ export class TransactionAnalyticsController {
       const totalSeconds = minutes * 60;
 
       const currentTpsQuery = `
-        SELECT 
+        SELECT
           SUM(bp.num_tx) as total_transactions,
           COUNT(*) as total_blocks,
           COUNT(DISTINCT bp.validator_id) as active_validators,
           MIN(bp.timestamp) as earliest_timestamp,
           MAX(bp.timestamp) as latest_timestamp,
-          (SUM(bp.num_tx) / ${totalSeconds}) as current_tps,
+          (SUM(bp.num_tx) / {totalSeconds}) as current_tps,
           MAX(bp.num_tx) as max_transactions_in_block,
           AVG(bp.num_tx) as avg_transactions_per_block,
           COUNT(CASE WHEN bp.num_tx > 0 THEN 1 END) as active_blocks
         FROM block_proposals bp
         INNER JOIN (
-          SELECT DISTINCT validator_id 
-          FROM validator_registry 
+          SELECT DISTINCT validator_id
+          FROM validator_registry
           WHERE is_active = 1
         ) vr ON bp.validator_id = vr.validator_id
-        WHERE bp.timestamp >= now() - INTERVAL ${minutes} MINUTE
+        WHERE bp.timestamp >= now() - INTERVAL {minutes} MINUTE
       `;
 
-      const result = await this.clickhouseClient.executeRawQuery(currentTpsQuery);
+      const result = await this.clickhouseClient.executeQuery(currentTpsQuery, { totalSeconds, minutes });
       
       if (result.length === 0) {
         res.status(404).json({
@@ -1084,7 +1085,7 @@ export class TransactionAnalyticsController {
           WHERE is_active = 1
           GROUP BY validator_id
         )
-        SELECT 
+        SELECT
           vr.location,
           COUNT(DISTINCT bp.validator_id) as validator_count,
           COUNT(*) as total_proposals,
@@ -1097,8 +1098,8 @@ export class TransactionAnalyticsController {
           (SUM(bp.num_tx) / COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END)) as transaction_efficiency
         FROM block_proposals bp
         INNER JOIN latest_validator_info vr ON bp.validator_id = vr.validator_id
-        WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
-          AND vr.location != 'unknown' 
+        WHERE bp.timestamp >= now() - INTERVAL {intervalClause}
+          AND vr.location != 'unknown'
           AND vr.location IS NOT NULL
           AND vr.location != ''
         GROUP BY vr.location
@@ -1106,7 +1107,7 @@ export class TransactionAnalyticsController {
         ORDER BY total_transactions DESC
       `;
 
-      const result = await this.clickhouseClient.executeRawQuery(geographicQuery);
+      const result = await this.clickhouseClient.executeQuery(geographicQuery, { intervalClause });
       
       const geographicData = result.map(row => ({
         location: row.location,
@@ -1199,7 +1200,7 @@ export class TransactionAnalyticsController {
           WHERE is_active = 1
           GROUP BY validator_id
         )
-        SELECT 
+        SELECT
           vr.provider,
           COUNT(DISTINCT bp.validator_id) as validator_count,
           COUNT(*) as total_proposals,
@@ -1213,8 +1214,8 @@ export class TransactionAnalyticsController {
           arrayDistinct(groupArray(vr.location)) as locations
         FROM block_proposals bp
         INNER JOIN latest_validator_info vr ON bp.validator_id = vr.validator_id
-        WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
-          AND vr.provider != 'unknown' 
+        WHERE bp.timestamp >= now() - INTERVAL {intervalClause}
+          AND vr.provider != 'unknown'
           AND vr.provider IS NOT NULL
           AND vr.provider != ''
         GROUP BY vr.provider
@@ -1222,7 +1223,7 @@ export class TransactionAnalyticsController {
         ORDER BY total_transactions DESC
       `;
 
-      const result = await this.clickhouseClient.executeRawQuery(providerQuery);
+      const result = await this.clickhouseClient.executeQuery(providerQuery, { intervalClause });
       
       const providerData = result.map(row => ({
         provider: row.provider,

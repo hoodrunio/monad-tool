@@ -370,7 +370,7 @@ export class ValidatorController {
       }
 
       const timeWindow = this.getIntervalClause('24h');
-      
+
       // Get block proposal metrics with provider info from validator_registry
       const blockProposalQuery = `
         SELECT
@@ -397,8 +397,8 @@ export class ValidatorController {
           MAX(b.timestamp) as last_activity
         FROM block_proposals b
         LEFT JOIN validator_registry_latest vr ON vr.validator_id = b.validator_id
-        WHERE b.validator_id = '${validatorId}'
-          AND b.timestamp >= now() - INTERVAL ${timeWindow}
+        WHERE b.validator_id = {validatorId}
+          AND b.timestamp >= now() - INTERVAL {timeWindow}
         GROUP BY
           b.validator_id,
           vr.validator_name,
@@ -419,21 +419,21 @@ export class ValidatorController {
 
       // Get QC participation metrics
       const qcParticipationQuery = `
-        SELECT 
+        SELECT
           validator_id,
           COUNT(*) as total_qc_opportunities,
           COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
           (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate,
           AVG(participation_rate) as avg_network_participation_rate
         FROM qc_participation
-        WHERE validator_id = '${validatorId}'
-          AND timestamp >= now() - INTERVAL ${timeWindow}
+        WHERE validator_id = {validatorId}
+          AND timestamp >= now() - INTERVAL {timeWindow}
         GROUP BY validator_id
       `;
 
       const [blockResult, qcResult] = await Promise.all([
-        this.clickhouseClient.executeRawQuery(blockProposalQuery),
-        this.clickhouseClient.executeRawQuery(qcParticipationQuery)
+        this.clickhouseClient.executeQuery(blockProposalQuery, { validatorId, timeWindow }),
+        this.clickhouseClient.executeQuery(qcParticipationQuery, { validatorId, timeWindow })
       ]);
 
       const [blockData] = blockResult;
@@ -466,7 +466,7 @@ export class ValidatorController {
       };
       try {
         const stakingQuery = `
-          SELECT 
+          SELECT
             precompile_validator_id,
             is_staking_active,
             real_time_stake_wei,
@@ -474,13 +474,13 @@ export class ValidatorController {
             commission,
             consensus_commission,
             snapshot_commission
-          FROM validator_registry 
-          WHERE validator_id = '${validatorId}'
-          ORDER BY last_updated DESC 
+          FROM validator_registry
+          WHERE validator_id = {validatorId}
+          ORDER BY last_updated DESC
           LIMIT 1
         `;
-        
-        const stakingResult = await this.clickhouseClient.executeRawQuery(stakingQuery);
+
+        const stakingResult = await this.clickhouseClient.executeQuery(stakingQuery, { validatorId });
         const stakingData = stakingResult[0];
         
         const authAddress = stakingData?.auth_address || blockData?.auth_address || null;
@@ -718,13 +718,14 @@ export class ValidatorController {
 
     // Main query with pagination and stake amounts - ONLY include validators in validator_registry
     // Use aggregated latest record per validator to prevent duplicates
+    const sortByClause = this.getSortByClause(sortBy);
     const query = `
-      WITH 
+      WITH
         active_validators AS (
           ${activeValidatorsCTE}
         ),
         block_metrics AS (
-          SELECT 
+          SELECT
             bp.validator_id,
             COUNT(*) as total_block_opportunities,
             COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as blocks_proposed,
@@ -732,18 +733,18 @@ export class ValidatorController {
             (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
           FROM block_proposals bp
           INNER JOIN active_validators av ON bp.validator_id = av.validator_id
-          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          WHERE bp.timestamp >= now() - INTERVAL {intervalClause}
           GROUP BY bp.validator_id
         ),
         qc_metrics AS (
-          SELECT 
+          SELECT
             qc.validator_id,
             COUNT(*) as total_qc_opportunities,
             COUNT(CASE WHEN qc.participated = 1 THEN 1 END) as qc_participations,
             (COUNT(CASE WHEN qc.participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
           FROM qc_participation qc
           INNER JOIN active_validators av ON qc.validator_id = av.validator_id
-          WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
+          WHERE qc.timestamp >= now() - INTERVAL {intervalClause}
           GROUP BY qc.validator_id
         )
       SELECT
@@ -775,13 +776,13 @@ export class ValidatorController {
       FROM active_validators av
       LEFT JOIN block_metrics b ON av.validator_id = b.validator_id
       LEFT JOIN qc_metrics q ON av.validator_id = q.validator_id
-      ORDER BY ${this.getSortByClause(sortBy)}
-      LIMIT ${limit} OFFSET ${offset}
+      ORDER BY ${sortByClause}
+      LIMIT {limit} OFFSET {offset}
     `;
 
     const [countResult, dataResult] = await Promise.all([
       this.clickhouseClient.executeRawQuery(countQuery),
-      this.clickhouseClient.executeRawQuery(query)
+      this.clickhouseClient.executeQuery(query, { intervalClause, limit, offset })
     ]);
 
     const totalCount = countResult[0]?.total_count || 0;
@@ -925,36 +926,36 @@ export class ValidatorController {
   private async getValidatorHourlyHistory(validatorId: string, hours: number): Promise<any[]> {
     // Get hourly aggregated block proposal data
     const blockQuery = `
-      SELECT 
+      SELECT
         toStartOfHour(timestamp) as hour,
         COUNT(*) as block_opportunities,
         COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
         COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
         (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
       FROM block_proposals
-      WHERE validator_id = '${validatorId}'
-        AND timestamp >= now() - INTERVAL ${hours} HOUR
+      WHERE validator_id = {validatorId}
+        AND timestamp >= now() - INTERVAL {hours} HOUR
       GROUP BY hour
       ORDER BY hour
     `;
 
     // Get hourly aggregated QC participation data
     const qcQuery = `
-      SELECT 
+      SELECT
         toStartOfHour(timestamp) as hour,
         COUNT(*) as qc_opportunities,
         COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
         (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
       FROM qc_participation
-      WHERE validator_id = '${validatorId}'
-        AND timestamp >= now() - INTERVAL ${hours} HOUR
+      WHERE validator_id = {validatorId}
+        AND timestamp >= now() - INTERVAL {hours} HOUR
       GROUP BY hour
       ORDER BY hour
     `;
 
     const [blockResult, qcResult] = await Promise.all([
-      this.clickhouseClient.executeRawQuery(blockQuery),
-      this.clickhouseClient.executeRawQuery(qcQuery)
+      this.clickhouseClient.executeQuery(blockQuery, { validatorId, hours }),
+      this.clickhouseClient.executeQuery(qcQuery, { validatorId, hours })
     ]);
 
     const blockData = blockResult;

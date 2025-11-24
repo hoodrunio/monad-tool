@@ -769,7 +769,7 @@ export class MonadClickHouseClient {
 
   async getValidatorHistory(validatorId: string, hours: number = 24): Promise<any[]> {
     const query = `
-      SELECT 
+      SELECT
         timestamp,
         event_type,
         round_number,
@@ -777,15 +777,13 @@ export class MonadClickHouseClient {
         is_successful,
         participation_rate
       FROM validator_events
-      WHERE validator_id = '${validatorId}'
-        AND timestamp >= now() - INTERVAL ${hours} HOUR
+      WHERE validator_id = {validatorId}
+        AND timestamp >= now() - INTERVAL {hours} HOUR
       ORDER BY timestamp DESC
       LIMIT 1000
     `;
 
-    const result = await this.executeRawQuery(query);
-
-    return result;
+    return await this.executeQuery(query, { validatorId, hours });
   }
 
   async getHealthAlerts(): Promise<any[]> {
@@ -862,6 +860,92 @@ export class MonadClickHouseClient {
     });
 
     return result.json();
+  }
+
+  /**
+   * Execute a parameterized query with safe parameter substitution.
+   * Parameters are automatically escaped to prevent SQL injection.
+   *
+   * @param query Query string with {paramName} placeholders
+   * @param params Object with parameter values
+   * @returns Query results as JSON array
+   *
+   * @example
+   * const results = await executeQuery(
+   *   'SELECT * FROM validator_registry WHERE validator_id = {id} AND epoch = {epoch}',
+   *   { id: 'validator-123', epoch: 42 }
+   * );
+   */
+  async executeQuery(query: string, params: Record<string, any> = {}): Promise<any[]> {
+    const sanitizedQuery = this.buildParameterizedQuery(query, params);
+
+    const result = await this.client.query({
+      query: sanitizedQuery,
+      format: 'JSONEachRow'
+    });
+
+    return result.json();
+  }
+
+  /**
+   * Build a safe parameterized query by escaping all parameters.
+   * Replaces {paramName} placeholders with properly escaped values.
+   *
+   * @param query Query template with {paramName} placeholders
+   * @param params Parameter values
+   * @returns Sanitized query string
+   */
+  private buildParameterizedQuery(query: string, params: Record<string, any>): string {
+    let sanitizedQuery = query;
+
+    for (const [key, value] of Object.entries(params)) {
+      const placeholder = `{${key}}`;
+      const escapedValue = this.escapeParameter(value);
+      sanitizedQuery = sanitizedQuery.replaceAll(placeholder, escapedValue);
+    }
+
+    return sanitizedQuery;
+  }
+
+  /**
+   * Escape a parameter value for safe inclusion in ClickHouse query.
+   * Handles strings, numbers, booleans, null, and arrays.
+   *
+   * @param value The parameter value to escape
+   * @returns Escaped value as string
+   */
+  private escapeParameter(value: any): string {
+    if (value === null || value === undefined) {
+      return 'NULL';
+    }
+
+    if (typeof value === 'string') {
+      // Escape single quotes by doubling them (ClickHouse standard)
+      return `'${value.replace(/'/g, "''")}'`;
+    }
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        throw new Error(`Invalid numeric parameter: ${value}`);
+      }
+      return String(value);
+    }
+
+    if (typeof value === 'boolean') {
+      return value ? '1' : '0';
+    }
+
+    if (Array.isArray(value)) {
+      const escapedItems = value.map(item => this.escapeParameter(item));
+      return `[${escapedItems.join(', ')}]`;
+    }
+
+    if (typeof value === 'bigint') {
+      return value.toString();
+    }
+
+    // For objects, try to stringify
+    throw new Error(`Unsupported parameter type: ${typeof value}. Use string, number, boolean, array, or null.`);
   }
 
   async executeCommand(command: string): Promise<void> {
@@ -968,10 +1052,10 @@ export class MonadClickHouseClient {
       const query = `
         SELECT count() as count
         FROM staking_events
-        WHERE event_id = '${eventId}'
+        WHERE event_id = {eventId}
         LIMIT 1
       `;
-      const result = await this.executeRawQuery(query);
+      const result = await this.executeQuery(query, { eventId });
       return Number(result[0]?.count || 0) > 0;
     } catch (error) {
       logger.error('Failed to check if staking event is processed:', error);
@@ -987,12 +1071,12 @@ export class MonadClickHouseClient {
       const query = `
         SELECT *
         FROM validator_delegations
-        WHERE validator_id = '${validatorId}'
-          AND delegator = '${delegator}'
+        WHERE validator_id = {validatorId}
+          AND delegator = {delegator}
         ORDER BY last_updated_at DESC
         LIMIT 1
       `;
-      const result = await this.executeRawQuery(query);
+      const result = await this.executeQuery(query, { validatorId, delegator });
       return result.length > 0 ? result[0] : null;
     } catch (error) {
       logger.error('Failed to get validator delegation:', error);

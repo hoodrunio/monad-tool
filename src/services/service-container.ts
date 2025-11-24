@@ -18,6 +18,7 @@ import { ValidatorInfoRegistry, ValidatorNetwork } from './ValidatorInfoRegistry
 import { MigrationRunner } from '../database/migration-runner';
 import { IpcPollingService } from './ipc/IpcPollingService.js';
 import { IpcLocationMapper } from './validator-location/mappers/IpcLocationMapper.js';
+import { getConfig } from '../config/app-config';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -104,14 +105,14 @@ export class ServiceContainer {
     logger.info('✅ Location data synced to database');
 
     // Initialize staking update service
-    const rpcUrl = process.env.MONAD_RPC_URL || 'http://localhost:8080';
+    const config = getConfig();
     const stakingConfig: StakingUpdateConfig = {
-      updateIntervalMs: parseInt(process.env.STAKING_UPDATE_INTERVAL_MS || '30000'),
-      rpcUrl,
+      updateIntervalMs: 30000, // 30 seconds
+      rpcUrl: config.MONAD_RPC_URL,
       clickhouseClient: this._clickhouseClient,
       redisClient: this._redisClient
     };
-    
+
     this._stakingUpdateService = new StakingUpdateService(stakingConfig);
 
     // Initialize provider performance cache service
@@ -227,8 +228,9 @@ export class ServiceContainer {
    */
   getValidatorInfoUpdateService(): ValidatorInfoUpdateService {
     if (!this._validatorInfoUpdateService) {
-      const network = (process.env.VALIDATOR_NETWORK || 'testnet') as ValidatorNetwork;
-      const githubToken = process.env.GITHUB_TOKEN;
+      const config = getConfig();
+      const network = config.VALIDATOR_NETWORK as ValidatorNetwork;
+      const githubToken = process.env.GITHUB_TOKEN; // Optional, not in required config
 
       const validatorInfoRegistry = new ValidatorInfoRegistry({ network, githubToken });
       this._validatorInfoUpdateService = new ValidatorInfoUpdateService(

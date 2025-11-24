@@ -6,6 +6,7 @@ import { SystemdLogStream, SystemdLogStreamConfig } from './services/systemd-log
 import { AnalyticsAPIServer } from './api/server';
 import { ServiceContainer } from './services/service-container';
 import { logger } from './utils/logger';
+import { validateConfig, getConfig } from './config/app-config';
 
 async function main() {
   logger.info('🚀 Starting Monad Validator Analytics System');
@@ -13,11 +14,19 @@ async function main() {
 
   try {
     // =============================================
+    // PHASE 0: VALIDATE CONFIGURATION
+    // =============================================
+
+    logger.info('🔍 Phase 0: Validating application configuration...');
+    validateConfig(); // This will throw if config is invalid
+    logger.info('✅ Configuration validated successfully');
+
+    // =============================================
     // PHASE 1: CONFIGURATION & SERVICE CONTAINER
     // =============================================
-    
+
     logger.info('🔍 Phase 1: Loading configuration and initializing service container...');
-    
+
     // Load configuration first
     const config = loadConfiguration();
     
@@ -63,8 +72,9 @@ async function main() {
     }
     
     // Initialize API server
+    const appConfig = getConfig();
     const apiServer = new AnalyticsAPIServer({
-      port: parseInt(process.env.API_PORT || '3000'),
+      port: appConfig.PORT,
       enableCors: true,
       enableCompression: true,
       enableRateLimit: true
@@ -106,22 +116,24 @@ async function main() {
 }
 
 function loadConfiguration(): IngestionConfig {
+  const appConfig = getConfig();
+
   return {
     clickhouse: {
-      host: process.env.CLICKHOUSE_HOST || 'localhost',
-      port: parseInt(process.env.CLICKHOUSE_PORT || '8123'),
-      username: process.env.CLICKHOUSE_USERNAME || 'default',
-      password: process.env.CLICKHOUSE_PASSWORD || '',
-      database: process.env.CLICKHOUSE_DATABASE || 'monad_analytics',
-      max_open_connections: parseInt(process.env.CLICKHOUSE_MAX_CONNECTIONS || '10'),
-      max_query_timeout: parseInt(process.env.CLICKHOUSE_QUERY_TIMEOUT || '30000'),
-      compression: process.env.CLICKHOUSE_COMPRESSION === 'true'
+      host: appConfig.DATABASE_HOST,
+      port: appConfig.DATABASE_PORT,
+      username: appConfig.DATABASE_USER,
+      password: appConfig.DATABASE_PASSWORD,
+      database: appConfig.DATABASE_NAME,
+      max_open_connections: appConfig.DATABASE_MAX_CONNECTIONS,
+      max_query_timeout: appConfig.DATABASE_QUERY_TIMEOUT,
+      compression: appConfig.DATABASE_COMPRESSION
     },
     redis: {
-      host: process.env.REDIS_HOST || 'localhost',
-      port: parseInt(process.env.REDIS_PORT || '6379'),
-      password: process.env.REDIS_PASSWORD,
-      db: parseInt(process.env.REDIS_DB || '0'),
+      host: appConfig.REDIS_HOST,
+      port: appConfig.REDIS_PORT,
+      password: appConfig.REDIS_PASSWORD,
+      db: appConfig.REDIS_DB,
       keyPrefix: process.env.REDIS_KEY_PREFIX || 'monad:',
       maxRetriesPerRequest: parseInt(process.env.REDIS_MAX_RETRIES || '3'),
       retryDelayOnFailover: parseInt(process.env.REDIS_RETRY_DELAY || '1000'),

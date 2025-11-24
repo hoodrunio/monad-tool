@@ -678,12 +678,12 @@ export class AdminController {
       const validatorQuery = `
         SELECT validator_id, validator_name
         FROM validator_registry
-        WHERE validator_id = '${validatorId}'
+        WHERE validator_id = {validatorId}
         ORDER BY last_updated DESC
         LIMIT 1
       `;
 
-      const validators = await this.clickhouseClient.executeRawQuery(validatorQuery);
+      const validators = await this.clickhouseClient.executeQuery(validatorQuery, { validatorId });
       
       if (validators.length === 0) {
         res.status(404).json({
@@ -720,11 +720,11 @@ export class AdminController {
       
       // Update validator registry with keybase information using INSERT with ReplacingMergeTree
       const updateQuery = `
-        INSERT INTO validator_registry 
+        INSERT INTO validator_registry
         (validator_id, node_id, precompile_validator_id, epoch, stake, position, is_active, is_staking_active, real_time_stake_wei,
-         dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url, 
+         dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url,
          first_seen, last_updated)
-        SELECT 
+        SELECT
           validator_id,
           node_id,
           precompile_validator_id,
@@ -742,17 +742,17 @@ export class AdminController {
           location,
           country,
           datacenter,
-          '${keybaseId}',
-          '${logoUrl || ''}',
+          {keybaseId},
+          {logoUrl},
           first_seen,
           now()
         FROM validator_registry
-        WHERE validator_id = '${validatorId}'
+        WHERE validator_id = {validatorId}
         ORDER BY last_updated DESC
         LIMIT 1
       `;
 
-      await this.clickhouseClient.executeCommand(updateQuery);
+      await this.clickhouseClient.executeQuery(updateQuery, { validatorId, keybaseId, logoUrl: logoUrl || '' });
       
       // Force merge to remove duplicates
       await this.clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
@@ -800,12 +800,12 @@ export class AdminController {
       const checkQuery = `
         SELECT validator_id, keybase_id
         FROM validator_registry
-        WHERE validator_id = '${validatorId}' AND keybase_id != '' AND keybase_id IS NOT NULL
+        WHERE validator_id = {validatorId} AND keybase_id != '' AND keybase_id IS NOT NULL
         ORDER BY last_updated DESC
         LIMIT 1
       `;
 
-      const existing = await this.clickhouseClient.executeRawQuery(checkQuery);
+      const existing = await this.clickhouseClient.executeQuery(checkQuery, { validatorId });
       
       if (existing.length === 0) {
         res.status(404).json({
@@ -818,11 +818,11 @@ export class AdminController {
 
       // Remove keybase mapping by setting it to empty using INSERT with ReplacingMergeTree
       const removeQuery = `
-        INSERT INTO validator_registry 
+        INSERT INTO validator_registry
         (validator_id, node_id, precompile_validator_id, epoch, stake, position, is_active, is_staking_active, real_time_stake_wei,
-         dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url, 
+         dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url,
          first_seen, last_updated)
-        SELECT 
+        SELECT
           validator_id,
           node_id,
           precompile_validator_id,
@@ -845,12 +845,12 @@ export class AdminController {
           first_seen,
           now()
         FROM validator_registry
-        WHERE validator_id = '${validatorId}'
+        WHERE validator_id = {validatorId}
         ORDER BY last_updated DESC
         LIMIT 1
       `;
 
-      await this.clickhouseClient.executeCommand(removeQuery);
+      await this.clickhouseClient.executeQuery(removeQuery, { validatorId });
       
       // Force merge to remove duplicates
       await this.clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
@@ -978,11 +978,11 @@ export class AdminController {
               if (logoUrl) {
                 // Update logo URL in database using INSERT with ReplacingMergeTree
                 const updateQuery = `
-                  INSERT INTO validator_registry 
+                  INSERT INTO validator_registry
                   (validator_id, node_id, precompile_validator_id, epoch, stake, position, is_active, is_staking_active, real_time_stake_wei,
-                   dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url, 
+                   dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url,
                    first_seen, last_updated)
-                  SELECT 
+                  SELECT
                     validator_id,
                     node_id,
                     precompile_validator_id,
@@ -1001,16 +1001,16 @@ export class AdminController {
                     country,
                     datacenter,
                     keybase_id,
-                    '${logoUrl}',
+                    {logoUrl},
                     first_seen,
                     now()
                   FROM validator_registry
-                  WHERE keybase_id = '${keybaseId}'
+                  WHERE keybase_id = {keybaseId}
                   ORDER BY last_updated DESC
                   LIMIT 1
                 `;
 
-                await this.clickhouseClient.executeCommand(updateQuery);
+                await this.clickhouseClient.executeQuery(updateQuery, { keybaseId, logoUrl });
                 refreshedCount++;
               }
             } catch (error) {
