@@ -568,7 +568,7 @@ export class DNSAnalyticsController {
           COUNT(DISTINCT vr.validator_id) as validators_with_location,
           COUNT(DISTINCT vr.location) as unique_locations,
           COUNT(DISTINCT vr.provider) as unique_providers
-        FROM validator_registry_latest FINAL vr
+        FROM validator_registry_latest FINAL AS vr
         WHERE vr.location IS NOT NULL AND vr.location != '' AND vr.location != 'unknown'
           AND vr.provider IS NOT NULL AND vr.provider != '' AND vr.provider != 'unknown'
       `;
