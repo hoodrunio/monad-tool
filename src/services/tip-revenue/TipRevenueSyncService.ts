@@ -149,9 +149,13 @@ export class TipRevenueSyncService {
     try {
       const currentBlock = await this.tipRevenueService.getCurrentBlockNumber();
 
-      // If no last processed block, start from current - some buffer
+      // If no last processed block, start from current block (no backfill)
+      // Only process new blocks going forward
       if (this.lastProcessedBlock === 0) {
-        this.lastProcessedBlock = Math.max(0, currentBlock - 100);
+        this.lastProcessedBlock = currentBlock;
+        await this.saveLastProcessedBlock(currentBlock);
+        logger.info(`No previous sync state found. Starting from current block: ${currentBlock}`);
+        return;
       }
 
       const lag = currentBlock - this.lastProcessedBlock;
