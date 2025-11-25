@@ -58,7 +58,8 @@ async function main() {
     // Initialize systemd log stream for production
     let logStream: SystemdLogStream | null = null;
     if (process.env.NODE_ENV === 'production') {
-      const streamConfig = loadSystemdStreamConfig();
+      const clickhouseClient = serviceContainer.getClickHouseClient();
+      const streamConfig = await loadSystemdStreamConfig(clickhouseClient);
       logStream = new SystemdLogStream(streamConfig, ingestionService);
     }
     
@@ -149,14 +150,34 @@ function loadConfiguration(): IngestionConfig {
   };
 }
 
-function loadSystemdStreamConfig(): SystemdLogStreamConfig {
+async function loadSystemdStreamConfig(clickhouseClient: any): Promise<SystemdLogStreamConfig> {
+  // Get last processed timestamp from block_proposals for backfill
+  let sinceWhen = process.env.LOG_SINCE_WHEN || 'now';
+
+  try {
+    const result = await clickhouseClient.executeRawQuery(`
+      SELECT max(timestamp) as last_ts FROM block_proposals
+    `);
+
+    if (result && result[0]?.last_ts) {
+      // Format timestamp for journalctl (e.g., "2025-11-25 16:28:00")
+      const lastTimestamp = new Date(result[0].last_ts);
+      if (!isNaN(lastTimestamp.getTime())) {
+        sinceWhen = lastTimestamp.toISOString().replace('T', ' ').substring(0, 19);
+        logger.info(`📋 Log stream will start from last block_proposals timestamp: ${sinceWhen}`);
+      }
+    }
+  } catch (error) {
+    logger.warn('Could not get last block_proposals timestamp, starting from now:', error);
+  }
+
   return {
     serviceNames: [
       process.env.MONAD_BFT_SERVICE_NAME || 'monad-bft',
       process.env.MONAD_LEDGER_SERVICE_NAME || 'monad-ledger-tail'
     ],
     followMode: true, // Always follow in production
-    sinceWhen: process.env.LOG_SINCE_WHEN || 'now', // Start from now by default
+    sinceWhen, // Dynamic: starts from last processed timestamp for backfill
     outputFormat: 'json', // JSON format for easier parsing
     priority: process.env.LOG_PRIORITY as any || 'info',
     bufferSize: parseInt(process.env.STREAM_BUFFER_SIZE || '100'),
