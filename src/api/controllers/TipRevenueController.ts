@@ -69,20 +69,21 @@ export class TipRevenueController {
       const interval = TIME_WINDOW_INTERVALS[window] || '24 HOUR';
 
       // Query tip revenue data from hourly aggregated table (validator_id resolved during aggregation)
+      // Using FINAL to ensure ReplacingMergeTree deduplication is applied
       // Alias names must differ from column names to avoid ClickHouse error
       const query = `
         SELECT
           validator_id,
-          toString(sum(toUInt64OrZero(total_tip_wei))) AS sum_tip_wei,
+          toString(toUInt64(sum(toFloat64(total_tip_wei)))) AS sum_tip_wei,
           sum(total_tip_mon) AS sum_tip_mon,
           sum(blocks_proposed) AS sum_blocks,
           sum(total_transactions) AS sum_transactions,
-          toString(sum(toUInt64OrZero(total_tip_wei)) / greatest(sum(blocks_proposed), 1)) AS avg_tip_block_wei,
+          toString(toUInt64(sum(toFloat64(total_tip_wei)) / greatest(sum(blocks_proposed), 1))) AS avg_tip_block_wei,
           sum(total_tip_mon) / greatest(sum(blocks_proposed), 1) AS avg_tip_block_mon,
-          toString(sum(toUInt64OrZero(total_tip_wei)) / greatest(sum(total_transactions), 1)) AS avg_tip_tx_wei,
+          toString(toUInt64(sum(toFloat64(total_tip_wei)) / greatest(sum(total_transactions), 1))) AS avg_tip_tx_wei,
           sum(total_tip_mon) / greatest(sum(total_transactions), 1) AS avg_tip_tx_mon,
           max(hour) AS last_updated
-        FROM tip_revenue_hourly
+        FROM tip_revenue_hourly FINAL
         WHERE validator_id = '${validatorId}'
           AND hour >= now() - INTERVAL ${interval}
         GROUP BY validator_id
@@ -90,22 +91,21 @@ export class TipRevenueController {
 
       const result = await this.clickhouseClient.executeRawQuery(query);
 
-      // Get cumulative totals
+      // Get cumulative totals (using FINAL for ReplacingMergeTree deduplication)
       const cumulativeQuery = `
         SELECT
           total_tip_wei,
           total_tip_mon,
           total_blocks_proposed,
           total_transactions
-        FROM tip_revenue_cumulative
+        FROM tip_revenue_cumulative FINAL
         WHERE validator_id = '${validatorId}'
-        ORDER BY last_updated DESC
         LIMIT 1
       `;
 
       const cumulativeResult = await this.clickhouseClient.executeRawQuery(cumulativeQuery);
 
-      // Get rank from hourly table - use subquery for aggregation
+      // Get rank from hourly table - use subquery for aggregation (using FINAL)
       const rankQuery = `
         SELECT rank FROM (
           SELECT
@@ -113,7 +113,7 @@ export class TipRevenueController {
             ROW_NUMBER() OVER (ORDER BY tip_sum DESC) AS rank
           FROM (
             SELECT validator_id, sum(total_tip_mon) AS tip_sum
-            FROM tip_revenue_hourly
+            FROM tip_revenue_hourly FINAL
             WHERE hour >= now() - INTERVAL ${interval}
               AND validator_id != ''
             GROUP BY validator_id
@@ -218,16 +218,17 @@ export class TipRevenueController {
 
       let query: string;
 
+      // Using FINAL for ReplacingMergeTree deduplication
       if (granularity === 'daily') {
         query = `
           SELECT
             toStartOfDay(hour) AS period,
-            toString(sum(toUInt64OrZero(total_tip_wei))) AS sum_tip_wei,
+            toString(toUInt64(sum(toFloat64(total_tip_wei)))) AS sum_tip_wei,
             sum(total_tip_mon) AS sum_tip_mon,
             sum(blocks_proposed) AS sum_blocks,
             sum(total_transactions) AS sum_transactions,
             sum(total_tip_mon) / greatest(sum(blocks_proposed), 1) AS avg_tip_block_mon
-          FROM tip_revenue_hourly
+          FROM tip_revenue_hourly FINAL
           WHERE validator_id = '${validatorId}'
             AND hour >= now() - INTERVAL ${hours} HOUR
           GROUP BY period
@@ -242,7 +243,7 @@ export class TipRevenueController {
             blocks_proposed AS sum_blocks,
             total_transactions AS sum_transactions,
             total_tip_mon / greatest(blocks_proposed, 1) AS avg_tip_block_mon
-          FROM tip_revenue_hourly
+          FROM tip_revenue_hourly FINAL
           WHERE validator_id = '${validatorId}'
             AND hour >= now() - INTERVAL ${hours} HOUR
           ORDER BY period ASC
@@ -315,6 +316,7 @@ export class TipRevenueController {
       };
       const orderByField = orderByMap[sortBy] || 'sum_tip_mon';
 
+      // Using FINAL for ReplacingMergeTree deduplication
       const query = `
         SELECT
           ROW_NUMBER() OVER (ORDER BY ${orderByField} DESC) AS rank,
@@ -333,12 +335,12 @@ export class TipRevenueController {
             v.validator_name AS validator_name,
             v.provider AS provider,
             v.location AS location,
-            toString(sum(toUInt64OrZero(t.total_tip_wei))) AS sum_tip_wei,
+            toString(toUInt64(sum(toFloat64(t.total_tip_wei)))) AS sum_tip_wei,
             sum(t.total_tip_mon) AS sum_tip_mon,
             sum(t.blocks_proposed) AS sum_blocks,
             sum(t.total_transactions) AS sum_transactions,
             sum(t.total_tip_mon) / greatest(sum(t.blocks_proposed), 1) AS avg_tip_block_mon
-          FROM tip_revenue_hourly t
+          FROM tip_revenue_hourly FINAL t
           LEFT JOIN validator_registry_latest v ON t.validator_id = v.validator_id
           WHERE t.hour >= now() - INTERVAL ${interval}
             AND t.validator_id != ''
@@ -351,10 +353,10 @@ export class TipRevenueController {
 
       const result = await this.clickhouseClient.executeRawQuery(query);
 
-      // Get total count from hourly table
+      // Get total count from hourly table (using FINAL)
       const countQuery = `
         SELECT count(DISTINCT validator_id) AS total
-        FROM tip_revenue_hourly
+        FROM tip_revenue_hourly FINAL
         WHERE hour >= now() - INTERVAL ${interval}
           AND validator_id != ''
       `;
@@ -418,26 +420,27 @@ export class TipRevenueController {
         return;
       }
 
+      // Using FINAL for ReplacingMergeTree deduplication
       const query = `
         SELECT
-          toString(sum(toUInt64OrZero(total_tip_wei))) AS sum_tips_wei,
+          toString(toUInt64(sum(toFloat64(total_tip_wei)))) AS sum_tips_wei,
           sum(total_tip_mon) AS sum_tips_mon,
           sum(blocks_proposed) AS sum_blocks,
           sum(total_transactions) AS sum_transactions,
           sum(total_tip_mon) / greatest(sum(blocks_proposed), 1) AS avg_tip_block_mon
-        FROM tip_revenue_hourly
+        FROM tip_revenue_hourly FINAL
         WHERE hour >= now() - INTERVAL 24 HOUR
       `;
 
       const result = await this.clickhouseClient.executeRawQuery(query);
 
-      // Get top validator from hourly table
+      // Get top validator from hourly table (using FINAL)
       const topValidatorQuery = `
         SELECT
           t.validator_id AS validator_id,
           v.validator_name AS validator_name,
           sum(t.total_tip_mon) AS sum_tip_mon
-        FROM tip_revenue_hourly t
+        FROM tip_revenue_hourly FINAL t
         LEFT JOIN validator_registry_latest v ON t.validator_id = v.validator_id
         WHERE t.hour >= now() - INTERVAL 24 HOUR
           AND t.validator_id != ''
@@ -504,6 +507,7 @@ export class TipRevenueController {
         return;
       }
 
+      // Using FINAL for ReplacingMergeTree deduplication
       const query = `
         SELECT
           hour,
@@ -511,7 +515,7 @@ export class TipRevenueController {
           sum(blocks_proposed) AS sum_blocks,
           sum(total_tip_mon) / greatest(sum(blocks_proposed), 1) AS avg_tip_block_mon,
           uniq(validator_id) AS active_validators
-        FROM tip_revenue_hourly
+        FROM tip_revenue_hourly FINAL
         WHERE hour >= now() - INTERVAL ${hours} HOUR
         GROUP BY hour
         ORDER BY hour ASC
