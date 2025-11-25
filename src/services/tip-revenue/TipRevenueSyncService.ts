@@ -282,19 +282,21 @@ export class TipRevenueSyncService {
       // Aggregate last 25 hours of data with validator_id from block_proposals
       // block_proposals.seq_num = block number, status='proposed' for successful blocks
       // Using toFloat64 for large wei values to avoid UInt64 overflow
+      // Note: Wei values are stored as String to avoid UInt64 overflow (max ~18 MON)
+      // We sum as Float64 (loses some precision but handles large values) then format as string
       const aggregationQuery = `
         INSERT INTO tip_revenue_hourly
         SELECT
           toStartOfHour(t.block_timestamp) AS hour,
           bp.validator_id AS validator_id,
-          toString(toUInt64(sum(toFloat64(t.total_tip_wei)))) AS total_tip_wei,
+          toString(floor(sum(toFloat64(t.total_tip_wei)))) AS total_tip_wei,
           sum(toFloat64(t.total_tip_wei)) / 1e18 AS total_tip_mon,
           count() AS blocks_proposed,
           sum(t.transaction_count) AS total_transactions,
-          toString(toUInt64(sum(toFloat64(t.total_tip_wei)) / greatest(count(), 1))) AS avg_tip_per_block_wei,
-          toString(toUInt64(sum(toFloat64(t.total_tip_wei)) / greatest(sum(t.transaction_count), 1))) AS avg_tip_per_tx_wei,
-          toString(toUInt64(min(toFloat64(t.total_tip_wei)))) AS min_tip_wei,
-          toString(toUInt64(max(toFloat64(t.total_tip_wei)))) AS max_tip_wei,
+          toString(floor(sum(toFloat64(t.total_tip_wei)) / greatest(count(), 1))) AS avg_tip_per_block_wei,
+          toString(floor(sum(toFloat64(t.total_tip_wei)) / greatest(sum(t.transaction_count), 1))) AS avg_tip_per_tx_wei,
+          toString(floor(min(toFloat64(t.total_tip_wei)))) AS min_tip_wei,
+          toString(floor(max(toFloat64(t.total_tip_wei)))) AS max_tip_wei,
           now() AS updated_at
         FROM tip_revenue_raw t
         INNER JOIN block_proposals bp ON t.block_number = bp.seq_num AND bp.status = 'proposed'
@@ -328,12 +330,12 @@ export class TipRevenueSyncService {
     try {
       // ReplacingMergeTree handles deduplication based on ORDER BY (validator_id)
       // Use FINAL in subquery to ensure we read deduplicated hourly data
-      // Using toFloat64 for large wei values to avoid overflow
+      // Using floor(Float64) to avoid UInt64 overflow for wei values
       const cumulativeQuery = `
         INSERT INTO tip_revenue_cumulative
         SELECT
           validator_id,
-          toString(toUInt64(tip_wei_sum)) AS total_tip_wei,
+          toString(floor(tip_wei_sum)) AS total_tip_wei,
           tip_mon_sum AS total_tip_mon,
           blocks_sum AS total_blocks_proposed,
           tx_sum AS total_transactions,

@@ -70,17 +70,17 @@ export class TipRevenueController {
 
       // Query tip revenue data from hourly aggregated table (validator_id resolved during aggregation)
       // Using FINAL to ensure ReplacingMergeTree deduplication is applied
-      // Alias names must differ from column names to avoid ClickHouse error
+      // Using floor() to avoid UInt64 overflow for wei values
       const query = `
         SELECT
           validator_id,
-          toString(toUInt64(sum(toFloat64(total_tip_wei)))) AS sum_tip_wei,
+          toString(floor(sum(toFloat64(total_tip_wei)))) AS sum_tip_wei,
           sum(total_tip_mon) AS sum_tip_mon,
           sum(blocks_proposed) AS sum_blocks,
           sum(total_transactions) AS sum_transactions,
-          toString(toUInt64(sum(toFloat64(total_tip_wei)) / greatest(sum(blocks_proposed), 1))) AS avg_tip_block_wei,
+          toString(floor(sum(toFloat64(total_tip_wei)) / greatest(sum(blocks_proposed), 1))) AS avg_tip_block_wei,
           sum(total_tip_mon) / greatest(sum(blocks_proposed), 1) AS avg_tip_block_mon,
-          toString(toUInt64(sum(toFloat64(total_tip_wei)) / greatest(sum(total_transactions), 1))) AS avg_tip_tx_wei,
+          toString(floor(sum(toFloat64(total_tip_wei)) / greatest(sum(total_transactions), 1))) AS avg_tip_tx_wei,
           sum(total_tip_mon) / greatest(sum(total_transactions), 1) AS avg_tip_tx_mon,
           max(hour) AS last_updated
         FROM tip_revenue_hourly FINAL
@@ -219,11 +219,12 @@ export class TipRevenueController {
       let query: string;
 
       // Using FINAL for ReplacingMergeTree deduplication
+      // Using floor() to avoid UInt64 overflow for wei values
       if (granularity === 'daily') {
         query = `
           SELECT
             toStartOfDay(hour) AS period,
-            toString(toUInt64(sum(toFloat64(total_tip_wei)))) AS sum_tip_wei,
+            toString(floor(sum(toFloat64(total_tip_wei)))) AS sum_tip_wei,
             sum(total_tip_mon) AS sum_tip_mon,
             sum(blocks_proposed) AS sum_blocks,
             sum(total_transactions) AS sum_transactions,
@@ -317,6 +318,7 @@ export class TipRevenueController {
       const orderByField = orderByMap[sortBy] || 'sum_tip_mon';
 
       // Using FINAL for ReplacingMergeTree deduplication
+      // Using floor() to avoid UInt64 overflow for wei values
       const query = `
         SELECT
           ROW_NUMBER() OVER (ORDER BY ${orderByField} DESC) AS rank,
@@ -335,7 +337,7 @@ export class TipRevenueController {
             v.validator_name AS validator_name,
             v.provider AS provider,
             v.location AS location,
-            toString(toUInt64(sum(toFloat64(t.total_tip_wei)))) AS sum_tip_wei,
+            toString(floor(sum(toFloat64(t.total_tip_wei)))) AS sum_tip_wei,
             sum(t.total_tip_mon) AS sum_tip_mon,
             sum(t.blocks_proposed) AS sum_blocks,
             sum(t.total_transactions) AS sum_transactions,
@@ -421,9 +423,10 @@ export class TipRevenueController {
       }
 
       // Using FINAL for ReplacingMergeTree deduplication
+      // Using floor() to avoid UInt64 overflow for wei values
       const query = `
         SELECT
-          toString(toUInt64(sum(toFloat64(total_tip_wei)))) AS sum_tips_wei,
+          toString(floor(sum(toFloat64(total_tip_wei)))) AS sum_tips_wei,
           sum(total_tip_mon) AS sum_tips_mon,
           sum(blocks_proposed) AS sum_blocks,
           sum(total_transactions) AS sum_transactions,
