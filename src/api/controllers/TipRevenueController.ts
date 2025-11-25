@@ -23,6 +23,17 @@ const TIME_WINDOW_INTERVALS: Record<TimeWindow, string> = {
   '30d': '30 DAY'
 };
 
+/**
+ * Format wei values from scientific notation to integer string
+ * Handles large numbers that exceed JavaScript's safe integer limit
+ */
+const formatWei = (value: string | number): string => {
+  if (!value || value === '0') return '0';
+  const num = parseFloat(String(value));
+  if (isNaN(num)) return '0';
+  return BigInt(Math.floor(num)).toString();
+};
+
 export class TipRevenueController {
   constructor(
     private clickhouseClient: MonadClickHouseClient,
@@ -150,7 +161,7 @@ export class TipRevenueController {
         validator_id: validatorId,
         validator_name: validatorNameResult[0]?.validator_name || 'unknown',
         tip_revenue: {
-          total_wei: tipData.sum_tip_wei,
+          total_wei: formatWei(tipData.sum_tip_wei),
           total_mon: parseFloat(tipData.sum_tip_mon || 0).toFixed(6),
           blocks_proposed: parseInt(tipData.sum_blocks || 0),
           total_transactions: parseInt(tipData.sum_transactions || 0),
@@ -158,7 +169,7 @@ export class TipRevenueController {
           avg_tip_per_tx_mon: parseFloat(tipData.avg_tip_tx_mon || 0).toFixed(10)
         },
         cumulative: cumulativeResult[0] ? {
-          total_wei: cumulativeResult[0].total_tip_wei,
+          total_wei: formatWei(cumulativeResult[0].total_tip_wei),
           total_mon: parseFloat(cumulativeResult[0].total_tip_mon || 0).toFixed(6),
           total_blocks: parseInt(cumulativeResult[0].total_blocks_proposed || 0)
         } : null,
