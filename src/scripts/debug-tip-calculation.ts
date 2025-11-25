@@ -148,32 +148,38 @@ async function fetchSampleTransaction(
     }
 
     const baseFeePerGas = block.baseFeePerGas || BigInt(0);
-    const tx = block.prefetchedTransactions[0];
-    const receipt = await provider.getTransactionReceipt(tx.hash);
 
-    if (!receipt) return null;
+    // Find a transaction with non-zero gas
+    for (const tx of block.prefetchedTransactions) {
+      if (tx.gasLimit > BigInt(0)) {
+        const receipt = await provider.getTransactionReceipt(tx.hash);
+        if (!receipt || receipt.gasUsed === BigInt(0)) continue;
 
-    const effectiveGasPrice = receipt.gasPrice ?? tx.gasPrice ?? BigInt(0);
-    const gasLimit = tx.gasLimit;
-    const gasUsed = receipt.gasUsed;
-    const maxPriorityFeePerGas = tx.maxPriorityFeePerGas ?? null;
+        const effectiveGasPrice = receipt.gasPrice ?? tx.gasPrice ?? BigInt(0);
+        const gasLimit = tx.gasLimit;
+        const gasUsed = receipt.gasUsed;
+        const maxPriorityFeePerGas = tx.maxPriorityFeePerGas ?? null;
 
-    const priorityFee = effectiveGasPrice > baseFeePerGas
-      ? effectiveGasPrice - baseFeePerGas
-      : BigInt(0);
+        const priorityFee = effectiveGasPrice > baseFeePerGas
+          ? effectiveGasPrice - baseFeePerGas
+          : BigInt(0);
 
-    return {
-      hash: tx.hash,
-      effectiveGasPrice,
-      baseFeePerGas,
-      gasLimit,
-      gasUsed,
-      maxPriorityFeePerGas,
-      tipA: priorityFee * gasLimit,
-      tipB: effectiveGasPrice * gasLimit,
-      tipC: priorityFee * gasUsed,
-      tipD: effectiveGasPrice * gasUsed
-    };
+        return {
+          hash: tx.hash,
+          effectiveGasPrice,
+          baseFeePerGas,
+          gasLimit,
+          gasUsed,
+          maxPriorityFeePerGas,
+          tipA: priorityFee * gasLimit,
+          tipB: effectiveGasPrice * gasLimit,
+          tipC: priorityFee * gasUsed,
+          tipD: effectiveGasPrice * gasUsed
+        };
+      }
+    }
+
+    return null;
   } catch (error) {
     console.error('Error fetching sample transaction:', error);
     return null;
