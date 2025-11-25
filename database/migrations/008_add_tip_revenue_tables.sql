@@ -30,8 +30,6 @@ ORDER BY (block_number)
 TTL toDateTime(block_timestamp) + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
 
-ALTER TABLE tip_revenue_raw MODIFY COMMENT 'Raw block-level tip revenue data for validators';
-
 -- =============================================
 -- 2. HOURLY AGGREGATED TIP REVENUE
 -- =============================================
@@ -61,8 +59,6 @@ ORDER BY (hour, validator_id)
 TTL toDateTime(hour) + INTERVAL 180 DAY
 SETTINGS index_granularity = 8192;
 
-ALTER TABLE tip_revenue_hourly MODIFY COMMENT 'Hourly aggregated tip revenue per validator';
-
 -- =============================================
 -- 3. CUMULATIVE TIP REVENUE
 -- =============================================
@@ -87,8 +83,6 @@ CREATE TABLE IF NOT EXISTS tip_revenue_cumulative (
 ORDER BY (validator_id)
 SETTINGS index_granularity = 8192;
 
-ALTER TABLE tip_revenue_cumulative MODIFY COMMENT 'Cumulative tip revenue totals per validator';
-
 -- =============================================
 -- 4. TIP REVENUE SYNC STATE
 -- =============================================
@@ -100,5 +94,3 @@ CREATE TABLE IF NOT EXISTS tip_revenue_sync_state (
 ) ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (key)
 SETTINGS index_granularity = 8192;
-
-ALTER TABLE tip_revenue_sync_state MODIFY COMMENT 'Tip revenue sync state tracking (last processed block, etc.)';
