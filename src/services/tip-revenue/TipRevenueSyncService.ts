@@ -148,16 +148,6 @@ export class TipRevenueSyncService {
 
     try {
       const currentBlock = await this.tipRevenueService.getCurrentBlockNumber();
-
-      // If no last processed block, start from current block (no backfill)
-      // Only process new blocks going forward
-      if (this.lastProcessedBlock === 0) {
-        this.lastProcessedBlock = currentBlock;
-        await this.saveLastProcessedBlock(currentBlock);
-        logger.info(`No previous sync state found. Starting from current block: ${currentBlock}`);
-        return;
-      }
-
       const lag = currentBlock - this.lastProcessedBlock;
 
       if (lag <= 0) {
@@ -353,6 +343,7 @@ export class TipRevenueSyncService {
 
   /**
    * Load last processed block from Redis/database
+   * If no previous state found and backfill is disabled, start from current block
    */
   private async loadLastProcessedBlock(): Promise<void> {
     try {
@@ -360,6 +351,7 @@ export class TipRevenueSyncService {
       const redisValue = await this.redisClient.getCounter(REDIS_LAST_BLOCK_KEY);
       if (redisValue > 0) {
         this.lastProcessedBlock = redisValue;
+        logger.info(`Loaded last processed block from Redis: ${redisValue}`);
         return;
       }
 
@@ -370,14 +362,27 @@ export class TipRevenueSyncService {
       `;
 
       const result = await this.clickhouseClient.executeRawQuery(dbQuery);
-      const lastBlock = result[0]?.last_block || 0;
+      const lastBlock = parseInt(result[0]?.last_block) || 0;
 
-      this.lastProcessedBlock = lastBlock;
-
-      // Save to Redis for future
       if (lastBlock > 0) {
+        this.lastProcessedBlock = lastBlock;
         await this.saveLastProcessedBlock(lastBlock);
+        logger.info(`Loaded last processed block from database: ${lastBlock}`);
+        return;
       }
+
+      // No previous state found - if backfill is disabled, start from current block
+      if (!this.config.enableBackfill) {
+        const currentBlock = await this.tipRevenueService.getCurrentBlockNumber();
+        this.lastProcessedBlock = currentBlock;
+        await this.saveLastProcessedBlock(currentBlock);
+        logger.info(`No previous sync state found. Backfill disabled. Starting from current block: ${currentBlock}`);
+        return;
+      }
+
+      // Backfill is enabled, start from backfillStartBlock
+      this.lastProcessedBlock = 0;
+      logger.info(`No previous sync state found. Backfill enabled. Will start from block: ${this.config.backfillStartBlock}`);
 
     } catch (error) {
       logger.error('Failed to load last processed block:', error);
