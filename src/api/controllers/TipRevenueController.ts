@@ -353,7 +353,7 @@ export class TipRevenueController {
             sum(t.blocks_proposed) AS sum_blocks,
             sum(t.total_transactions) AS sum_transactions,
             sum(t.total_tip_mon) / greatest(sum(t.blocks_proposed), 1) AS avg_tip_block_mon
-          FROM tip_revenue_hourly FINAL t
+          FROM tip_revenue_hourly FINAL AS t
           LEFT JOIN validator_registry_latest v ON t.validator_id = v.validator_id
           WHERE t.hour >= now() - INTERVAL ${interval}
             AND t.validator_id != ''
@@ -454,7 +454,7 @@ export class TipRevenueController {
           t.validator_id AS validator_id,
           v.validator_name AS validator_name,
           sum(t.total_tip_mon) AS sum_tip_mon
-        FROM tip_revenue_hourly FINAL t
+        FROM tip_revenue_hourly FINAL AS t
         LEFT JOIN validator_registry_latest v ON t.validator_id = v.validator_id
         WHERE t.hour >= now() - INTERVAL 24 HOUR
           AND t.validator_id != ''
