@@ -22,10 +22,14 @@ import { EnhancedEpochController } from './controllers/EnhancedEpochController';
 import { TransactionAnalyticsController } from './controllers/TransactionAnalyticsController';
 import { StakingEventController } from './controllers/StakingEventController';
 import { ConsensusController } from './controllers/ConsensusController';
+import { TipRevenueController } from './controllers/TipRevenueController';
 
 // Import Staking Services
 import { StakingUpdateService, StakingUpdateConfig } from '../services/staking/StakingUpdateService';
 import { StakingEventIndexer } from '../services/staking-events/StakingEventIndexer';
+
+// Import Tip Revenue Services
+import { TipRevenueSyncService, TipRevenueSyncConfig } from '../services/tip-revenue';
 
 // Import Routes
 import { createHealthRoutes } from './routes/health';
@@ -40,6 +44,7 @@ import { createEnhancedEpochRoutes } from './routes/enhanced-epoch';
 import { createTransactionAnalyticsRoutes } from './routes/transaction-analytics';
 import { createStakingEventsRouter } from './routes/staking-events';
 import { createConsensusRouter } from './routes/consensus';
+import { createTipRevenueRoutes, createValidatorTipRevenueRoutes } from './routes/tip-revenue';
 
 export interface APIServerConfig {
   port: number;
@@ -64,6 +69,7 @@ export class AnalyticsAPIServer {
   private server: any;
   private stakingUpdateService: StakingUpdateService | null = null;
   private stakingEventIndexer: StakingEventIndexer | null = null;
+  private tipRevenueSyncService: TipRevenueSyncService | null = null;
 
   // Controllers
   private healthController!: HealthController;
@@ -77,6 +83,7 @@ export class AnalyticsAPIServer {
   private transactionAnalyticsController!: TransactionAnalyticsController;
   private stakingEventController!: StakingEventController;
   private consensusController!: ConsensusController;
+  private tipRevenueController!: TipRevenueController;
 
   constructor(config: APIServerConfig, ingestionService: DataIngestionService) {
     this.config = config;
@@ -112,6 +119,9 @@ export class AnalyticsAPIServer {
 
     // Initialize staking events indexer (separate from stakingUpdateService)
     this.initializeStakingEventIndexer();
+
+    // Initialize tip revenue services
+    this.initializeTipRevenueServices();
 
     // Initialize controllers
     this.initializeControllers();
@@ -192,6 +202,40 @@ export class AnalyticsAPIServer {
   }
 
   // =============================================
+  // TIP REVENUE SERVICES INITIALIZATION
+  // =============================================
+
+  private initializeTipRevenueServices(): void {
+    const rpcUrl = process.env.MONAD_RPC_URL;
+    if (!rpcUrl) {
+      logger.warn('⚠️  MONAD_RPC_URL not configured, tip revenue services will be disabled');
+      return;
+    }
+
+    try {
+      const tipRevenueConfig: TipRevenueSyncConfig = {
+        updateIntervalMs: parseInt(process.env.TIP_REVENUE_SYNC_INTERVAL_MS || '10000'),
+        batchSize: parseInt(process.env.TIP_REVENUE_BATCH_SIZE || '50'),
+        rpcUrl,
+        enableBackfill: (process.env.TIP_REVENUE_ENABLE_BACKFILL || 'false').toLowerCase() === 'true',
+        backfillStartBlock: parseInt(process.env.TIP_REVENUE_START_BLOCK || '0')
+      };
+
+      this.tipRevenueSyncService = new TipRevenueSyncService(
+        tipRevenueConfig,
+        this.clickhouseClient,
+        this.redisClient
+      );
+
+      logger.info('✅ Tip revenue services initialized');
+    } catch (error) {
+      logger.error('❌ Failed to initialize tip revenue services:', error);
+      logger.warn('⚠️  Continuing without tip revenue tracking');
+      this.tipRevenueSyncService = null;
+    }
+  }
+
+  // =============================================
   // CONTROLLER INITIALIZATION
   // =============================================
 
@@ -257,6 +301,12 @@ export class AnalyticsAPIServer {
 
     this.consensusController = new ConsensusController(
       this.clickhouseClient
+    );
+
+    this.tipRevenueController = new TipRevenueController(
+      this.clickhouseClient,
+      this.redisClient,
+      this.tipRevenueSyncService || undefined
     );
   }
 
@@ -332,6 +382,8 @@ export class AnalyticsAPIServer {
     this.app.use('/api/transaction-analytics', createTransactionAnalyticsRoutes(this.transactionAnalyticsController));
     this.app.use('/api/staking', createStakingEventsRouter(this.stakingEventController));
     this.app.use('/api/consensus', createConsensusRouter(this.consensusController));
+    this.app.use('/api/tip-revenue', createTipRevenueRoutes(this.tipRevenueController));
+    this.app.use('/api/validators/:id', createValidatorTipRevenueRoutes(this.tipRevenueController));
 
     // API documentation endpoint
     this.app.get('/api/docs', this.handleApiDocs.bind(this));
@@ -442,6 +494,15 @@ export class AnalyticsAPIServer {
           'GET /api/transaction-analytics/tps/current': 'Real-time current TPS calculation',
           'GET /api/transaction-analytics/geographic': 'Transaction processing analytics by geographic location',
           'GET /api/transaction-analytics/providers': 'Transaction processing analytics by infrastructure provider'
+        },
+        tipRevenue: {
+          'GET /api/tip-revenue/rankings': 'Validators ranked by tip revenue',
+          'GET /api/tip-revenue/network/summary': 'Network-wide tip revenue summary (24h)',
+          'GET /api/tip-revenue/trends': 'Tip revenue trends over time',
+          'GET /api/tip-revenue/sync/status': 'Tip revenue sync service status',
+          'POST /api/tip-revenue/sync/force': 'Force tip revenue sync',
+          'GET /api/validators/:id/tip-revenue': 'Validator tip revenue details',
+          'GET /api/validators/:id/tip-revenue/history': 'Validator tip revenue history (for graphs)'
         }
       },
       timestamp: new Date().toISOString()
@@ -555,6 +616,21 @@ export class AnalyticsAPIServer {
         })();
       }
 
+      // Start tip revenue sync service if available
+      if (this.tipRevenueSyncService) {
+        (async () => {
+          try {
+            logger.info('🔄 Starting tip revenue sync service...');
+            await this.tipRevenueSyncService!.initialize();
+            this.tipRevenueSyncService!.start();
+            logger.info('✅ Tip revenue sync service started');
+          } catch (error) {
+            logger.warn('⚠️  Failed to start tip revenue sync service, continuing without it:', error);
+            this.tipRevenueSyncService = null;
+          }
+        })();
+      }
+
       this.server = this.app.listen(this.config.port, () => {
         logger.info(`🚀 Monad Analytics API Server started on port ${this.config.port}`);
         logger.info(`📊 API Documentation: http://localhost:${this.config.port}/api/docs`);
@@ -597,6 +673,16 @@ export class AnalyticsAPIServer {
         logger.info('✅ Staking events indexer stopped');
       } catch (error) {
         logger.warn('⚠️  Error while stopping staking events indexer:', error);
+      }
+    }
+
+    // Stop tip revenue sync service if running
+    if (this.tipRevenueSyncService) {
+      try {
+        this.tipRevenueSyncService.stop();
+        logger.info('✅ Tip revenue sync service stopped');
+      } catch (error) {
+        logger.warn('⚠️  Error while stopping tip revenue sync service:', error);
       }
     }
 

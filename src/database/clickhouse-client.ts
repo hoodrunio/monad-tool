@@ -1475,4 +1475,65 @@ POPULATE
     }
     return String(value).trim();
   }
+
+  // =============================================
+  // TIP REVENUE INSERTION METHODS
+  // =============================================
+
+  /**
+   * Insert raw tip revenue records
+   */
+  async insertTipRevenueRaw(records: import('../services/tip-revenue/types').TipRevenueRawRecord[]): Promise<void> {
+    if (records.length === 0) return;
+
+    try {
+      await this.client.insert({
+        table: 'tip_revenue_raw',
+        values: records,
+        format: 'JSONEachRow'
+      });
+      logger.info(`Successfully inserted ${records.length} tip revenue raw records`);
+    } catch (error) {
+      logger.error('Failed to insert tip revenue raw records:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Insert hourly aggregated tip revenue records
+   */
+  async insertTipRevenueHourly(records: import('../services/tip-revenue/types').TipRevenueHourlyRecord[]): Promise<void> {
+    if (records.length === 0) return;
+
+    try {
+      await this.client.insert({
+        table: 'tip_revenue_hourly',
+        values: records,
+        format: 'JSONEachRow'
+      });
+      logger.info(`Successfully inserted ${records.length} tip revenue hourly records`);
+    } catch (error) {
+      logger.error('Failed to insert tip revenue hourly records:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Insert cumulative tip revenue records
+   */
+  async insertTipRevenueCumulative(records: import('../services/tip-revenue/types').TipRevenueCumulativeRecord[]): Promise<void> {
+    if (records.length === 0) return;
+
+    try {
+      await this.client.insert({
+        table: 'tip_revenue_cumulative',
+        values: records,
+        format: 'JSONEachRow'
+      });
+      logger.info(`Successfully inserted ${records.length} tip revenue cumulative records`);
+    } catch (error) {
+      logger.error('Failed to insert tip revenue cumulative records:', error);
+      throw error;
+    }
+  }
 }

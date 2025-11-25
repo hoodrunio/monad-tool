@@ -442,4 +442,139 @@ export class MonadRedisClient {
     const value = await this.client.get(key);
     return value ? parseInt(value, 10) : 0;
   }
+
+  // =============================================
+  // TIP REVENUE CACHE METHODS
+  // =============================================
+
+  async cacheTipRevenueRankings(
+    timeWindow: string,
+    rankings: any[],
+    ttl: number = 120 // 2 minutes
+  ): Promise<void> {
+    const key = `tip_revenue_rankings:${timeWindow}`;
+    await this.client.setex(key, ttl, JSON.stringify(rankings));
+  }
+
+  async getTipRevenueRankings(timeWindow: string): Promise<any[] | null> {
+    const startTime = Date.now();
+    const key = `tip_revenue_rankings:${timeWindow}`;
+
+    try {
+      const cached = await this.client.get(key);
+      const responseTime = Date.now() - startTime;
+
+      this.updateMetrics(cached !== null, responseTime);
+
+      return cached ? JSON.parse(cached) : null;
+    } catch (error) {
+      console.error(`Failed to get tip revenue rankings from cache: ${error}`);
+      return null;
+    }
+  }
+
+  async cacheTipRevenueSummary(
+    summary: any,
+    ttl: number = 60 // 1 minute
+  ): Promise<void> {
+    const key = 'tip_revenue_network_summary';
+    await this.client.setex(key, ttl, JSON.stringify(summary));
+  }
+
+  async getTipRevenueSummary(): Promise<any | null> {
+    const startTime = Date.now();
+    const key = 'tip_revenue_network_summary';
+
+    try {
+      const cached = await this.client.get(key);
+      const responseTime = Date.now() - startTime;
+
+      this.updateMetrics(cached !== null, responseTime);
+
+      return cached ? JSON.parse(cached) : null;
+    } catch (error) {
+      console.error(`Failed to get tip revenue summary from cache: ${error}`);
+      return null;
+    }
+  }
+
+  async cacheTipRevenueTrends(
+    trends: any[],
+    hours: number,
+    ttl: number = 300 // 5 minutes
+  ): Promise<void> {
+    const key = `tip_revenue_trends:${hours}h`;
+    await this.client.setex(key, ttl, JSON.stringify(trends));
+  }
+
+  async getTipRevenueTrends(hours: number): Promise<any[] | null> {
+    const startTime = Date.now();
+    const key = `tip_revenue_trends:${hours}h`;
+
+    try {
+      const cached = await this.client.get(key);
+      const responseTime = Date.now() - startTime;
+
+      this.updateMetrics(cached !== null, responseTime);
+
+      return cached ? JSON.parse(cached) : null;
+    } catch (error) {
+      console.error(`Failed to get tip revenue trends from cache: ${error}`);
+      return null;
+    }
+  }
+
+  async cacheValidatorTipRevenue(
+    validatorId: string,
+    timeWindow: string,
+    data: any,
+    ttl: number = 120 // 2 minutes
+  ): Promise<void> {
+    const key = `validator_tip_revenue:${validatorId}:${timeWindow}`;
+    await this.client.setex(key, ttl, JSON.stringify(data));
+  }
+
+  async getValidatorTipRevenue(validatorId: string, timeWindow: string): Promise<any | null> {
+    const startTime = Date.now();
+    const key = `validator_tip_revenue:${validatorId}:${timeWindow}`;
+
+    try {
+      const cached = await this.client.get(key);
+      const responseTime = Date.now() - startTime;
+
+      this.updateMetrics(cached !== null, responseTime);
+
+      return cached ? JSON.parse(cached) : null;
+    } catch (error) {
+      console.error(`Failed to get validator tip revenue from cache: ${error}`);
+      return null;
+    }
+  }
+
+  async cacheValidatorTipHistory(
+    validatorId: string,
+    hours: number,
+    history: any[],
+    ttl: number = 300 // 5 minutes
+  ): Promise<void> {
+    const key = `validator_tip_history:${validatorId}:${hours}h`;
+    await this.client.setex(key, ttl, JSON.stringify(history));
+  }
+
+  async getValidatorTipHistory(validatorId: string, hours: number): Promise<any[] | null> {
+    const startTime = Date.now();
+    const key = `validator_tip_history:${validatorId}:${hours}h`;
+
+    try {
+      const cached = await this.client.get(key);
+      const responseTime = Date.now() - startTime;
+
+      this.updateMetrics(cached !== null, responseTime);
+
+      return cached ? JSON.parse(cached) : null;
+    } catch (error) {
+      console.error(`Failed to get validator tip history from cache: ${error}`);
+      return null;
+    }
+  }
 } 
