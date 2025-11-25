@@ -91,18 +91,20 @@ export class TipRevenueService {
 
           if (!receipt) continue;
 
-          // Calculate tip: (effectiveGasPrice - baseFeePerGas) * gasUsed
-          // effectiveGasPrice is what was actually paid per gas
-          const effectiveGasPrice = receipt.gasPrice || tx.gasPrice || BigInt(0);
-          const gasUsed = receipt.gasUsed;
+          // Monad tip calculation: priority_fee × gasLimit
+          // Monad charges based on gasLimit not gasUsed (for asynchronous block execution)
+          // Source: https://docs.monad.xyz/developer-essentials/gas-pricing
+          // Note: ethers.js maps RPC's effectiveGasPrice to receipt.gasPrice
+          const effectiveGasPrice = receipt.gasPrice ?? tx.gasPrice ?? BigInt(0);
+          const gasLimit = tx.gasLimit;
 
-          // Tip per gas = effectiveGasPrice - baseFeePerGas
+          // Priority fee per gas = effectiveGasPrice - baseFeePerGas
           const tipPerGas = effectiveGasPrice > baseFeePerGas
             ? effectiveGasPrice - baseFeePerGas
             : BigInt(0);
 
-          // Total tip for this transaction
-          const txTip = tipPerGas * gasUsed;
+          // Total tip for this transaction = tipPerGas × gasLimit
+          const txTip = tipPerGas * gasLimit;
           totalTipWei += txTip;
         }
       }
