@@ -275,6 +275,10 @@ export class TipRevenueSyncService {
     try {
       logger.info('Running hourly tip revenue aggregation...');
 
+      // ReplacingMergeTree handles deduplication automatically based on ORDER BY (hour, validator_id)
+      // When same (hour, validator_id) is inserted, the row with latest updated_at wins
+      // No DELETE needed - just INSERT and let ClickHouse handle merging
+      //
       // Aggregate last 25 hours of data with validator_id from block_proposals
       // block_proposals.seq_num = block number, status='proposed' for successful blocks
       // Using toFloat64 for large wei values to avoid UInt64 overflow
@@ -301,6 +305,11 @@ export class TipRevenueSyncService {
 
       await this.clickhouseClient.executeCommand(aggregationQuery);
 
+      // Optimize table to merge duplicate rows (ReplacingMergeTree deduplication)
+      // This forces immediate merge instead of waiting for background merges
+      await this.clickhouseClient.executeCommand('OPTIMIZE TABLE tip_revenue_hourly FINAL');
+      logger.info('Optimized tip_revenue_hourly table');
+
       // Update cumulative totals
       await this.updateCumulativeTotals();
 
@@ -317,7 +326,8 @@ export class TipRevenueSyncService {
    */
   private async updateCumulativeTotals(): Promise<void> {
     try {
-      // Use subquery to avoid alias collision with column name
+      // ReplacingMergeTree handles deduplication based on ORDER BY (validator_id)
+      // Use FINAL in subquery to ensure we read deduplicated hourly data
       // Using toFloat64 for large wei values to avoid overflow
       const cumulativeQuery = `
         INSERT INTO tip_revenue_cumulative
@@ -340,13 +350,16 @@ export class TipRevenueSyncService {
             sum(total_transactions) AS tx_sum,
             min(hour) AS first_hour,
             max(hour) AS last_hour
-          FROM tip_revenue_hourly
+          FROM tip_revenue_hourly FINAL
           WHERE validator_id != ''
           GROUP BY validator_id
         )
       `;
 
       await this.clickhouseClient.executeCommand(cumulativeQuery);
+
+      // Optimize cumulative table to merge duplicates
+      await this.clickhouseClient.executeCommand('OPTIMIZE TABLE tip_revenue_cumulative FINAL');
 
     } catch (error) {
       logger.error('Failed to update cumulative totals:', error);
