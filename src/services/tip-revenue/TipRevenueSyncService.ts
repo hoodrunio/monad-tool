@@ -317,24 +317,32 @@ export class TipRevenueSyncService {
    */
   private async updateCumulativeTotals(): Promise<void> {
     try {
+      // Use subquery to avoid alias collision with column name
       const cumulativeQuery = `
         INSERT INTO tip_revenue_cumulative
         SELECT
           validator_id,
-          toString(sum(toUInt64OrZero(total_tip_wei))) AS total_tip_wei,
-          sum(total_tip_mon) AS total_tip_mon,
-          sum(blocks_proposed) AS total_blocks_proposed,
-          sum(total_transactions) AS total_transactions,
-          if(sum(blocks_proposed) > 0,
-            sum(total_tip_mon) / sum(blocks_proposed),
-            0
-          ) AS avg_tip_per_block_mon,
-          min(hour) AS first_block_timestamp,
-          max(hour) AS last_block_timestamp,
+          toString(tip_wei_sum) AS total_tip_wei,
+          tip_mon_sum AS total_tip_mon,
+          blocks_sum AS total_blocks_proposed,
+          tx_sum AS total_transactions,
+          if(blocks_sum > 0, tip_mon_sum / blocks_sum, 0) AS avg_tip_per_block_mon,
+          first_hour AS first_block_timestamp,
+          last_hour AS last_block_timestamp,
           now() AS last_updated
-        FROM tip_revenue_hourly
-        WHERE validator_id != ''
-        GROUP BY validator_id
+        FROM (
+          SELECT
+            validator_id,
+            sum(toUInt64OrZero(total_tip_wei)) AS tip_wei_sum,
+            sum(total_tip_mon) AS tip_mon_sum,
+            sum(blocks_proposed) AS blocks_sum,
+            sum(total_transactions) AS tx_sum,
+            min(hour) AS first_hour,
+            max(hour) AS last_hour
+          FROM tip_revenue_hourly
+          WHERE validator_id != ''
+          GROUP BY validator_id
+        )
       `;
 
       await this.clickhouseClient.executeCommand(cumulativeQuery);
