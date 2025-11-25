@@ -68,22 +68,22 @@ export class TipRevenueController {
 
       const interval = TIME_WINDOW_INTERVALS[window] || '24 HOUR';
 
-      // Query tip revenue data
+      // Query tip revenue data from hourly aggregated table (validator_id resolved during aggregation)
       const query = `
         SELECT
           validator_id,
           toString(sum(toUInt256(total_tip_wei))) AS total_tip_wei,
-          sum(toFloat64(total_tip_wei)) / 1e18 AS total_tip_mon,
-          count() AS blocks_proposed,
-          sum(transaction_count) AS total_transactions,
-          toString(if(count() > 0, sum(toUInt256(total_tip_wei)) / count(), 0)) AS avg_tip_per_block_wei,
-          if(count() > 0, sum(toFloat64(total_tip_wei)) / 1e18 / count(), 0) AS avg_tip_per_block_mon,
-          toString(if(sum(transaction_count) > 0, sum(toUInt256(total_tip_wei)) / sum(transaction_count), 0)) AS avg_tip_per_tx_wei,
-          if(sum(transaction_count) > 0, sum(toFloat64(total_tip_wei)) / 1e18 / sum(transaction_count), 0) AS avg_tip_per_tx_mon,
-          max(block_timestamp) AS last_updated
-        FROM tip_revenue_raw
+          sum(total_tip_mon) AS total_tip_mon,
+          sum(blocks_proposed) AS blocks_proposed,
+          sum(total_transactions) AS total_transactions,
+          toString(if(sum(blocks_proposed) > 0, sum(toUInt256(total_tip_wei)) / sum(blocks_proposed), 0)) AS avg_tip_per_block_wei,
+          if(sum(blocks_proposed) > 0, sum(total_tip_mon) / sum(blocks_proposed), 0) AS avg_tip_per_block_mon,
+          toString(if(sum(total_transactions) > 0, sum(toUInt256(total_tip_wei)) / sum(total_transactions), 0)) AS avg_tip_per_tx_wei,
+          if(sum(total_transactions) > 0, sum(total_tip_mon) / sum(total_transactions), 0) AS avg_tip_per_tx_mon,
+          max(hour) AS last_updated
+        FROM tip_revenue_hourly
         WHERE validator_id = '${validatorId}'
-          AND block_timestamp >= now() - INTERVAL ${interval}
+          AND hour >= now() - INTERVAL ${interval}
         GROUP BY validator_id
       `;
 
@@ -104,15 +104,15 @@ export class TipRevenueController {
 
       const cumulativeResult = await this.clickhouseClient.executeRawQuery(cumulativeQuery);
 
-      // Get rank
+      // Get rank from hourly table
       const rankQuery = `
         SELECT rank
         FROM (
           SELECT
             validator_id,
-            ROW_NUMBER() OVER (ORDER BY sum(toFloat64(total_tip_wei)) DESC) AS rank
-          FROM tip_revenue_raw
-          WHERE block_timestamp >= now() - INTERVAL ${interval}
+            ROW_NUMBER() OVER (ORDER BY sum(total_tip_mon) DESC) AS rank
+          FROM tip_revenue_hourly
+          WHERE hour >= now() - INTERVAL ${interval}
             AND validator_id != ''
           GROUP BY validator_id
         )
@@ -218,31 +218,30 @@ export class TipRevenueController {
       if (granularity === 'daily') {
         query = `
           SELECT
-            toStartOfDay(block_timestamp) AS period,
+            toStartOfDay(hour) AS period,
             toString(sum(toUInt256(total_tip_wei))) AS total_tip_wei,
-            sum(toFloat64(total_tip_wei)) / 1e18 AS total_tip_mon,
-            count() AS blocks_proposed,
-            sum(transaction_count) AS total_transactions,
-            if(count() > 0, sum(toFloat64(total_tip_wei)) / 1e18 / count(), 0) AS avg_tip_per_block_mon
-          FROM tip_revenue_raw
+            sum(total_tip_mon) AS total_tip_mon,
+            sum(blocks_proposed) AS blocks_proposed,
+            sum(total_transactions) AS total_transactions,
+            if(sum(blocks_proposed) > 0, sum(total_tip_mon) / sum(blocks_proposed), 0) AS avg_tip_per_block_mon
+          FROM tip_revenue_hourly
           WHERE validator_id = '${validatorId}'
-            AND block_timestamp >= now() - INTERVAL ${hours} HOUR
+            AND hour >= now() - INTERVAL ${hours} HOUR
           GROUP BY period
           ORDER BY period ASC
         `;
       } else {
         query = `
           SELECT
-            toStartOfHour(block_timestamp) AS period,
-            toString(sum(toUInt256(total_tip_wei))) AS total_tip_wei,
-            sum(toFloat64(total_tip_wei)) / 1e18 AS total_tip_mon,
-            count() AS blocks_proposed,
-            sum(transaction_count) AS total_transactions,
-            if(count() > 0, sum(toFloat64(total_tip_wei)) / 1e18 / count(), 0) AS avg_tip_per_block_mon
-          FROM tip_revenue_raw
+            hour AS period,
+            total_tip_wei,
+            total_tip_mon,
+            blocks_proposed,
+            total_transactions,
+            if(blocks_proposed > 0, total_tip_mon / blocks_proposed, 0) AS avg_tip_per_block_mon
+          FROM tip_revenue_hourly
           WHERE validator_id = '${validatorId}'
-            AND block_timestamp >= now() - INTERVAL ${hours} HOUR
-          GROUP BY period
+            AND hour >= now() - INTERVAL ${hours} HOUR
           ORDER BY period ASC
         `;
       }
@@ -319,13 +318,13 @@ export class TipRevenueController {
           v.provider,
           v.location,
           toString(sum(toUInt256(t.total_tip_wei))) AS total_tip_wei,
-          sum(toFloat64(t.total_tip_wei)) / 1e18 AS total_tip_mon,
-          count() AS blocks_proposed,
-          sum(t.transaction_count) AS total_transactions,
-          if(count() > 0, sum(toFloat64(t.total_tip_wei)) / 1e18 / count(), 0) AS avg_tip_per_block_mon
-        FROM tip_revenue_raw t
+          sum(t.total_tip_mon) AS total_tip_mon,
+          sum(t.blocks_proposed) AS blocks_proposed,
+          sum(t.total_transactions) AS total_transactions,
+          if(sum(t.blocks_proposed) > 0, sum(t.total_tip_mon) / sum(t.blocks_proposed), 0) AS avg_tip_per_block_mon
+        FROM tip_revenue_hourly t
         LEFT JOIN validator_registry_latest v ON t.validator_id = v.validator_id
-        WHERE t.block_timestamp >= now() - INTERVAL ${interval}
+        WHERE t.hour >= now() - INTERVAL ${interval}
           AND t.validator_id != ''
         GROUP BY t.validator_id, v.validator_name, v.provider, v.location
         ORDER BY ${orderByClause}
@@ -335,11 +334,11 @@ export class TipRevenueController {
 
       const result = await this.clickhouseClient.executeRawQuery(query);
 
-      // Get total count
+      // Get total count from hourly table
       const countQuery = `
         SELECT count(DISTINCT validator_id) AS total
-        FROM tip_revenue_raw
-        WHERE block_timestamp >= now() - INTERVAL ${interval}
+        FROM tip_revenue_hourly
+        WHERE hour >= now() - INTERVAL ${interval}
           AND validator_id != ''
       `;
 
@@ -405,25 +404,25 @@ export class TipRevenueController {
       const query = `
         SELECT
           toString(sum(toUInt256(total_tip_wei))) AS total_tips_wei,
-          sum(toFloat64(total_tip_wei)) / 1e18 AS total_tips_mon,
-          count() AS total_blocks,
-          sum(transaction_count) AS total_transactions,
-          if(count() > 0, sum(toFloat64(total_tip_wei)) / 1e18 / count(), 0) AS avg_tip_per_block_mon
-        FROM tip_revenue_raw
-        WHERE block_timestamp >= now() - INTERVAL 24 HOUR
+          sum(total_tip_mon) AS total_tips_mon,
+          sum(blocks_proposed) AS total_blocks,
+          sum(total_transactions) AS total_transactions,
+          if(sum(blocks_proposed) > 0, sum(total_tip_mon) / sum(blocks_proposed), 0) AS avg_tip_per_block_mon
+        FROM tip_revenue_hourly
+        WHERE hour >= now() - INTERVAL 24 HOUR
       `;
 
       const result = await this.clickhouseClient.executeRawQuery(query);
 
-      // Get top validator
+      // Get top validator from hourly table
       const topValidatorQuery = `
         SELECT
           t.validator_id,
           v.validator_name,
-          sum(toFloat64(t.total_tip_wei)) / 1e18 AS total_tip_mon
-        FROM tip_revenue_raw t
+          sum(t.total_tip_mon) AS total_tip_mon
+        FROM tip_revenue_hourly t
         LEFT JOIN validator_registry_latest v ON t.validator_id = v.validator_id
-        WHERE t.block_timestamp >= now() - INTERVAL 24 HOUR
+        WHERE t.hour >= now() - INTERVAL 24 HOUR
           AND t.validator_id != ''
         GROUP BY t.validator_id, v.validator_name
         ORDER BY total_tip_mon DESC
@@ -490,13 +489,13 @@ export class TipRevenueController {
 
       const query = `
         SELECT
-          toStartOfHour(block_timestamp) AS hour,
-          sum(toFloat64(total_tip_wei)) / 1e18 AS total_tip_mon,
-          count() AS total_blocks,
-          if(count() > 0, sum(toFloat64(total_tip_wei)) / 1e18 / count(), 0) AS avg_tip_per_block_mon,
+          hour,
+          sum(total_tip_mon) AS total_tip_mon,
+          sum(blocks_proposed) AS total_blocks,
+          if(sum(blocks_proposed) > 0, sum(total_tip_mon) / sum(blocks_proposed), 0) AS avg_tip_per_block_mon,
           uniq(validator_id) AS active_validators
-        FROM tip_revenue_raw
-        WHERE block_timestamp >= now() - INTERVAL ${hours} HOUR
+        FROM tip_revenue_hourly
+        WHERE hour >= now() - INTERVAL ${hours} HOUR
         GROUP BY hour
         ORDER BY hour ASC
       `;

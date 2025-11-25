@@ -269,30 +269,33 @@ export class TipRevenueSyncService {
 
   /**
    * Run hourly aggregation
+   * JOIN with block_proposals to get validator_id from block number
    */
   private async runHourlyAggregation(): Promise<void> {
     try {
       logger.info('Running hourly tip revenue aggregation...');
 
-      // Aggregate last 24 hours of data (to catch any missed hours)
+      // Aggregate last 24 hours of data with validator_id from block_proposals
+      // block_proposals.seq_num = block number, status='proposed' for successful blocks
       const aggregationQuery = `
         INSERT INTO tip_revenue_hourly
         SELECT
-          toStartOfHour(block_timestamp) AS hour,
-          validator_id,
-          toString(sum(toUInt256(total_tip_wei))) AS total_tip_wei,
-          sum(toFloat64(total_tip_wei)) / 1e18 AS total_tip_mon,
+          toStartOfHour(t.block_timestamp) AS hour,
+          bp.validator_id AS validator_id,
+          toString(sum(toUInt256(t.total_tip_wei))) AS total_tip_wei,
+          sum(toFloat64(t.total_tip_wei)) / 1e18 AS total_tip_mon,
           count() AS blocks_proposed,
-          sum(transaction_count) AS total_transactions,
-          toString(if(count() > 0, sum(toUInt256(total_tip_wei)) / count(), 0)) AS avg_tip_per_block_wei,
-          toString(if(sum(transaction_count) > 0, sum(toUInt256(total_tip_wei)) / sum(transaction_count), 0)) AS avg_tip_per_tx_wei,
-          toString(min(toUInt256(total_tip_wei))) AS min_tip_wei,
-          toString(max(toUInt256(total_tip_wei))) AS max_tip_wei,
+          sum(t.transaction_count) AS total_transactions,
+          toString(if(count() > 0, sum(toUInt256(t.total_tip_wei)) / count(), 0)) AS avg_tip_per_block_wei,
+          toString(if(sum(t.transaction_count) > 0, sum(toUInt256(t.total_tip_wei)) / sum(t.transaction_count), 0)) AS avg_tip_per_tx_wei,
+          toString(min(toUInt256(t.total_tip_wei))) AS min_tip_wei,
+          toString(max(toUInt256(t.total_tip_wei))) AS max_tip_wei,
           now() AS updated_at
-        FROM tip_revenue_raw
-        WHERE block_timestamp >= now() - INTERVAL 25 HOUR
-          AND validator_id != ''
-        GROUP BY hour, validator_id
+        FROM tip_revenue_raw t
+        INNER JOIN block_proposals bp ON t.block_number = bp.seq_num AND bp.status = 'proposed'
+        WHERE t.block_timestamp >= now() - INTERVAL 25 HOUR
+          AND bp.validator_id != ''
+        GROUP BY hour, bp.validator_id
       `;
 
       await this.clickhouseClient.executeCommand(aggregationQuery);

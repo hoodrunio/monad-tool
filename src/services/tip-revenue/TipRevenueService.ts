@@ -1,6 +1,5 @@
-import { ethers, keccak256 } from 'ethers';
+import { ethers } from 'ethers';
 import { logger } from '../../utils/logger';
-import * as secp256k1 from 'secp256k1';
 import {
   BlockTipData,
   TipRevenueRawRecord,
@@ -11,12 +10,13 @@ import {
 /**
  * TipRevenueService
  * Core service for fetching and calculating tip revenue from blockchain RPC
+ *
+ * NOTE: validator_id mapping is handled via JOIN with block_proposals table
+ * at query time, not during ingestion.
  */
 export class TipRevenueService {
   private provider: ethers.JsonRpcProvider;
   private isInitialized = false;
-  private addressToValidatorCache: Map<string, string | null> = new Map();
-  private validatorIdToAddressCache: Map<string, string> = new Map();
 
   constructor(rpcUrl: string) {
     this.provider = new ethers.JsonRpcProvider(rpcUrl);
@@ -110,7 +110,7 @@ export class TipRevenueService {
       return {
         blockNumber,
         blockTimestamp,
-        validatorId: null, // Will be resolved later via mapping
+        validatorId: null, // Resolved via JOIN with block_proposals at query time
         proposerAddress,
         totalTipWei,
         transactionCount,
@@ -160,149 +160,14 @@ export class TipRevenueService {
   }
 
   /**
-   * Convert compressed secp256k1 public key to Ethereum address
-   * validator_id (compressed pubkey) -> decompress -> keccak256 -> last 20 bytes
-   * @param compressedPubKey Compressed public key (33 bytes hex with 0x prefix)
-   * @returns Ethereum address (0x prefixed)
-   */
-  compressedPubKeyToAddress(compressedPubKey: string): string | null {
-    try {
-      // Remove 0x prefix if present
-      const pubKeyHex = compressedPubKey.startsWith('0x')
-        ? compressedPubKey.slice(2)
-        : compressedPubKey;
-
-      // Convert hex to Uint8Array
-      const compressedBytes = Uint8Array.from(
-        Buffer.from(pubKeyHex, 'hex')
-      );
-
-      // Decompress the public key (33 bytes -> 65 bytes)
-      const uncompressedBytes = secp256k1.publicKeyConvert(compressedBytes, false);
-
-      // Remove the first byte (0x04 prefix) to get 64 bytes
-      const pubKeyWithoutPrefix = uncompressedBytes.slice(1);
-
-      // Keccak256 hash of the uncompressed public key (without 0x04 prefix)
-      const hash = keccak256(pubKeyWithoutPrefix);
-
-      // Take last 20 bytes (40 hex chars) as the address
-      const address = '0x' + hash.slice(-40);
-
-      return address.toLowerCase();
-    } catch (error) {
-      logger.warn(`Failed to convert compressed pubkey to address: ${compressedPubKey}`, error);
-      return null;
-    }
-  }
-
-  /**
-   * Build validator address mapping cache from database
-   * Converts all validator_ids to Ethereum addresses for fast lookup
-   */
-  async buildValidatorAddressCache(clickhouseClient: any): Promise<void> {
-    try {
-      // Get all validator_ids from database
-      const query = `
-        SELECT DISTINCT validator_id
-        FROM validator_registry
-        WHERE validator_id != ''
-      `;
-
-      const result = await clickhouseClient.executeRawQuery(query);
-
-      for (const row of result) {
-        const validatorId = row.validator_id;
-        const address = this.compressedPubKeyToAddress(validatorId);
-
-        if (address) {
-          this.validatorIdToAddressCache.set(validatorId, address);
-          this.addressToValidatorCache.set(address, validatorId);
-        }
-      }
-
-      logger.info(`Built validator address cache with ${this.validatorIdToAddressCache.size} entries`);
-    } catch (error) {
-      logger.error('Failed to build validator address cache:', error);
-    }
-  }
-
-  /**
-   * Map proposer address to validator_id
-   * Converts miner address to validator_id using precomputed cache
-   * @param proposerAddress Block proposer/miner address (Ethereum address)
-   * @param clickhouseClient ClickHouse client for database queries
-   * @returns validator_id or null if not found
-   */
-  async mapProposerToValidator(
-    proposerAddress: string,
-    clickhouseClient: any
-  ): Promise<string | null> {
-    const normalizedAddress = proposerAddress.toLowerCase();
-
-    // Check cache first
-    if (this.addressToValidatorCache.has(normalizedAddress)) {
-      return this.addressToValidatorCache.get(normalizedAddress) || null;
-    }
-
-    // If cache is empty, build it
-    if (this.validatorIdToAddressCache.size === 0) {
-      await this.buildValidatorAddressCache(clickhouseClient);
-    }
-
-    // Check cache again after building
-    if (this.addressToValidatorCache.has(normalizedAddress)) {
-      return this.addressToValidatorCache.get(normalizedAddress) || null;
-    }
-
-    // If still not found, try to find new validators
-    try {
-      const query = `
-        SELECT DISTINCT validator_id
-        FROM validator_registry
-        WHERE validator_id != ''
-          AND validator_id NOT IN (${
-            Array.from(this.validatorIdToAddressCache.keys())
-              .map(id => `'${id}'`)
-              .join(',') || "''"
-          })
-      `;
-
-      const result = await clickhouseClient.executeRawQuery(query);
-
-      for (const row of result) {
-        const validatorId = row.validator_id;
-        const address = this.compressedPubKeyToAddress(validatorId);
-
-        if (address) {
-          this.validatorIdToAddressCache.set(validatorId, address);
-          this.addressToValidatorCache.set(address, validatorId);
-
-          if (address === normalizedAddress) {
-            return validatorId;
-          }
-        }
-      }
-    } catch (error) {
-      logger.warn(`Failed to map proposer ${proposerAddress} to validator:`, error);
-    }
-
-    // Cache the miss
-    this.addressToValidatorCache.set(normalizedAddress, null);
-    return null;
-  }
-
-  /**
    * Convert BlockTipData to database record format
+   * NOTE: validator_id is left empty - it will be resolved via JOIN at query time
    */
-  blockTipDataToRecord(
-    data: BlockTipData,
-    validatorId: string | null
-  ): TipRevenueRawRecord {
+  blockTipDataToRecord(data: BlockTipData): TipRevenueRawRecord {
     return {
       block_number: data.blockNumber,
       block_timestamp: formatClickHouseDateTime(data.blockTimestamp),
-      validator_id: validatorId || '',
+      validator_id: '', // Resolved via JOIN with block_proposals at query time
       proposer_address: data.proposerAddress,
       total_tip_wei: data.totalTipWei.toString(),
       transaction_count: data.transactionCount,
@@ -329,18 +194,10 @@ export class TipRevenueService {
       return 0;
     }
 
-    // Resolve validator IDs for all proposer addresses
-    const records: TipRevenueRawRecord[] = [];
-
-    for (const block of blockData) {
-      const validatorId = await this.mapProposerToValidator(
-        block.proposerAddress,
-        clickhouseClient
-      );
-
-      const record = this.blockTipDataToRecord(block, validatorId);
-      records.push(record);
-    }
+    // Convert to records (validator_id will be resolved via JOIN at query time)
+    const records: TipRevenueRawRecord[] = blockData.map(block =>
+      this.blockTipDataToRecord(block)
+    );
 
     // Insert into database
     if (records.length > 0) {
@@ -349,24 +206,6 @@ export class TipRevenueService {
     }
 
     return records.length;
-  }
-
-  /**
-   * Clear address-to-validator cache
-   */
-  clearCache(): void {
-    this.addressToValidatorCache.clear();
-    logger.info('TipRevenueService cache cleared');
-  }
-
-  /**
-   * Get cache statistics
-   */
-  getCacheStats(): { size: number; hitRate: number } {
-    return {
-      size: this.addressToValidatorCache.size,
-      hitRate: 0 // TODO: Implement hit rate tracking if needed
-    };
   }
 
   /**
