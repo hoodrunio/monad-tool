@@ -9,11 +9,13 @@ import { ClickHouseClient } from '@clickhouse/client';
 import { Migration } from './Migration';
 import { AddIsStakingActiveMigration } from './20251025_add_is_staking_active';
 import { RebuildValidatorRegistryLatestMigration } from './20251116_rebuild_validator_registry_latest';
+import { AddTipRevenueTablesMigration } from './20251125_add_tip_revenue_tables';
 
 export class MigrationRunner {
   private migrations: Migration[] = [
     new AddIsStakingActiveMigration(),
     new RebuildValidatorRegistryLatestMigration(),
+    new AddTipRevenueTablesMigration(),
     // Add new migrations here
   ];
 
