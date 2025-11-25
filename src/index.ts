@@ -162,9 +162,13 @@ async function loadSystemdStreamConfig(clickhouseClient: any): Promise<SystemdLo
     if (result && result[0]?.last_ts) {
       // Format timestamp for journalctl (e.g., "2025-11-25 16:28:00")
       const lastTimestamp = new Date(result[0].last_ts);
-      if (!isNaN(lastTimestamp.getTime())) {
+      // Check if timestamp is valid AND after year 2020 (to avoid epoch/zero timestamps)
+      const minValidDate = new Date('2025-11-01').getTime();
+      if (!isNaN(lastTimestamp.getTime()) && lastTimestamp.getTime() > minValidDate) {
         sinceWhen = lastTimestamp.toISOString().replace('T', ' ').substring(0, 19);
         logger.info(`📋 Log stream will start from last block_proposals timestamp: ${sinceWhen}`);
+      } else {
+        logger.info(`📋 No valid block_proposals timestamp found, starting from now`);
       }
     }
   } catch (error) {
