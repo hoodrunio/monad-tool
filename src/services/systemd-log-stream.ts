@@ -139,7 +139,8 @@ export class SystemdLogStream extends EventEmitter {
 
     // Handle stderr
     journalProcess.stderr?.on('data', (data: string) => {
-      logger.warn(`journalctl stderr for ${serviceName}:`, data);
+      const stderrMessage = data.toString().trim();
+      logger.warn(`journalctl stderr for ${serviceName}: ${stderrMessage}`);
     });
 
     // Handle process events
