@@ -157,7 +157,7 @@ export class StalenessDetector {
 
     return {
       latestBlock: parseInt(rows[0].latest_block),
-      latestTimestamp: new Date(rows[0].latest_timestamp),
+      latestTimestamp: new Date(rows[0].latest_timestamp + ' UTC'),
     };
   }
 
