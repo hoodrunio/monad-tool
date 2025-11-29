@@ -54,18 +54,26 @@ export enum EventType {
 // =============================================
 
 export interface QCParticipationData {
+  timestamp: Date;
+  roundNumber: number;
+  epochNumber: number;
+  participantCount: number;
+  participationRate: number;
+  validatorId: string;
+  qcId: string;
+  blockId: string;
+  processingLatencyMs: number;
+  // Additional fields for ClickHouse storage
   totalValidators: number;
   participatingValidators: number;
-  participationBitmap: string; // BitVec as string
-  participationRate: number;
-  validatorParticipation: Array<{
-    validatorId: string;
-    participated: boolean;
-    position: number;
-  }>;
+  participationBitmap: string;
   blsSignature: string;
   signatureVerificationTimeNs?: number;
   qcAssemblyTimeMs: number;
+  validatorParticipation: Array<{
+    validatorId: string;
+    participated: boolean;
+  }>;
 }
 
 export interface QCData {
@@ -91,22 +99,22 @@ export interface SignerMap {
 // =============================================
 
 export interface VoteInfo {
-  id: string;
-  epoch: number;
-  round: number;
-  parentId?: string; // pid in logs
-  parentRound?: number; // pr in logs
+  validatorId: string;
+  voteType: string;
+  timestamp: Date;
+  successful: boolean;
+  processingDelayMs: number;
 }
 
 export interface VoteChain {
-  voteId: string;
-  round: number;
-  epoch: number;
-  parentVoteId?: string;
-  parentRound?: number;
-  nextLeaderId?: string;
-  validatorId: string;
-  timestamp: Date;
+  chainId: string;
+  roundNumber: number;
+  epochNumber: number;
+  votes: VoteInfo[];
+  startTime: Date;
+  endTime: Date;
+  totalVotes: number;
+  successfulVotes: number;
 }
 
 // =============================================
@@ -225,11 +233,15 @@ export type ParsedEvent = ConsensusEvent | LedgerEvent;
 // =============================================
 
 export interface LogProcessingResult {
-  events: ParsedEvent[];
-  qcParticipation: QCParticipationData[];
+  consensusEvents: ConsensusEvent[];
+  ledgerEvents: LedgerEvent[];
+  qcParticipationData: QCParticipationData[];
   voteChains: VoteChain[];
   validatorInfrastructure: ValidatorInfrastructure[];
-  errors: ProcessingError[];
+  errors: string[];
+  processingTimeMs: number;
+  processedLogs: number;
+  successfullyParsed: number;
 }
 
 export interface ProcessingError {
@@ -265,12 +277,14 @@ export interface EnhancedLogProcessor {
 
 export interface QCParticipationParser {
   parseBitVec(bitVecString: string): number[];
-  extractParticipation(qcString: string): QCParticipationData;
+  extractParticipation(qcString: string, epoch?: number): QCParticipationData;
   calculateParticipationRate(participating: number, total: number): number;
-  mapValidatorPositions(bitmap: number[], validatorIds: string[]): Array<{
+  mapValidatorPositions(bitmap: number[], epoch?: number): Array<{
     validatorId: string;
+    nodeId: string;
     participated: boolean;
     position: number;
+    stake: number;
   }>;
 }
 
@@ -302,10 +316,7 @@ export interface ProcessingConfig {
   enableGeographicIntelligence: boolean;
   parallelProcessing: boolean;
   maxConcurrentBatches: number;
-}
-
-export interface ValidatorRegistry {
-  [validatorId: string]: ValidatorInfrastructure;
+  preProcessDNS?: boolean; // Optional DNS pre-processing flag
 }
 
 export interface GeographicMapping {
@@ -376,26 +387,236 @@ export const EventTypeMapping: Record<string, EventType> = {
   'try committing blocks using qc': EventType.QC_COMMIT_ATTEMPT,
   'qc triggered commit': EventType.QC_COMMIT_TRIGGERED,
   'proposed_block': EventType.BLOCK_PROPOSAL,
+  'finalized_block': EventType.BLOCK_COMMITTED,
   'committed block': EventType.BLOCK_COMMITTED,
-  'skipped_block': EventType.BLOCK_SKIPPED,
+  'timeout': EventType.BLOCK_SKIPPED,
   'base seq num committed': EventType.BLOCK_SEQUENCE_COMMITTED,
   'txpool updating committed block': EventType.TXPOOL_UPDATED
 };
 
-export const GeographicRegionMapping: Record<string, string> = {
-  'sgp': 'Singapore',
-  'jfk': 'New York JFK',
-  'fra': 'Frankfurt',
-  'pit': 'Pittsburgh', 
-  'cdg': 'Paris CDG'
-};
+// =============================================
+// SEPARATE VALIDATOR METRICS TYPES (NEW)
+// =============================================
 
-export const ProviderMapping: Record<string, string> = {
-  'mf': 'monadinfra',
-  'monadinfra': 'monadinfra',
-  'quantnode': 'quantnode',
-  'node3tech': 'node3tech',
-  'brightlystake': 'brightlystake',
-  'go2pro': 'go2pro',
-  'liquify': 'liquify'
-}; 
+export interface BlockProposalEvent {
+  timestamp: Date;
+  validatorId: string;
+  seqNum: number;
+  roundNumber: number;
+  epochNumber: number;
+  status: 'proposed' | 'skipped';
+  numTx: number;
+  blockId?: string;
+  
+  // Infrastructure data
+  validatorDns: string;
+  geographicRegion: string;
+  infrastructureProvider: string;
+  
+  // Processing metadata
+  ingestionId: string;
+}
+
+export interface QCParticipationEvent {
+  timestamp: Date;
+  validatorId: string;
+  seqNum: number;
+  roundNumber: number;
+  epochNumber: number;
+  participated: boolean;
+  validatorIndex: number;
+  
+  // QC metadata
+  qcId: string;
+  totalValidators: number;
+  participatingValidators: number;
+  participationRate: number;
+  
+  // Infrastructure data
+  validatorDns: string;
+  geographicRegion: string;
+  infrastructureProvider: string;
+  
+  // Processing metadata
+  ingestionId: string;
+}
+
+export interface SeparateValidatorMetrics {
+  hour: Date;
+  validatorId: string;
+  
+  // Metric 1: Block Proposal Ratio
+  blocksProposed: number;
+  blocksSkipped: number;
+  blockProposalRatio: number;
+  
+  // Metric 2: QC Participation Rate
+  qcParticipations: number;
+  totalBlocksWithQc: number;
+  qcParticipationRate: number;
+  
+  // Metric 3: Combined Uptime Summary
+  uptimeSummary: number;
+  
+  // Infrastructure metadata
+  geographicRegion: string;
+  infrastructureProvider: string;
+  validatorDns: string;
+}
+
+// =============================================
+// ENHANCED PROCESSING INTERFACES
+// =============================================
+
+export interface EnhancedLogProcessingResult extends LogProcessingResult {
+  blockProposalEvents: BlockProposalEvent[];
+  qcParticipationEvents: QCParticipationEvent[];
+  separateMetrics: SeparateValidatorMetrics[];
+}
+
+export interface SeparateMetricsProcessor {
+  processLedgerEvents(logs: RawLog[]): BlockProposalEvent[];
+  processBFTEvents(logs: RawLog[]): QCParticipationEvent[];
+  extractBlockProposal(logEntry: any): BlockProposalEvent | null;
+  extractQCParticipation(logEntry: any, validatorRegistry?: Map<number, string>): QCParticipationEvent[];
+  calculateSeparateMetrics(
+    blockProposals: BlockProposalEvent[], 
+    qcParticipations: QCParticipationEvent[]
+  ): SeparateValidatorMetrics[];
+}
+
+export interface QCBitVecParser {
+  parseBitVec(bitVecString: string): number[];
+  extractValidatorParticipation(
+    qcData: any, 
+    seqNum: number, 
+    validatorRegistry?: Map<number, string>
+  ): QCParticipationEvent[];
+  mapIndexToValidatorId(index: number, epoch?: number): string;
+}
+
+// =============================================
+// LEDGER EVENT PROCESSING TYPES  
+// =============================================
+
+export interface LedgerProposedBlockEvent {
+  message: 'proposed_block';
+  round: string;
+  seq_num: string;
+  epoch: string;
+  author: string;
+  num_tx: string;
+  block_id?: string;
+  author_address?: string;
+}
+
+export interface LedgerFinalizedBlockEvent {
+  message: 'finalized_block';
+  round: string;
+  parent_round: string;
+  seq_num: string;
+  epoch: string;
+  author: string;
+  block_ts_ms: string;
+  now_ts_ms: string;
+  author_address?: string;
+}
+
+export interface LedgerTimeoutEvent {
+  message: 'timeout';
+  round: string;
+  author: string;
+  epoch?: string;
+  author_address?: string;
+}
+
+export type LedgerBlockEvent = LedgerProposedBlockEvent | LedgerFinalizedBlockEvent | LedgerTimeoutEvent;
+
+// =============================================
+// BFT QC PROCESSING TYPES
+// =============================================
+
+export interface BFTQCCommitEvent {
+  message: 'try committing blocks using qc';
+  qc: string; // Contains QC data with BitVec
+  seq_num?: string;
+  round: string;
+  epoch: string;
+}
+
+export interface ParsedQCData {
+  signerBits: number[];
+  round: number;
+  epoch: number;
+  seqNum?: number;
+  totalValidators: number;
+  participatingValidators: number;
+  blockId: string;
+}
+
+// =============================================
+// VALIDATOR REGISTRY INTEGRATION
+// =============================================
+
+export interface ValidatorRegistryEntry {
+  position: number;
+  validatorId: string;
+  nodeId: string;
+  stake: number;
+}
+
+export interface ValidatorMappingService {
+  getValidatorByPosition(position: number, epoch?: number): ValidatorRegistryEntry | null;
+  getPositionByValidatorId(validatorId: string, epoch?: number): number | null;
+  updateEpochMapping(epoch: number, validators: ValidatorRegistryEntry[]): void;
+  getCurrentEpochValidators(): ValidatorRegistryEntry[];
+}
+
+// =============================================
+// BFT CONSENSUS TRACKING TYPES (NEW)
+// =============================================
+
+// BFT Vote Message Event ("vote message" logs)
+export interface BftVoteEvent {
+  timestamp: Date;
+  epoch: number;
+  round: number;
+  author: string; // Validator public key
+  sig: string; // BLS signature
+  voteId: string; // Vote ID (truncated hash format like "9db8..cabe")
+  eventId: string; // SHA1 hash for deduplication
+}
+
+// BFT Round State Event ("collecting vote" logs)
+export interface BftRoundStateEvent {
+  timestamp: Date;
+  epoch: number;
+  round: number;
+  currentStake: bigint; // Current accumulated stake
+  totalStake: bigint; // Total possible stake
+  stakeRatio: number; // Quorum percentage (0-100)
+  eventId: string; // SHA1 hash for deduplication
+}
+
+// BFT Vote Message Log Fields
+export interface BftVoteMessageFields {
+  message: 'vote message';
+  author: string;
+  vote_msg: string; // Contains Vote and BLS signature
+}
+
+// BFT Collecting Vote Log Fields
+export interface BftCollectingVoteFields {
+  message: 'collecting vote';
+  round: string;
+  epoch: string;
+  vote: string;
+  current_stake: string; // Format: "Ok(Stake(1273254265463543980894843884))"
+  total_stake: string; // Format: "Stake(9554473084196538460577820321)"
+}
+
+// Extended EnhancedLogProcessingResult to include BFT events
+export interface BftEnhancedLogProcessingResult extends EnhancedLogProcessingResult {
+  bftVoteEvents: BftVoteEvent[];
+  bftRoundStates: BftRoundStateEvent[];
+} 

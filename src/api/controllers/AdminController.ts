@@ -3,14 +3,20 @@ import { Request, Response } from 'express';
 import { DataIngestionService } from '../../services/data-ingestion';
 import { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { MonadRedisClient } from '../../cache/redis-client';
+import { DomainExtractor } from '../../services/dns/DomainExtractor';
+import { KeybaseService } from '../../services/keybase';
 import { logger } from '../../utils/logger';
 
 export class AdminController {
+  private keybaseService: KeybaseService;
+
   constructor(
     private ingestionService: DataIngestionService,
     private clickhouseClient: MonadClickHouseClient,
     private redisClient: MonadRedisClient
-  ) {}
+  ) {
+    this.keybaseService = new KeybaseService();
+  }
 
   // =============================================
   // CACHE MANAGEMENT
@@ -18,26 +24,25 @@ export class AdminController {
 
   async flushCache(req: Request, res: Response): Promise<void> {
     try {
-      const pattern = req.query.pattern as string;
+      const pattern = req.body.pattern || '*';
+      let keysDeleted = 0;
       
-      if (pattern) {
-        // Flush specific pattern
-        await this.redisClient.invalidatePattern(pattern);
-        logger.info(`Cache pattern flushed: ${pattern}`);
-        
+      if (pattern === '*') {
+        // Flush all Redis data
+        await this.redisClient.flushAll();
         res.json({
           success: true,
-          message: `Cache pattern '${pattern}' flushed successfully`,
+          message: 'All cache data cleared',
+          pattern,
           timestamp: new Date().toISOString()
         });
       } else {
-        // Flush all cache
-        await this.redisClient.flushAll();
-        logger.info('All cache flushed');
-        
+        // Delete keys matching pattern
+        await this.redisClient.invalidatePattern(pattern);
         res.json({
           success: true,
-          message: 'All cache flushed successfully',
+          message: `Cache pattern '${pattern}' cleared`,
+          pattern,
           timestamp: new Date().toISOString()
         });
       }
@@ -45,6 +50,42 @@ export class AdminController {
       logger.error('Failed to flush cache:', error);
       res.status(500).json({
         error: 'Failed to flush cache',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async clearValidatorCaches(req: Request, res: Response): Promise<void> {
+    try {
+      // Clear all validator-related cache entries
+      const patterns = [
+        'validator_rankings:*',
+        'validator_details:*',
+        'validator_history:*',
+        'validator_*'
+      ];
+      
+             for (const pattern of patterns) {
+         await this.redisClient.invalidatePattern(pattern);
+         logger.info(`Cleared cache keys matching pattern: ${pattern}`);
+       }
+
+       // Also optimize the validator registry table to merge duplicates
+       logger.info('🔧 Optimizing validator_registry table...');
+       await this.clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
+       logger.info('✅ Validator registry table optimized');
+       
+       res.json({
+         success: true,
+         message: `Cleared validator cache entries and optimized database table`,
+         patternsCleared: patterns,
+         timestamp: new Date().toISOString()
+       });
+    } catch (error) {
+      logger.error('Failed to clear validator caches:', error);
+      res.status(500).json({
+        error: 'Failed to clear validator caches',
         message: error instanceof Error ? error.message : String(error),
         timestamp: new Date().toISOString()
       });
@@ -169,7 +210,7 @@ export class AdminController {
     try {
       const tableStats = await this.clickhouseClient.getTableStats();
       
-      // Get additional database metrics
+      // Get additional database metrics including new tables
       const query = `
         SELECT 
           formatReadableSize(sum(bytes_on_disk)) as total_size,
@@ -180,16 +221,38 @@ export class AdminController {
           AND active = 1
       `;
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      // Get specific stats for our main tables
+      const specificTablesQuery = `
+        SELECT 
+          table,
+          formatReadableSize(sum(bytes_on_disk)) as table_size,
+          sum(rows) as table_rows,
+          count(*) as part_count
+        FROM system.parts 
+        WHERE database = 'monad_analytics'
+          AND active = 1
+          AND table IN ('block_proposals', 'qc_participation', 'raw_logs')
+        GROUP BY table
+        ORDER BY sum(bytes_on_disk) DESC
+      `;
 
-      const dbMetrics = await result.json() as any[];
+      const [result, specificResult] = await Promise.all([
+        this.clickhouseClient.executeRawQuery(query),
+        this.clickhouseClient.executeRawQuery(specificTablesQuery)
+      ]);
+
+      const dbMetrics = result;
+      const specificStats = specificResult;
       
       res.json({
         database_metrics: dbMetrics[0],
         table_stats: tableStats,
+        focused_tables: {
+          block_proposals: specificStats.find(s => s.table === 'block_proposals') || { table_size: '0 B', table_rows: 0, part_count: 0 },
+          qc_participation: specificStats.find(s => s.table === 'qc_participation') || { table_size: '0 B', table_rows: 0, part_count: 0 },
+          raw_logs: specificStats.find(s => s.table === 'raw_logs') || { table_size: '0 B', table_rows: 0, part_count: 0 }
+        },
+        schema_version: 'v2_focused_tables',
         timestamp: new Date().toISOString()
       });
     } catch (error) {
@@ -204,21 +267,30 @@ export class AdminController {
 
   async optimizeDatabase(req: Request, res: Response): Promise<void> {
     try {
-      const tableName = req.query.table as string || 'validator_events';
+      const tableName = req.query.table as string || 'block_proposals';
+      
+      // Validate table name to prevent SQL injection
+      const validTables = ['block_proposals', 'qc_participation', 'raw_logs'];
+      if (!validTables.includes(tableName)) {
+        res.status(400).json({
+          error: 'Invalid table name',
+          message: `Table must be one of: ${validTables.join(', ')}`,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
       
       // Run OPTIMIZE TABLE command for better performance
       const query = `OPTIMIZE TABLE ${tableName} FINAL`;
       
-      await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
+      await this.clickhouseClient.executeCommand(query);
       
       logger.info(`Database table ${tableName} optimized`);
       
       res.json({
         success: true,
         message: `Table ${tableName} optimized successfully`,
+        available_tables: validTables,
         timestamp: new Date().toISOString()
       });
     } catch (error) {
@@ -254,12 +326,9 @@ export class AdminController {
         WHERE name = 'default'
       `;
 
-      const diskResult = await this.clickhouseClient['client'].query({
-        query: diskUsageQuery,
-        format: 'JSONEachRow'
-      });
+      const diskResult = await this.clickhouseClient.executeRawQuery(diskUsageQuery);
 
-      const diskUsage = await diskResult.json() as any[];
+      const diskUsage = diskResult;
       
       const maintenanceStatus = {
         overall_health: dbPing && cachePing && systemHealth.database && systemHealth.cache ? 'healthy' : 'needs_attention',
@@ -314,20 +383,23 @@ export class AdminController {
 
       switch (operation) {
         case 'optimize_db':
-          await this.clickhouseClient['client'].query({
-            query: 'OPTIMIZE TABLE validator_events FINAL',
-            format: 'JSONEachRow'
-          });
-          result.message = 'Database optimized successfully';
+          // Optimize all main tables
+          await Promise.all([
+            this.clickhouseClient.executeCommand('OPTIMIZE TABLE block_proposals FINAL'),
+            this.clickhouseClient.executeCommand('OPTIMIZE TABLE qc_participation FINAL'),
+            this.clickhouseClient.executeCommand('OPTIMIZE TABLE raw_logs FINAL'),
+          ]);
+          result.message = 'All main tables optimized successfully (block_proposals, qc_participation, raw_logs)';
           break;
 
         case 'clear_old_data':
           const retentionDays = req.body.retention_days || 30;
-          await this.clickhouseClient['client'].query({
-            query: `ALTER TABLE validator_events DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`,
-            format: 'JSONEachRow'
-          });
-          result.message = `Old data cleared (older than ${retentionDays} days)`;
+          await Promise.all([
+            this.clickhouseClient.executeCommand(`ALTER TABLE block_proposals DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`),
+            this.clickhouseClient.executeCommand(`ALTER TABLE qc_participation DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`),
+            this.clickhouseClient.executeCommand(`ALTER TABLE raw_logs DELETE WHERE timestamp < now() - INTERVAL ${retentionDays} DAY`),
+          ]);
+          result.message = `Old data cleared from all tables (older than ${retentionDays} days)`;
           break;
 
         case 'warmup_cache':
@@ -336,8 +408,9 @@ export class AdminController {
           break;
 
         case 'vacuum_logs':
-          // This would implement log cleanup logic
-          result.message = 'Log vacuum completed successfully';
+          // Clean up any orphaned raw logs that weren't processed
+          await this.clickhouseClient.executeCommand(`ALTER TABLE raw_logs DELETE WHERE parsing_status = 'failed' AND parsed_at < now() - INTERVAL 7 DAY`);
+          result.message = 'Failed raw logs cleaned up successfully';
           break;
       }
 
@@ -354,6 +427,620 @@ export class AdminController {
       logger.error('Failed to perform maintenance:', error);
       res.status(500).json({
         error: 'Failed to perform maintenance',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  // =============================================
+  // DOMAIN MAPPING MANAGEMENT
+  // =============================================
+
+  async getDomainMappings(req: Request, res: Response): Promise<void> {
+    try {
+      const mappings = DomainExtractor.getCustomMappings();
+      const mappingArray = Array.from(mappings.entries()).map(([hostname, validatorName]) => ({
+        hostname,
+        validatorName
+      }));
+
+      res.json({
+        mappings: mappingArray,
+        count: mappingArray.length,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to get domain mappings:', error);
+      res.status(500).json({
+        error: 'Failed to get domain mappings',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async addDomainMapping(req: Request, res: Response): Promise<void> {
+    try {
+      const { hostname, validatorName } = req.body;
+
+      if (!hostname || !validatorName) {
+        res.status(400).json({
+          error: 'Missing required fields',
+          message: 'Both hostname and validatorName are required',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Validate hostname format
+      if (typeof hostname !== 'string' || hostname.trim().length === 0) {
+        res.status(400).json({
+          error: 'Invalid hostname',
+          message: 'Hostname must be a non-empty string',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Validate validator name
+      if (typeof validatorName !== 'string' || validatorName.trim().length === 0) {
+        res.status(400).json({
+          error: 'Invalid validator name',
+          message: 'Validator name must be a non-empty string',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Check if mapping already exists
+      const existingMapping = DomainExtractor.hasCustomMapping(hostname);
+      
+      DomainExtractor.addCustomMapping(hostname, validatorName);
+      
+      // Clear relevant cache entries to ensure new mapping takes effect
+      await this.redisClient.invalidatePattern('validator_*');
+      
+      logger.info(`Domain mapping added: ${hostname} -> ${validatorName}`);
+
+      res.json({
+        success: true,
+        message: `Domain mapping ${existingMapping ? 'updated' : 'added'} successfully`,
+        mapping: {
+          hostname: hostname.toLowerCase().trim(),
+          validatorName: validatorName.trim()
+        },
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to add domain mapping:', error);
+      res.status(500).json({
+        error: 'Failed to add domain mapping',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async removeDomainMapping(req: Request, res: Response): Promise<void> {
+    try {
+      const { hostname } = req.params;
+
+      if (!hostname) {
+        res.status(400).json({
+          error: 'Missing hostname',
+          message: 'Hostname parameter is required',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const removed = DomainExtractor.removeCustomMapping(hostname);
+
+      if (!removed) {
+        res.status(404).json({
+          error: 'Mapping not found',
+          message: `No custom mapping found for hostname: ${hostname}`,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Clear relevant cache entries
+      await this.redisClient.invalidatePattern('validator_*');
+
+      logger.info(`Domain mapping removed: ${hostname}`);
+
+      res.json({
+        success: true,
+        message: `Domain mapping for ${hostname} removed successfully`,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to remove domain mapping:', error);
+      res.status(500).json({
+        error: 'Failed to remove domain mapping',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async checkDomainMapping(req: Request, res: Response): Promise<void> {
+    try {
+      const { hostname } = req.params;
+
+      if (!hostname) {
+        res.status(400).json({
+          error: 'Missing hostname',
+          message: 'Hostname parameter is required',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const hasMapping = DomainExtractor.hasCustomMapping(hostname);
+      const extractor = new DomainExtractor();
+      const extractedName = extractor.extractValidatorName(hostname);
+
+      res.json({
+        hostname,
+        hasCustomMapping: hasMapping,
+        extractedValidatorName: extractedName,
+        mappingType: hasMapping ? 'custom' : 'default_extraction',
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to check domain mapping:', error);
+      res.status(500).json({
+        error: 'Failed to check domain mapping',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  // =============================================
+  // KEYBASE ID MANAGEMENT
+  // =============================================
+
+  async getKeybaseMappings(req: Request, res: Response): Promise<void> {
+    try {
+      const query = `
+        SELECT 
+          validator_id,
+          keybase_id,
+          keybase_logo_url,
+          validator_name,
+          last_updated
+        FROM validator_registry
+        WHERE keybase_id != '' AND keybase_id IS NOT NULL
+        ORDER BY last_updated DESC
+      `;
+
+      const mappings = await this.clickhouseClient.executeRawQuery(query);
+
+      res.json({
+        mappings: mappings.map(m => ({
+          validatorId: m.validator_id,
+          keybaseId: m.keybase_id,
+          logoUrl: m.keybase_logo_url,
+          validatorName: m.validator_name,
+          lastUpdated: m.last_updated
+        })),
+        count: mappings.length,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to get keybase mappings:', error);
+      res.status(500).json({
+        error: 'Failed to get keybase mappings',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async addKeybaseMapping(req: Request, res: Response): Promise<void> {
+    try {
+      const { validatorId, keybaseId } = req.body;
+
+      if (!validatorId || !keybaseId) {
+        res.status(400).json({
+          error: 'Missing required fields',
+          message: 'Both validatorId and keybaseId are required',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Validate validator ID format
+      if (typeof validatorId !== 'string' || validatorId.trim().length === 0) {
+        res.status(400).json({
+          error: 'Invalid validator ID',
+          message: 'Validator ID must be a non-empty string',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Validate keybase ID format
+      if (typeof keybaseId !== 'string' || keybaseId.trim().length === 0) {
+        res.status(400).json({
+          error: 'Invalid keybase ID',
+          message: 'Keybase ID must be a non-empty string',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Check if validator exists
+      const validatorQuery = `
+        SELECT validator_id, validator_name
+        FROM validator_registry
+        WHERE validator_id = '${validatorId}'
+        ORDER BY last_updated DESC
+        LIMIT 1
+      `;
+
+      const validators = await this.clickhouseClient.executeRawQuery(validatorQuery);
+      
+      if (validators.length === 0) {
+        res.status(404).json({
+          error: 'Validator not found',
+          message: `No validator found with ID: ${validatorId}`,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Validate keybase ID exists (try as key suffix first, then as username)
+      let isValidKeybaseId = await this.keybaseService.validateKeySuffix(keybaseId);
+      let logoUrl: string | null = null;
+      
+      if (isValidKeybaseId) {
+        // It's a key suffix, get logo URL using key suffix
+        logoUrl = await this.keybaseService.getLogoUrlByKeySuffix(keybaseId);
+      } else {
+        // Try as username
+        isValidKeybaseId = await this.keybaseService.validateUsername(keybaseId);
+        if (isValidKeybaseId) {
+          logoUrl = await this.keybaseService.getLogoUrl(keybaseId);
+        }
+      }
+      
+      if (!isValidKeybaseId) {
+        res.status(400).json({
+          error: 'Invalid keybase ID',
+          message: `Keybase ID '${keybaseId}' does not exist or is not accessible`,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+      
+      // Update validator registry with keybase information using INSERT with ReplacingMergeTree
+      const updateQuery = `
+        INSERT INTO validator_registry 
+        (validator_id, node_id, precompile_validator_id, epoch, stake, position, is_active, is_staking_active, real_time_stake_wei,
+         dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url, 
+         first_seen, last_updated)
+        SELECT 
+          validator_id,
+          node_id,
+          precompile_validator_id,
+          epoch,
+          stake,
+          position,
+          is_active,
+          is_staking_active,
+          real_time_stake_wei,
+          dns_address,
+          dns_host,
+          dns_port,
+          validator_name,
+          provider,
+          location,
+          country,
+          datacenter,
+          '${keybaseId}',
+          '${logoUrl || ''}',
+          first_seen,
+          now()
+        FROM validator_registry
+        WHERE validator_id = '${validatorId}'
+        ORDER BY last_updated DESC
+        LIMIT 1
+      `;
+
+      await this.clickhouseClient.executeCommand(updateQuery);
+      
+      // Force merge to remove duplicates
+      await this.clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
+      
+      // Clear relevant cache entries
+      await this.redisClient.invalidatePattern('validator_*');
+      
+      logger.info(`Keybase mapping added: ${validatorId} -> ${keybaseId}`);
+
+      res.json({
+        success: true,
+        message: 'Keybase mapping added successfully',
+        mapping: {
+          validatorId: validatorId.trim(),
+          keybaseId: keybaseId.trim(),
+          logoUrl: logoUrl || null,
+          validatorName: validators[0].validator_name
+        },
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to add keybase mapping:', error);
+      res.status(500).json({
+        error: 'Failed to add keybase mapping',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async removeKeybaseMapping(req: Request, res: Response): Promise<void> {
+    try {
+      const { validatorId } = req.params;
+
+      if (!validatorId) {
+        res.status(400).json({
+          error: 'Missing validator ID',
+          message: 'Validator ID parameter is required',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Check if mapping exists
+      const checkQuery = `
+        SELECT validator_id, keybase_id
+        FROM validator_registry
+        WHERE validator_id = '${validatorId}' AND keybase_id != '' AND keybase_id IS NOT NULL
+        ORDER BY last_updated DESC
+        LIMIT 1
+      `;
+
+      const existing = await this.clickhouseClient.executeRawQuery(checkQuery);
+      
+      if (existing.length === 0) {
+        res.status(404).json({
+          error: 'Mapping not found',
+          message: `No keybase mapping found for validator: ${validatorId}`,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Remove keybase mapping by setting it to empty using INSERT with ReplacingMergeTree
+      const removeQuery = `
+        INSERT INTO validator_registry 
+        (validator_id, node_id, precompile_validator_id, epoch, stake, position, is_active, is_staking_active, real_time_stake_wei,
+         dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url, 
+         first_seen, last_updated)
+        SELECT 
+          validator_id,
+          node_id,
+          precompile_validator_id,
+          epoch,
+          stake,
+          position,
+          is_active,
+          is_staking_active,
+          real_time_stake_wei,
+          dns_address,
+          dns_host,
+          dns_port,
+          validator_name,
+          provider,
+          location,
+          country,
+          datacenter,
+          '',
+          '',
+          first_seen,
+          now()
+        FROM validator_registry
+        WHERE validator_id = '${validatorId}'
+        ORDER BY last_updated DESC
+        LIMIT 1
+      `;
+
+      await this.clickhouseClient.executeCommand(removeQuery);
+      
+      // Force merge to remove duplicates
+      await this.clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
+      
+      // Clear relevant cache entries
+      await this.redisClient.invalidatePattern('validator_*');
+
+      logger.info(`Keybase mapping removed: ${validatorId}`);
+
+      res.json({
+        success: true,
+        message: `Keybase mapping for ${validatorId} removed successfully`,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to remove keybase mapping:', error);
+      res.status(500).json({
+        error: 'Failed to remove keybase mapping',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async checkKeybaseMapping(req: Request, res: Response): Promise<void> {
+    try {
+      const { validatorId } = req.params;
+
+      if (!validatorId) {
+        res.status(400).json({
+          error: 'Missing validator ID',
+          message: 'Validator ID parameter is required',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const query = `
+        SELECT 
+          validator_id,
+          keybase_id,
+          keybase_logo_url,
+          validator_name,
+          last_updated
+        FROM validator_registry
+        WHERE validator_id = '${validatorId}'
+        ORDER BY last_updated DESC
+        LIMIT 1
+      `;
+
+      const results = await this.clickhouseClient.executeRawQuery(query);
+      
+      if (results.length === 0) {
+        res.status(404).json({
+          error: 'Validator not found',
+          message: `No validator found with ID: ${validatorId}`,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const validator = results[0];
+      const hasKeybaseMapping = validator.keybase_id && validator.keybase_id !== '';
+
+      res.json({
+        validatorId,
+        hasKeybaseMapping,
+        keybaseId: validator.keybase_id || null,
+        logoUrl: validator.keybase_logo_url || null,
+        validatorName: validator.validator_name,
+        lastUpdated: validator.last_updated,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to check keybase mapping:', error);
+      res.status(500).json({
+        error: 'Failed to check keybase mapping',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async refreshKeybaseLogos(req: Request, res: Response): Promise<void> {
+    try {
+      const query = `
+        SELECT DISTINCT keybase_id
+        FROM validator_registry
+        WHERE keybase_id != '' AND keybase_id IS NOT NULL
+      `;
+
+      const results = await this.clickhouseClient.executeRawQuery(query);
+      const keybaseIds = results.map(r => r.keybase_id);
+
+      if (keybaseIds.length === 0) {
+        res.json({
+          success: true,
+          message: 'No keybase IDs found to refresh',
+          refreshed: 0,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      logger.info(`Refreshing logos for ${keybaseIds.length} keybase IDs...`);
+
+      let refreshedCount = 0;
+      let errorCount = 0;
+
+      // Process in batches to avoid overwhelming the API
+      const batchSize = 5;
+      for (let i = 0; i < keybaseIds.length; i += batchSize) {
+        const batch = keybaseIds.slice(i, i + batchSize);
+        
+        await Promise.all(
+          batch.map(async (keybaseId) => {
+            try {
+              // Try as key suffix first, then as username
+              let logoUrl = await this.keybaseService.getLogoUrlByKeySuffix(keybaseId);
+              
+              if (!logoUrl) {
+                logoUrl = await this.keybaseService.getLogoUrl(keybaseId);
+              }
+              
+              if (logoUrl) {
+                // Update logo URL in database using INSERT with ReplacingMergeTree
+                const updateQuery = `
+                  INSERT INTO validator_registry 
+                  (validator_id, node_id, precompile_validator_id, epoch, stake, position, is_active, is_staking_active, real_time_stake_wei,
+                   dns_address, dns_host, dns_port, validator_name, provider, location, country, datacenter, keybase_id, keybase_logo_url, 
+                   first_seen, last_updated)
+                  SELECT 
+                    validator_id,
+                    node_id,
+                    precompile_validator_id,
+                    epoch,
+                    stake,
+                    position,
+                    is_active,
+                    is_staking_active,
+                    real_time_stake_wei,
+                    dns_address,
+                    dns_host,
+                    dns_port,
+                    validator_name,
+                    provider,
+                    location,
+                    country,
+                    datacenter,
+                    keybase_id,
+                    '${logoUrl}',
+                    first_seen,
+                    now()
+                  FROM validator_registry
+                  WHERE keybase_id = '${keybaseId}'
+                  ORDER BY last_updated DESC
+                  LIMIT 1
+                `;
+
+                await this.clickhouseClient.executeCommand(updateQuery);
+                refreshedCount++;
+              }
+            } catch (error) {
+              logger.warn(`Failed to refresh logo for ${keybaseId}:`, error);
+              errorCount++;
+            }
+          })
+        );
+
+        // Add delay between batches
+        if (i + batchSize < keybaseIds.length) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+
+      // Clear cache
+      await this.redisClient.invalidatePattern('validator_*');
+
+      res.json({
+        success: true,
+        message: `Refreshed ${refreshedCount} keybase logos`,
+        total: keybaseIds.length,
+        refreshed: refreshedCount,
+        errors: errorCount,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to refresh keybase logos:', error);
+      res.status(500).json({
+        error: 'Failed to refresh keybase logos',
         message: error instanceof Error ? error.message : String(error),
         timestamp: new Date().toISOString()
       });

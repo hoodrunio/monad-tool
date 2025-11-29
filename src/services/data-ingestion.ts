@@ -2,15 +2,13 @@
 // Orchestrates log processing, database storage, and caching for real-time analytics
 
 import { EventEmitter } from 'events';
-import { v4 as uuidv4 } from 'uuid';
-import { LogProcessor } from '../log-processor/processor';
+import { FocusedLogProcessor } from '../log-processor/enhanced-processor';
 import { MonadClickHouseClient, ClickHouseConfig } from '../database/clickhouse-client';
 import { MonadRedisClient, RedisConfig } from '../cache/redis-client';
+import { ServiceContainer } from './service-container';
 import { 
   RawLog, 
   ProcessingConfig, 
-  LogProcessingResult,
-  ProcessingMetrics
 } from '../log-processor/types';
 
 export interface IngestionConfig {
@@ -39,7 +37,7 @@ export interface IngestionMetrics {
 }
 
 export class DataIngestionService extends EventEmitter {
-  private logProcessor: LogProcessor;
+  private logProcessor: FocusedLogProcessor;
   private clickhouseClient: MonadClickHouseClient;
   private redisClient: MonadRedisClient;
   private config: IngestionConfig;
@@ -47,13 +45,17 @@ export class DataIngestionService extends EventEmitter {
   private metrics: IngestionMetrics;
   private processingQueue: RawLog[] = [];
   private batchTimer: NodeJS.Timeout | null = null;
+  private serviceStartTime: number = 0;
 
   constructor(config: IngestionConfig) {
     super();
     this.config = config;
-    this.logProcessor = new LogProcessor();
-    this.clickhouseClient = new MonadClickHouseClient(config.clickhouse);
-    this.redisClient = new MonadRedisClient(config.redis);
+    
+    // Get services from service container instead of creating new instances
+    const serviceContainer = ServiceContainer.getInstance();
+    this.clickhouseClient = serviceContainer.getClickHouseClient();
+    this.redisClient = serviceContainer.getRedisClient();
+    this.logProcessor = new FocusedLogProcessor(this.clickhouseClient);
     
     this.metrics = {
       totalLogsProcessed: 0,
@@ -77,20 +79,28 @@ export class DataIngestionService extends EventEmitter {
     console.log('Starting Monad Data Ingestion Service...');
     
     try {
-      // Initialize database schema
-      await this.clickhouseClient.initializeSchema();
+      // Record service start time
+      this.serviceStartTime = Date.now();
       
-      // Test database connectivity
+      // Verify service container is initialized (services should already be ready)
+      const serviceContainer = ServiceContainer.getInstance();
+      if (!serviceContainer.initialized) {
+        throw new Error('Service container not initialized - ensure ApplicationInitializer has run');
+      }
+      
+      // Test connectivity (services should already be connected)
       const dbConnected = await this.clickhouseClient.ping();
       if (!dbConnected) {
-        throw new Error('Failed to connect to ClickHouse');
+        throw new Error('ClickHouse connection failed');
       }
       
-      // Test cache connectivity
       const cacheConnected = await this.redisClient.ping();
       if (!cacheConnected) {
-        throw new Error('Failed to connect to Redis');
+        throw new Error('Redis connection failed');
       }
+      
+      // Initialize the log processor ONCE during service startup
+      await this.logProcessor.initialize();
       
       // Warm up cache
       await this.redisClient.warmupCache();
@@ -209,87 +219,94 @@ export class DataIngestionService extends EventEmitter {
       console.log(`Processing batch ${batchId} with ${logs.length} logs`);
       
       // Process logs through the enhanced processor
-      const consensusEvents = [];
-      const ledgerEvents = [];
+      const result = await this.logProcessor.processLogBatch(logs);
       
-      for (const log of logs) {
-        const processed = this.logProcessor.parseLog(JSON.stringify(log));
-        if (processed) {
-          // Convert basic parsed event to proper typed event
-          const typedEvent = {
-            ...processed,
-            timestamp: new Date(processed.timestamp),
-            eventType: processed.eventType,
-            validatorId: processed.validatorId || 'unknown',
-            roundNumber: processed.roundNumber || 0,
-            epochNumber: processed.epochNumber || 1,
-            blockNumber: processed.blockNumber || null,
-            blockId: processed.blockId || null,
-            parentVoteId: null,
-            parentRound: null,
-            nextLeaderId: null,
-            blockTimestampMs: null,
-            processingTimestampMs: Date.now(),
-            processingDelayMs: 0,
-            transactionCount: 0,
-            stateRootAction: '',
-            sequenceNumber: null,
-            validatorDns: '',
-            geographicRegion: 'unknown',
-            infrastructureProvider: 'unknown',
-            datacenterCode: 'unknown',
-            isSuccessful: true,
-            participantCount: null,
-            participationRate: null,
-            metadata: JSON.stringify(processed.raw || {}),
-            ingestionId: uuidv4()
-          };
-          
-          if (log.target === 'monad_consensus_state') {
-            consensusEvents.push(typedEvent);
-          } else if (log.target === 'ledger_tail') {
-            ledgerEvents.push(typedEvent);
-          }
+      // Store new focused data types
+      if (result.blockProposalEvents && result.blockProposalEvents.length > 0) {
+        try {
+          await this.logProcessor.insertBlockProposals(result.blockProposalEvents);
+        } catch (error) {
+          console.error(`Failed to insert block proposal events:`, error);
+          console.error(`Block proposal events sample:`, JSON.stringify(result.blockProposalEvents.slice(0, 2), null, 2));
         }
       }
       
-      // Store in ClickHouse
-      if (consensusEvents.length > 0) {
-        await this.clickhouseClient.insertValidatorEvents(consensusEvents);
+      if (result.qcParticipationEvents && result.qcParticipationEvents.length > 0) {
+        try {
+          await this.logProcessor.insertQCParticipations(result.qcParticipationEvents);
+        } catch (error) {
+          console.error(`Failed to insert QC participation events:`, error);
+          console.error(`QC participation events sample:`, JSON.stringify(result.qcParticipationEvents.slice(0, 2), null, 2));
+        }
+      }
+
+      // NEW: Store BFT consensus tracking events
+      if (result.bftVoteEvents && result.bftVoteEvents.length > 0) {
+        try {
+          await this.logProcessor.insertBftVotes(result.bftVoteEvents);
+        } catch (error) {
+          console.error(`Failed to insert BFT vote events:`, error);
+          console.error(`BFT vote events sample:`, JSON.stringify(result.bftVoteEvents.slice(0, 2), null, 2));
+        }
+      }
+
+      if (result.bftRoundStates && result.bftRoundStates.length > 0) {
+        try {
+          await this.logProcessor.insertBftRoundStates(result.bftRoundStates);
+        } catch (error) {
+          console.error(`Failed to insert BFT round state events:`, error);
+          console.error(`BFT round state events sample:`, JSON.stringify(result.bftRoundStates.slice(0, 2), null, 2));
+        }
+      }
+
+      // Store legacy consensus events (for compatibility)
+      if (result.consensusEvents.length > 0) {
+          try {
+          await this.clickhouseClient.insertValidatorEvents(result.consensusEvents);
+          } catch (error) {
+            console.error(`Failed to insert consensus events:`, error);
+          console.error(`Consensus events sample:`, JSON.stringify(result.consensusEvents.slice(0, 2), null, 2));
+          }
+        }
+        
+      // Store legacy ledger events (for compatibility)
+      if (result.ledgerEvents.length > 0) {
+          try {
+          await this.clickhouseClient.insertLedgerEvents(result.ledgerEvents);
+          } catch (error) {
+            console.error(`Failed to insert ledger events:`, error);
+          console.error(`Ledger events sample:`, JSON.stringify(result.ledgerEvents.slice(0, 2), null, 2));
+        }
       }
       
-      if (ledgerEvents.length > 0) {
-        await this.clickhouseClient.insertLedgerEvents(ledgerEvents);
+      // Store legacy QC participation data (for compatibility)
+      if (result.qcParticipationData.length > 0) {
+        try {
+          await this.clickhouseClient.insertQCParticipation(result.qcParticipationData);
+        } catch (error) {
+          console.error(`Failed to insert QC participation data:`, error);
+          console.error(`QC data sample:`, JSON.stringify(result.qcParticipationData.slice(0, 2), null, 2));
+        }
       }
-      
-      // Update cache invalidation patterns
-      await this.invalidateRelevantCache(consensusEvents.concat(ledgerEvents));
-      
-      // Update metrics
+
       const processingTime = Date.now() - startTime;
-      this.updateMetrics(logs.length, processingTime, true);
+      const totalEvents = (result.blockProposalEvents?.length || 0) + (result.qcParticipationEvents?.length || 0) + (result.bftVoteEvents?.length || 0) + (result.bftRoundStates?.length || 0);
+
+      console.log(`Batch ${batchId} processed successfully in ${processingTime}ms - Generated ${totalEvents} events (${result.bftVoteEvents?.length || 0} votes, ${result.bftRoundStates?.length || 0} round states)`);
       
-      // Emit processed event for real-time updates
+      // Emit progress event for monitoring
       this.emit('batchProcessed', {
         batchId,
         logsProcessed: logs.length,
-        eventsGenerated: consensusEvents.length + ledgerEvents.length,
-        processingTimeMs: processingTime
+        eventsGenerated: totalEvents,
+        processingTimeMs: processingTime,
+        blockProposals: result.blockProposalEvents?.length || 0,
+        qcParticipations: result.qcParticipationEvents?.length || 0
       });
       
-      console.log(`Batch ${batchId} processed successfully in ${processingTime}ms`);
-      
     } catch (error) {
-      const processingTime = Date.now() - startTime;
-      this.updateMetrics(logs.length, processingTime, false);
-      
-      console.error('Failed to process batch:', error);
-      this.emit('batchError', { error, batchSize: logs.length });
-      
-      // Retry logic if enabled
-      if (this.config.ingestion.errorRetryAttempts > 0) {
-        await this.retryBatch(logs, 1);
-      }
+      console.error(`Error processing batch:`, error);
+      this.emit('error', error);
     }
   }
 
@@ -409,8 +426,7 @@ export class DataIngestionService extends EventEmitter {
   }
 
   private getServiceStartTime(): number {
-    // This would be stored when service starts
-    return Date.now() - 3600000; // Placeholder: 1 hour ago
+    return this.serviceStartTime;
   }
 
   // =============================================

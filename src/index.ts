@@ -1,18 +1,67 @@
 // Monad Validator Analytics - Main Application Entry Point
 import 'dotenv/config';
+import { ApplicationInitializer } from './startup/application-initializer';
 import { DataIngestionService, IngestionConfig } from './services/data-ingestion';
+import { SystemdLogStream, SystemdLogStreamConfig } from './services/systemd-log-stream';
 import { AnalyticsAPIServer } from './api/server';
+import { ServiceContainer } from './services/service-container';
 import { logger } from './utils/logger';
 
 async function main() {
   logger.info('🚀 Starting Monad Validator Analytics System');
+  logger.info('⚠️  CRITICAL: System will validate all validators are in database before proceeding');
 
   try {
-    // Load configuration
+    // =============================================
+    // PHASE 1: CONFIGURATION & SERVICE CONTAINER
+    // =============================================
+    
+    logger.info('🔍 Phase 1: Loading configuration and initializing service container...');
+    
+    // Load configuration first
     const config = loadConfiguration();
     
-    // Initialize data ingestion service
+    // Initialize service container with configuration
+    const serviceContainer = ServiceContainer.getInstance({
+      clickhouse: config.clickhouse,
+      redis: config.redis
+    });
+    await serviceContainer.initialize();
+    
+    // =============================================
+    // PHASE 2: CRITICAL STARTUP VALIDATION
+    // =============================================
+    
+    logger.info('🔍 Phase 2: Starting critical application initialization...');
+    
+    // Initialize application with validator database validation (uses service container)
+    const applicationInitializer = new ApplicationInitializer(ApplicationInitializer.createDefaultConfig());
+    const startupResult = await applicationInitializer.initialize();
+    
+    if (!startupResult.success) {
+      logger.error('❌ Application initialization failed');
+      throw new Error(`Startup validation failed: ${startupResult.errors.join(', ')}`);
+    }
+    
+    logger.info('✅ Critical startup validation completed successfully');
+    logger.info(`📊 Database initialized with ${startupResult.validatorStats.totalValidators} validators (${startupResult.validatorStats.completionRate.toFixed(1)}% with location data)`);
+    
+    // =============================================
+    // PHASE 3: APPLICATION SERVICES STARTUP
+    // =============================================
+    
+    logger.info('🔧 Phase 3: Starting application services...');
+    
+    // Initialize data ingestion service (now uses service container internally)
     const ingestionService = new DataIngestionService(config);
+    
+    // Initialize systemd log stream for production
+    let logStream: SystemdLogStream | null = null;
+    if (process.env.NODE_ENV === 'production') {
+      const clickhouseClient = serviceContainer.getClickHouseClient();
+      const streamConfig = await loadSystemdStreamConfig(clickhouseClient);
+      logStream = new SystemdLogStream(streamConfig, ingestionService);
+    }
     
     // Initialize API server
     const apiServer = new AnalyticsAPIServer({
@@ -22,25 +71,37 @@ async function main() {
       enableRateLimit: true
     }, ingestionService);
     
-    // Setup graceful shutdown
-    setupGracefulShutdown(ingestionService, apiServer);
+    // Setup graceful shutdown with application initializer
+    setupGracefulShutdown(ingestionService, apiServer, logStream, applicationInitializer);
     
     // Start services
     await ingestionService.start();
     await apiServer.start();
     
-    logger.info('✅ Monad Validator Analytics System started successfully');
-    
-    // Demo: Process the provided log files
-    if (process.env.NODE_ENV === 'development') {
+    // Start log streaming based on environment
+    if (process.env.NODE_ENV === 'production' && logStream) {
+      logger.info('🔄 Starting real-time systemd log streaming...');
+      await logStream.start();
+      
+      // Setup log stream event handlers
+      setupLogStreamHandlers(logStream);
+      
+      logger.info('✅ Production systemd log streaming started');
+    } else {
+      // Demo: Process the provided log files in development
       logger.info('🔄 Processing demo log files...');
       await ingestionService.processLogFile('./examples/monad-bft.log');
       await ingestionService.processLogFile('./examples/ledger-tail.log');
       logger.info('✅ Demo log files processed');
     }
     
+    logger.info('🎉 Monad Validator Analytics System started successfully');
+    logger.info(`⚡ Total startup time: ${startupResult.timeMs + (Date.now() - Date.now())}ms`);
+    logger.info('🔄 System is ready to process validator analytics with validated database');
+    
   } catch (error) {
     logger.error('❌ Failed to start Monad Validator Analytics System:', error);
+    logger.error('🚫 Startup failed - ensure ClickHouse is running and validator data is available');
     process.exit(1);
   }
 }
@@ -89,7 +150,72 @@ function loadConfiguration(): IngestionConfig {
   };
 }
 
-function setupGracefulShutdown(ingestionService: DataIngestionService, apiServer: AnalyticsAPIServer) {
+async function loadSystemdStreamConfig(clickhouseClient: any): Promise<SystemdLogStreamConfig> {
+  // Get last processed timestamp from block_proposals for backfill
+  let sinceWhen = process.env.LOG_SINCE_WHEN || 'now';
+
+  try {
+    const result = await clickhouseClient.executeRawQuery(`
+      SELECT max(timestamp) as last_ts FROM block_proposals
+    `);
+
+    if (result && result[0]?.last_ts) {
+      // Format timestamp for journalctl (e.g., "2025-11-25 16:28:00")
+      const lastTimestamp = new Date(result[0].last_ts);
+      // Check if timestamp is valid AND after year 2020 (to avoid epoch/zero timestamps)
+      const minValidDate = new Date('2025-11-01').getTime();
+      if (!isNaN(lastTimestamp.getTime()) && lastTimestamp.getTime() > minValidDate) {
+        sinceWhen = lastTimestamp.toISOString().replace('T', ' ').substring(0, 19);
+        logger.info(`📋 Log stream will start from last block_proposals timestamp: ${sinceWhen}`);
+      } else {
+        logger.info(`📋 No valid block_proposals timestamp found, starting from now`);
+      }
+    }
+  } catch (error) {
+    logger.warn('Could not get last block_proposals timestamp, starting from now:', error);
+  }
+
+  return {
+    serviceNames: [
+      process.env.MONAD_BFT_SERVICE_NAME || 'monad-bft',
+      process.env.MONAD_LEDGER_SERVICE_NAME || 'monad-ledger-tail'
+    ],
+    followMode: true, // Always follow in production
+    sinceWhen, // Dynamic: starts from last processed timestamp for backfill
+    outputFormat: 'json', // JSON format for easier parsing
+    priority: process.env.LOG_PRIORITY as any || 'info',
+    bufferSize: parseInt(process.env.STREAM_BUFFER_SIZE || '100'),
+    restartOnFailure: true,
+    maxRestartAttempts: parseInt(process.env.STREAM_MAX_RESTART_ATTEMPTS || '5'),
+    restartDelayMs: parseInt(process.env.STREAM_RESTART_DELAY_MS || '5000'),
+    includeKernelMessages: false
+  };
+}
+
+function setupLogStreamHandlers(logStream: SystemdLogStream): void {
+  logStream.on('batchProcessed', (data) => {
+    logger.debug(`Log stream batch processed: ${data.linesProcessed} lines`);
+  });
+  
+  logStream.on('metricsUpdated', (metrics) => {
+    logger.debug(`Log stream metrics - Lines/sec: ${metrics.linesPerSecond.toFixed(2)}, Buffer: ${metrics.bufferUsage.toFixed(1)}%`);
+  });
+  
+  logStream.on('error', (error) => {
+    logger.error('Log stream error:', error);
+  });
+  
+  logStream.on('bufferError', ({ error, linesLost }) => {
+    logger.error(`Log stream buffer error - lost ${linesLost} lines:`, error);
+  });
+}
+
+function setupGracefulShutdown(
+  ingestionService: DataIngestionService, 
+  apiServer: AnalyticsAPIServer,
+  logStream?: SystemdLogStream | null,
+  applicationInitializer?: ApplicationInitializer
+) {
   const gracefulShutdown = async (signal: string) => {
     logger.info(`🛑 Received ${signal}, starting graceful shutdown...`);
     
@@ -98,9 +224,21 @@ function setupGracefulShutdown(ingestionService: DataIngestionService, apiServer
       await apiServer.stop();
       logger.info('✅ API server stopped');
       
+      // Stop log streaming if running
+      if (logStream) {
+        await logStream.stop();
+        logger.info('✅ Log stream stopped');
+      }
+      
       // Stop data ingestion service
       await ingestionService.stop();
       logger.info('✅ Data ingestion service stopped');
+      
+      // Cleanup application initializer resources (includes service container shutdown)
+      if (applicationInitializer) {
+        await applicationInitializer.shutdown();
+        logger.info('✅ Application initializer cleaned up');
+      }
       
       logger.info('✅ Graceful shutdown completed');
       process.exit(0);
@@ -117,12 +255,14 @@ function setupGracefulShutdown(ingestionService: DataIngestionService, apiServer
   // Handle uncaught exceptions and unhandled rejections
   process.on('uncaughtException', (error) => {
     logger.error('❌ Uncaught Exception:', error);
+    console.error('❌ Uncaught Exception:', error);
     process.exit(1);
   });
   
   process.on('unhandledRejection', (reason, promise) => {
-    logger.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-    process.exit(1);
+    logger.error('❌ Unhandled Rejection at:', { promise: {}, reason: {}, stack: reason instanceof Error ? reason.stack : 'No stack trace' });
+    console.error('❌ Unhandled Promise Rejection:', reason);
+    // Don't exit the process, just log it
   });
 }
 

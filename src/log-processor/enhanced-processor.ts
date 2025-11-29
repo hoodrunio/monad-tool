@@ -1,589 +1,666 @@
-// Monad Validator Analytics - Enhanced Log Processor Implementation
-// Implements comprehensive log parsing based on Phase 1 analysis findings
-// Supports QC participation, vote chains, geographic intelligence
+// Monad Validator Analytics - Focused Log Processor
+// Focus: Block Proposals (ledger.json) + QC Participation (monad-bft.json BitVec)
+// Removes generic event processing and focuses on actual consensus data
 
 import { v4 as uuidv4 } from 'uuid';
 import {
   RawLog,
-  ConsensusEvent,
-  LedgerEvent,
-  ParsedEvent,
-  EventType,
-  EventTypeMapping,
-  QCParticipationData,
-  VoteChain,
-  VoteInfo,
-  ValidatorInfrastructure,
-  LogProcessingResult,
-  ProcessingError,
-  ProcessingConfig,
-  EnhancedLogProcessor,
-  QCParticipationParser,
-  DNSIntelligenceParser,
-  VoteChainBuilder,
-  DNSParseResult,
-  GeographicRegionMapping,
-  ProviderMapping
+  BlockProposalEvent,
+  QCParticipationEvent,
+  EnhancedLogProcessingResult,
+  ParsedQCData,
+  ValidatorRegistryEntry,
+  BftVoteEvent,
+  BftRoundStateEvent,
+  BftEnhancedLogProcessingResult
 } from './types';
 
-export class MonadLogProcessor implements EnhancedLogProcessor {
-  private qcParser: QCParticipationParserImpl;
-  private dnsParser: DNSIntelligenceParserImpl;
-  private voteChainBuilder: VoteChainBuilderImpl;
-  private config: ProcessingConfig;
-  private validatorRegistry: Map<string, ValidatorInfrastructure> = new Map();
+import { ValidatorService, CompleteValidator } from '../services/unified-validator';
+import { MonadClickHouseClient } from '../database/clickhouse-client';
+import { ServiceContainer } from '../services/service-container';
+import { logger } from '../utils/logger';
+import { EpochService } from '../services/epoch/EpochService';
+import { NodeRpcClient } from '../services/blockchain/NodeRpcClient';
 
-  constructor(config: ProcessingConfig) {
-    this.config = config;
-    this.qcParser = new QCParticipationParserImpl();
-    this.dnsParser = new DNSIntelligenceParserImpl();
-    this.voteChainBuilder = new VoteChainBuilderImpl();
+export class FocusedLogProcessor {
+  private validatorService: ValidatorService | null = null;
+  private clickhouseClient: MonadClickHouseClient | null = null;
+  private validatorRegistry: Map<number, ValidatorRegistryEntry> = new Map();
+  // Add reverse mapping for BitVec index to validator position
+  private bitVecIndexToPosition: Map<number, number> = new Map();
+  private isInitialized: boolean = false;
+  private lastLedgerSeqNum: number = 0;
+  private lastLedgerEpoch: number = 1;
+
+  constructor(clickhouseClient?: MonadClickHouseClient) {
+    this.clickhouseClient = clickhouseClient || ServiceContainer.getInstance().getClickHouseClient();
   }
 
-  // =============================================
-  // MAIN PROCESSING ENTRY POINT
-  // =============================================
+  async initialize(): Promise<void> {
+    if (!this.isInitialized) {
+      logger.info('🔧 Initializing Focused Log Processor...');
+      
+      // Get validator service from service container (it's already initialized with the correct epoch)
+      const serviceContainer = ServiceContainer.getInstance();
+      this.validatorService = serviceContainer.getValidatorService();
+      
+      // Get current epoch and populate validator registry maps
+      const currentEpoch = this.validatorService.getCurrentEpoch();
+      const validators = await this.validatorService.getAllValidators(currentEpoch);
+      
+      // Convert CompleteValidator[] to ValidatorRegistryEntry[] and populate registry
+      const registryEntries = validators.map((validator: CompleteValidator) => ({
+        validatorId: validator.nodeId, // Use nodeId as validatorId
+        nodeId: validator.nodeId,
+        position: validator.position, // Use the validator's actual position
+        epoch: currentEpoch,
+        stake: validator.stake || 0,
+        isActive: validator.isActive
+      }));
+      
+      this.updateValidatorRegistry(currentEpoch, registryEntries);
+      
+      this.isInitialized = true;
+      logger.info(`✅ Focused processor initialized with ${registryEntries.length} validators for epoch ${currentEpoch}`);
+    }
+  }
 
-  async processBatch(logs: RawLog[]): Promise<LogProcessingResult> {
+  async processLogBatch(logs: RawLog[]): Promise<BftEnhancedLogProcessingResult> {
+    if (!this.isInitialized) {
+      await this.initialize();
+    }
+
     const startTime = Date.now();
-    const ingestionId = uuidv4();
-    
-    const result: LogProcessingResult = {
-      events: [],
-      qcParticipation: [],
+    const blockProposalEvents: BlockProposalEvent[] = [];
+    const qcParticipationEvents: QCParticipationEvent[] = [];
+    const bftVoteEvents: BftVoteEvent[] = [];
+    const bftRoundStates: BftRoundStateEvent[] = [];
+    const errors: string[] = [];
+
+    logger.info(`📋 Processing batch of ${logs.length} logs for separate metrics...`);
+
+    // Process logs directly without enrichment (provider/location comes from validator_registry via JOINs)
+    for (const log of logs) {
+      try {
+        const fields = log.fields;
+        if (!fields || !fields.message) continue;
+
+        // Process ledger logs for block proposals
+        if (this.isLedgerTarget(log.target)) {
+          const blockEvent = this.extractBlockProposal(log, fields);
+          if (blockEvent) {
+            blockProposalEvents.push(blockEvent);
+          }
+        }
+
+        // Process BFT logs for QC participation and consensus tracking
+        if (this.isConsensusTarget(log.target)) {
+          // Existing QC participation extraction
+          const qcEvents = this.extractQCParticipation(log, fields, errors);
+          if (qcEvents.length > 0) {
+            qcParticipationEvents.push(...qcEvents);
+          }
+
+          // NEW: BFT vote message extraction
+          const voteEvent = this.extractBftVoteMessage(log, fields);
+          if (voteEvent) {
+            bftVoteEvents.push(voteEvent);
+          }
+
+          // NEW: BFT round state extraction
+          const roundState = this.extractBftRoundState(log, fields);
+          if (roundState) {
+            bftRoundStates.push(roundState);
+          }
+        }
+      } catch (error) {
+        errors.push(`Error processing log: ${error}`);
+      }
+    }
+
+    const processingTime = Date.now() - startTime;
+
+    // Filter BFT round states: keep only the highest stake per epoch+round
+    // This matches the Perl command logic: only track increasing stake values
+    const filteredBftRoundStates = this.filterBftRoundStatesByMaxStake(bftRoundStates);
+
+    logger.info(`✅ Processed ${blockProposalEvents.length} block proposals, ${qcParticipationEvents.length} QC participations, ${bftVoteEvents.length} BFT votes, ${filteredBftRoundStates.length} BFT round states (filtered from ${bftRoundStates.length}) in ${processingTime}ms`);
+
+    return {
+      // Legacy fields (empty for compatibility)
+      consensusEvents: [],
+      ledgerEvents: [],
+      qcParticipationData: [],
       voteChains: [],
       validatorInfrastructure: [],
-      errors: []
-    };
 
+      // New focused fields
+      blockProposalEvents,
+      qcParticipationEvents,
+      separateMetrics: [],
+
+      // NEW: BFT consensus tracking
+      bftVoteEvents,
+      bftRoundStates: filteredBftRoundStates,
+
+      // Metadata
+      errors,
+      processingTimeMs: processingTime,
+      processedLogs: logs.length,
+      successfullyParsed: blockProposalEvents.length + qcParticipationEvents.length + bftVoteEvents.length + filteredBftRoundStates.length
+    };
+  }
+
+  // =============================================
+  // BLOCK PROPOSAL EXTRACTION (from ledger.json)
+  // =============================================
+
+  private extractBlockProposal(log: RawLog, fields: any): BlockProposalEvent | null {
+    const message = fields.message;
+    
+    // Extract proposed_block events
+    if (message === 'proposed_block') {
+      const seqNum = parseInt(fields.seq_num) || 0;
+      const epochNumber = parseInt(fields.epoch) || 1;
+      
+      this.lastLedgerSeqNum = seqNum;
+      this.lastLedgerEpoch = epochNumber;
+
+      return {
+        timestamp: new Date(log.timestamp),
+        validatorId: this.normalizeValidatorId(fields.author || 'unknown'),
+        seqNum,
+        roundNumber: parseInt(fields.round) || 0,
+        epochNumber,
+        status: 'proposed',
+        numTx: parseInt(fields.num_tx) || 0,
+        blockId: fields.seq_num || undefined,
+        
+        // Infrastructure will be populated by enhanceEventsWithInfrastructure
+        validatorDns: fields.author_address || '',
+        geographicRegion: 'unknown',
+        infrastructureProvider: 'unknown',
+        
+        ingestionId: uuidv4()
+      };
+    }
+
+    // Track finalized_block events for sequence number updates but don't create separate proposals
+    if (message === 'finalized_block') {
+      const seqNum = parseInt(fields.seq_num) || 0;
+      const epochNumber = parseInt(fields.epoch) || 1;
+      
+      this.lastLedgerSeqNum = seqNum;
+      this.lastLedgerEpoch = epochNumber;
+
+      // Don't return a BlockProposalEvent - finalized blocks are just confirmations
+      // of already proposed blocks, not new proposals
+      return null;
+    }
+
+    // Extract timeout events (previously skipped_block)
+    if (message === 'timeout') {
+      return {
+        timestamp: new Date(log.timestamp),
+        validatorId: this.normalizeValidatorId(fields.author || 'unknown'),
+        seqNum: this.lastLedgerSeqNum,
+        roundNumber: parseInt(fields.round) || 0,
+        epochNumber: this.lastLedgerEpoch,
+        status: 'skipped',
+        numTx: 0,
+        blockId: String(this.lastLedgerSeqNum) || undefined,
+        
+        // Infrastructure will be populated by enhanceEventsWithInfrastructure
+        validatorDns: fields.author_address || '',
+        geographicRegion: 'unknown',
+        infrastructureProvider: 'unknown',
+        
+        ingestionId: uuidv4()
+      };
+    }
+
+    return null;
+  }
+
+  // =============================================
+  // QC PARTICIPATION EXTRACTION (from monad-bft.json)
+  // =============================================
+
+  private extractQCParticipation(log: RawLog, fields: any, errors: string[]): QCParticipationEvent[] {
+    const message = fields.message;
+    
+    // Look for QC commit events with BitVec data
+    if (message === 'try committing blocks using qc' && fields.qc) {
+      try {
+        const qcData = this.parseQCData(fields);
+        if (qcData) {
+          return this.extractValidatorParticipation(qcData, log.timestamp, fields);
+        }
+      } catch (error) {
+        const errorMsg = `Failed to parse QC data: ${error}`;
+        logger.warn(errorMsg);
+        errors.push(errorMsg); // Add to errors array for consistency
+      }
+    }
+
+    return [];
+  }
+
+  private parseQCData(fields: any): ParsedQCData | null {
+    const qcString = fields.qc as string;
+    if (!qcString) {
+        return null;
+    }
+    
     try {
-      // Process in parallel for performance
-      const consensusLogs = logs.filter(log => log.target === 'monad_consensus_state');
-      const ledgerLogs = logs.filter(log => log.target === 'ledger_tail');
-      
-      // Parse consensus events
-      const consensusEvents = this.parseConsensusEvents(consensusLogs);
-      result.events.push(...consensusEvents);
-      
-      // Parse ledger events
-      const ledgerEvents = this.parseLedgerEvents(ledgerLogs);
-      result.events.push(...ledgerEvents);
-      
-      // Extract QC participation data if enabled
-      if (this.config.enableQCParsing) {
-        result.qcParticipation = await this.extractQCParticipationBatch(consensusLogs);
-      }
-      
-      // Build vote chains if enabled
-      if (this.config.enableVoteChainAnalysis) {
-        const voteEvents = this.extractVoteEvents(consensusEvents);
-        result.voteChains = this.buildVoteChain(voteEvents);
-      }
-      
-      // Extract validator infrastructure
-      if (this.config.enableGeographicIntelligence) {
-        result.validatorInfrastructure = this.extractValidatorInfrastructure(result.events);
+      // Extract BitVec from QC string
+      // Expected format: "QC { ... signers: SignerMap(BitVec<u8, bitvec::order::Lsb0> { bits: 169, capacity: 176 } [0, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, ...] }"
+      const bitVecMatch = qcString.match(/\[([0-9, ]+)\]/);
+      if (!bitVecMatch) {
+        logger.warn('No BitVec found in QC string');
+        return null;
       }
 
+      const bitVecString = bitVecMatch[1];
+      const signerBits = bitVecString.split(',').map(b => parseInt(b.trim()));
+      
+      // Extract round, epoch, and blockId from QC data
+      const roundMatch = qcString.match(/r:\s*(\d+)/);
+      const epochMatch = qcString.match(/epoch:\s*(\d+)/);
+      const blockIdMatch = qcString.match(/id:\s*([a-zA-Z0-9\.]+)/);
+      
+      const round = fields.round ? parseInt(fields.round) : (roundMatch ? parseInt(roundMatch[1]) : 0);
+      const epoch = fields.epoch ? parseInt(fields.epoch) : (epochMatch ? parseInt(epochMatch[1]) : 1);
+      const blockId = blockIdMatch ? blockIdMatch[1] : 'unknown';
+      
+      const totalValidators = signerBits.length;
+      const participatingValidators = signerBits.filter(bit => bit === 1).length;
+
+      return {
+        signerBits,
+        round,
+        epoch,
+        totalValidators,
+        participatingValidators,
+        blockId
+      };
     } catch (error) {
-      result.errors.push({
-        logContent: JSON.stringify(logs.slice(0, 3)), // Sample for debugging
-        error: error instanceof Error ? error.message : String(error),
-        timestamp: new Date(),
-        ingestionId
+      logger.error(`Error parsing QC data: ${error}`);
+      return null;
+    }
+  }
+
+  private extractValidatorParticipation(
+    qcData: ParsedQCData, 
+    timestamp: string, 
+    fields: any
+  ): QCParticipationEvent[] {
+    const events: QCParticipationEvent[] = [];
+    const participationRate = qcData.participatingValidators / qcData.totalValidators * 100;
+    
+    // seqNum is not available in this log, it will be derived from blockId in the API layer
+    const seqNum = 0;
+
+    qcData.signerBits.forEach((participated, bitVecIndex) => {
+      // Map BitVec index to validator position, then to validator ID
+      const validatorPosition = this.bitVecIndexToPosition.get(bitVecIndex) ?? bitVecIndex;
+      const validatorEntry = this.validatorRegistry.get(validatorPosition);
+      const validatorId = validatorEntry?.validatorId || `unknown_pos_${validatorPosition}`;
+
+      events.push({
+        timestamp: new Date(timestamp),
+        validatorId: this.normalizeValidatorId(validatorId),
+        seqNum,
+        roundNumber: qcData.round,
+        epochNumber: qcData.epoch,
+        participated: participated === 1,
+        validatorIndex: bitVecIndex,
+        
+        // QC metadata
+        qcId: qcData.blockId,
+        totalValidators: qcData.totalValidators,
+        participatingValidators: qcData.participatingValidators,
+        participationRate,
+        
+        // Infrastructure will be populated by enhanceEventsWithInfrastructure
+        validatorDns: '',
+        geographicRegion: 'unknown',
+        infrastructureProvider: 'unknown',
+        
+        ingestionId: uuidv4()
       });
-    }
+    });
 
-    return result;
-  }
-
-  // =============================================
-  // CONSENSUS EVENT PARSING
-  // =============================================
-
-  parseConsensusEvents(logs: RawLog[]): ConsensusEvent[] {
-    const events: ConsensusEvent[] = [];
-    
-    for (const log of logs) {
-      try {
-        const event = this.parseConsensusEvent(log);
-        if (event) {
-          events.push(event);
-        }
-      } catch (error) {
-        // Log parsing error but continue processing
-        console.warn(`Failed to parse consensus event: ${error}`);
-      }
-    }
-    
     return events;
   }
 
-  private parseConsensusEvent(log: RawLog): ConsensusEvent | null {
-    const fields = log.fields;
-    const message = fields.message;
-    
-    if (!message || !EventTypeMapping[message]) {
-      return null;
-    }
-
-    const timestamp = new Date(log.timestamp);
-    const eventType = EventTypeMapping[message];
-    const ingestionId = uuidv4();
-
-    // Extract basic fields
-    const baseEvent = {
-      timestamp,
-      eventType,
-      validatorId: this.extractValidatorId(fields, log.target),
-      roundNumber: parseInt(fields.round) || 0,
-      epochNumber: parseInt(fields.epoch) || 1,
-      blockNumber: fields.block_num ? parseInt(fields.block_num) : undefined,
-      blockId: fields.block_id,
-      processingTimestampMs: timestamp.getTime(),
-      processingDelayMs: this.calculateProcessingDelay(timestamp),
-      transactionCount: parseInt(fields.num_tx) || 0,
-      isSuccessful: this.determineSuccess(fields, eventType),
-      metadata: JSON.stringify(fields),
-      ingestionId
-    };
-
-    // Extract event-specific data
-    const enhancedEvent = this.enhanceConsensusEvent(baseEvent, fields, eventType);
-    
-    return enhancedEvent;
-  }
-
-  private enhanceConsensusEvent(baseEvent: any, fields: any, eventType: EventType): ConsensusEvent {
-    const enhanced = { ...baseEvent };
-
-    // Extract vote chain relationships
-    if (fields.vote) {
-      const voteInfo = this.voteChainBuilder.extractVoteInfo(fields.vote);
-      enhanced.parentVoteId = voteInfo.parentId;
-      enhanced.parentRound = voteInfo.parentRound;
-    }
-
-    // Extract next leader information
-    if (fields.next_leader) {
-      enhanced.nextLeaderId = fields.next_leader;
-    }
-
-    // Extract state root action
-    if (fields.state_root_action) {
-      enhanced.stateRootAction = fields.state_root_action;
-    }
-
-    // Extract sequence number
-    if (fields.seqnum) {
-      enhanced.sequenceNumber = parseInt(fields.seqnum);
-    }
-
-    // Extract timing data
-    if (fields.block_ts_ms) {
-      enhanced.blockTimestampMs = parseInt(fields.block_ts_ms);
-    }
-
-    // Extract QC participation data for specific events
-    if (eventType === EventType.QC_COMMIT_TRIGGERED && fields.qc) {
-      try {
-        const qcData = this.qcParser.extractParticipation(fields.qc);
-        enhanced.participantCount = qcData.participatingValidators;
-        enhanced.participationRate = qcData.participationRate;
-      } catch (error) {
-        console.warn(`Failed to parse QC data: ${error}`);
-      }
-    }
-
-    // Add infrastructure intelligence
-    const validatorDns = this.extractValidatorDns(fields);
-    if (validatorDns) {
-      enhanced.validatorDns = validatorDns;
-      const dnsInfo = this.dnsParser.parseDNS(validatorDns);
-      enhanced.geographicRegion = this.dnsParser.extractGeographicRegion(validatorDns);
-      enhanced.infrastructureProvider = this.dnsParser.extractInfrastructureProvider(validatorDns);
-      enhanced.datacenterCode = this.dnsParser.extractDatacenterCode(validatorDns);
-    } else {
-      enhanced.validatorDns = '';
-      enhanced.geographicRegion = 'unknown';
-      enhanced.infrastructureProvider = 'unknown';
-      enhanced.datacenterCode = 'unknown';
-    }
-
-    return enhanced as ConsensusEvent;
-  }
-
   // =============================================
-  // LEDGER EVENT PARSING
+  // NOTE: Infrastructure enrichment removed
+  // Provider/location data now comes from validator_registry via JOINs in API queries
+  // This improves performance and ensures data consistency
   // =============================================
 
-  parseLedgerEvents(logs: RawLog[]): LedgerEvent[] {
-    const events: LedgerEvent[] = [];
-    
-    for (const log of logs) {
-      try {
-        const event = this.parseLedgerEvent(log);
-        if (event) {
-          events.push(event);
-        }
-      } catch (error) {
-        console.warn(`Failed to parse ledger event: ${error}`);
-      }
-    }
-    
-    return events;
-  }
-
-  private parseLedgerEvent(log: RawLog): LedgerEvent | null {
-    const fields = log.fields;
-    const message = fields.message;
-    
-    if (!message || !EventTypeMapping[message]) {
-      return null;
-    }
-
-    const timestamp = new Date(log.timestamp);
-    const eventType = EventTypeMapping[message];
-    const ingestionId = uuidv4();
-
-    // Extract validator information from author field
-    const validatorId = fields.author || '';
-    const validatorDns = fields.author_dns || '';
-
-    // Parse timing information
-    const blockTimestampMs = parseInt(fields.block_ts_ms) || timestamp.getTime();
-    const processingTimestampMs = parseInt(fields.now_ts_ms) || timestamp.getTime();
-    const processingDelayMs = processingTimestampMs - blockTimestampMs;
-
-    // Build ledger event
-    const event: LedgerEvent = {
-      timestamp,
-      eventType,
-      validatorId,
-      roundNumber: parseInt(fields.round) || 0,
-      epochNumber: parseInt(fields.epoch) || 1,
-      blockNumber: fields.seq_num ? parseInt(fields.seq_num) : undefined,
-      parentRound: fields.parent_round ? parseInt(fields.parent_round) : undefined,
-      sequenceNumber: fields.seq_num ? parseInt(fields.seq_num) : undefined,
-      transactionCount: parseInt(fields.num_tx) || 0,
-      blockTimestampMs,
-      processingTimestampMs,
-      processingDelayMs: Math.max(0, processingDelayMs),
-      validatorDns,
-      geographicRegion: this.dnsParser.extractGeographicRegion(validatorDns),
-      infrastructureProvider: this.dnsParser.extractInfrastructureProvider(validatorDns),
-      datacenterCode: this.dnsParser.extractDatacenterCode(validatorDns),
-      ingestionId
-    };
-
-    return event;
-  }
-
   // =============================================
-  // QC PARTICIPATION EXTRACTION
+  // VALIDATOR REGISTRY MANAGEMENT
   // =============================================
 
-  extractQCParticipation(qcData: string): QCParticipationData {
-    return this.qcParser.extractParticipation(qcData);
-  }
-
-  private async extractQCParticipationBatch(logs: RawLog[]): Promise<QCParticipationData[]> {
-    const qcData: QCParticipationData[] = [];
+  updateValidatorRegistry(epoch: number, validators: ValidatorRegistryEntry[]): void {
+    this.validatorRegistry.clear();
+    this.bitVecIndexToPosition.clear();
     
-    for (const log of logs) {
-      try {
-        if (log.fields.qc && log.fields.message === 'qc triggered commit') {
-          const participation = this.qcParser.extractParticipation(log.fields.qc);
-          qcData.push(participation);
-        }
-      } catch (error) {
-        console.warn(`Failed to extract QC participation: ${error}`);
-      }
-    }
+    validators.forEach((validator, index) => {
+      this.validatorRegistry.set(validator.position, validator);
+      this.bitVecIndexToPosition.set(index, validator.position);
+    });
     
-    return qcData;
-  }
-
-  // =============================================
-  // VALIDATOR INFRASTRUCTURE PARSING
-  // =============================================
-
-  parseValidatorInfrastructure(dns: string): ValidatorInfrastructure {
-    const dnsInfo = this.dnsParser.parseDNS(dns);
-    
-    return {
-      validatorId: '', // Will be populated by caller
-      dnsName: dns,
-      geographicRegion: this.dnsParser.extractGeographicRegion(dns),
-      infrastructureProvider: this.dnsParser.extractInfrastructureProvider(dns),
-      datacenterCode: this.dnsParser.extractDatacenterCode(dns),
-      providerType: this.dnsParser.classifyProviderType(dnsInfo.provider),
-      endpointHost: dnsInfo.domain,
-      endpointPort: dnsInfo.port
-    };
-  }
-
-  private extractValidatorInfrastructure(events: ParsedEvent[]): ValidatorInfrastructure[] {
-    const infrastructureMap = new Map<string, ValidatorInfrastructure>();
-    
-    for (const event of events) {
-      if (event.validatorId && event.validatorDns && !infrastructureMap.has(event.validatorId)) {
-        const infrastructure = this.parseValidatorInfrastructure(event.validatorDns);
-        infrastructure.validatorId = event.validatorId;
-        infrastructureMap.set(event.validatorId, infrastructure);
-      }
-    }
-    
-    return Array.from(infrastructureMap.values());
-  }
-
-  // =============================================
-  // VOTE CHAIN BUILDING
-  // =============================================
-
-  buildVoteChain(voteEvents: VoteInfo[]): VoteChain[] {
-    return this.voteChainBuilder.buildChain(voteEvents);
-  }
-
-  private extractVoteEvents(events: ConsensusEvent[]): VoteInfo[] {
-    const voteEvents: VoteInfo[] = [];
-    
-    for (const event of events) {
-      if (event.eventType === EventType.VOTE_RESULT && event.metadata) {
-        try {
-          const fields = JSON.parse(event.metadata);
-          if (fields.vote) {
-            const voteInfo = this.voteChainBuilder.extractVoteInfo(fields.vote);
-            voteEvents.push(voteInfo);
-          }
-        } catch (error) {
-          console.warn(`Failed to extract vote info: ${error}`);
-        }
-      }
-    }
-    
-    return voteEvents;
+    logger.info(`📋 Updated validator registry for epoch ${epoch} with ${validators.length} validators`);
   }
 
   // =============================================
   // UTILITY METHODS
   // =============================================
 
-  private extractValidatorId(fields: any, target: string): string {
-    // Try to extract validator ID from various fields
-    if (fields.author) return fields.author;
-    if (fields.validator_id) return fields.validator_id;
-    if (fields.pid) return fields.pid;
-    
-    // For consensus events, try to extract from proposal
-    if (target === 'monad_consensus_state' && fields.proposal) {
-      const authorMatch = fields.proposal.match(/author: ([a-f0-9]{64})/);
-      if (authorMatch) return authorMatch[1];
+  private isLedgerTarget(target: string): boolean {
+    return target === 'ledger_tail' || target.includes('ledger');
+  }
+
+  private isConsensusTarget(target: string): boolean {
+    return target.includes('consensus') || 
+           target.includes('monad_consensus') ||
+           target.includes('monad_eth_block_policy') ||
+           target.includes('pacemaker');
+  }
+
+  private normalizeValidatorId(validatorId: string): string {
+    if (!validatorId || validatorId === 'unknown') {
+      return 'unknown';
     }
-    
-    return 'unknown';
+    return validatorId.startsWith('0x') ? validatorId.slice(2) : validatorId;
   }
 
-  private extractValidatorDns(fields: any): string {
-    return fields.author_dns || fields.validator_dns || '';
-  }
+  // =============================================
+  // DATABASE INSERTION METHODS
+  // =============================================
 
-  private calculateProcessingDelay(timestamp: Date): number {
-    return Date.now() - timestamp.getTime();
-  }
+  async insertBlockProposals(events: BlockProposalEvent[]): Promise<void> {
+    if (events.length === 0) return;
 
-  private determineSuccess(fields: any, eventType: EventType): boolean {
-    // Determine success based on event type and field content
-    switch (eventType) {
-      case EventType.VOTE_RESULT:
-        return fields.vote && fields.vote.includes('Some(');
-      case EventType.QC_COMMIT_TRIGGERED:
-        return fields.num_commits && parseInt(fields.num_commits) > 0;
-      case EventType.BLOCK_COMMITTED:
-        return true; // If the event exists, it was successful
-      default:
-        return true;
+    if (!this.clickhouseClient) {
+      logger.warn('💾 No ClickHouse client available, skipping block proposal insertion');
+      return;
     }
-  }
-}
 
-// =============================================
-// QC PARTICIPATION PARSER IMPLEMENTATION
-// =============================================
-
-class QCParticipationParserImpl implements QCParticipationParser {
-  parseBitVec(bitVecString: string): number[] {
-    // Extract BitVec array from string like "[0, 1, 1, 0, 0, 1, 1, 0, ...]"
-    const match = bitVecString.match(/\[([0-9, ]+)\]/);
-    if (!match) return [];
-    
-    return match[1].split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
-  }
-
-  extractParticipation(qcString: string): QCParticipationData {
     try {
-      // Parse QC string to extract participation data
-      const bitsMatch = qcString.match(/bits: (\d+)/);
-      const totalValidators = bitsMatch ? parseInt(bitsMatch[1]) : 169;
-      
-      // Extract BitVec
-      const bitmap = this.parseBitVec(qcString);
-      const participatingValidators = bitmap.filter(bit => bit === 1).length;
-      const participationRate = this.calculateParticipationRate(participatingValidators, totalValidators);
-      
-      // Extract BLS signature
-      const sigMatch = qcString.match(/BlsAggregateSignature\("([^"]+)"\)/);
-      const blsSignature = sigMatch ? sigMatch[1] : '';
-      
+      await this.clickhouseClient.insertBlockProposals(events);
+      logger.info(`💾 Successfully inserted ${events.length} block proposal events`);
+    } catch (error) {
+      logger.error('Failed to insert block proposals:', error);
+      throw error;
+    }
+  }
+
+  async insertQCParticipations(events: QCParticipationEvent[]): Promise<void> {
+    if (events.length === 0) return;
+
+    if (!this.clickhouseClient) {
+      logger.warn('💾 No ClickHouse client available, skipping QC participation insertion');
+      return;
+    }
+
+    try {
+      await this.clickhouseClient.insertQCParticipations(events);
+      logger.info(`💾 Successfully inserted ${events.length} QC participation events`);
+    } catch (error) {
+      logger.error('Failed to insert QC participations:', error);
+      throw error;
+    }
+  }
+
+  // =============================================
+  // BFT CONSENSUS TRACKING (NEW)
+  // =============================================
+
+  /**
+   * Extract BFT vote message event
+   * Parses "vote message" logs to extract validator signatures
+   */
+  private extractBftVoteMessage(log: RawLog, fields: any): BftVoteEvent | null {
+    const message = fields.message;
+
+    if (message !== 'vote message') {
+      return null;
+    }
+
+    try {
+      const author = fields.author;
+      const voteMsgString = fields.vote_msg;
+
+      if (!author || !voteMsgString) {
+        return null;
+      }
+
+      // Extract vote ID: "Vote { id: 9db8..cabe, epoch: 619, round: 3279267 }"
+      const voteMatch = String(voteMsgString).match(/id:\s*([0-9a-f.]+).*epoch:\s*(\d+).*round:\s*(\d+)/);
+      if (!voteMatch) {
+        return null;
+      }
+
+      const voteId = voteMatch[1];
+      const epoch = Number(voteMatch[2]);
+      const round = Number(voteMatch[3]);
+
+      // Extract BLS signature: BlsSignature("...")
+      const sigMatch = String(voteMsgString).match(/BlsSignature\("(.+?)"\)/);
+      const sig = sigMatch ? sigMatch[1] : '';
+
+      if (!sig) {
+        return null;
+      }
+
+      // Generate event ID for deduplication (SHA1 hash)
+      const crypto = require('crypto');
+      const eventId = crypto
+        .createHash('sha1')
+        .update(`${author}${epoch}${round}${voteId}`)
+        .digest('hex');
+
       return {
-        totalValidators,
-        participatingValidators,
-        participationBitmap: bitmap.join(''),
-        participationRate,
-        validatorParticipation: this.mapValidatorPositions(bitmap, []), // Validator IDs would need separate mapping
-        blsSignature,
-        qcAssemblyTimeMs: 0 // Would need timing data from logs
+        timestamp: new Date(log.timestamp),
+        epoch,
+        round,
+        author,
+        sig,
+        voteId,
+        eventId
       };
     } catch (error) {
-      throw new Error(`Failed to parse QC participation: ${error}`);
+      logger.warn(`Failed to parse BFT vote message: ${error}`);
+      return null;
     }
   }
 
-  calculateParticipationRate(participating: number, total: number): number {
-    return total > 0 ? participating / total : 0;
-  }
+  /**
+   * Extract BFT round state event
+   * Parses "collecting vote" logs to track stake accumulation
+   */
+  private extractBftRoundState(log: RawLog, fields: any): BftRoundStateEvent | null {
+    const message = fields.message;
 
-  mapValidatorPositions(bitmap: number[], validatorIds: string[]): Array<{
-    validatorId: string;
-    participated: boolean;
-    position: number;
-  }> {
-    return bitmap.map((bit, index) => ({
-      validatorId: validatorIds[index] || `validator_${index}`,
-      participated: bit === 1,
-      position: index
-    }));
-  }
-}
-
-// =============================================
-// DNS INTELLIGENCE PARSER IMPLEMENTATION
-// =============================================
-
-class DNSIntelligenceParserImpl implements DNSIntelligenceParser {
-  parseDNS(dnsString: string): DNSParseResult {
-    // Parse DNS like "mf-testnet-2-val-tsw-sgp-004.monadinfra.com:8000"
-    const parts = dnsString.split(':');
-    const hostPart = parts[0];
-    const port = parts[1] ? parseInt(parts[1]) : 8000;
-    
-    const hostParts = hostPart.split('.');
-    const subdomain = hostParts[0];
-    const domain = hostParts.slice(1).join('.');
-    
-    const subdomainParts = subdomain.split('-');
-    
-    return {
-      provider: subdomainParts[0] || 'unknown',
-      network: subdomainParts.slice(1, 3).join('-') || 'unknown',
-      tier: subdomainParts[3] || 'unknown',
-      type: subdomainParts[4] || 'unknown',
-      region: subdomainParts[6] || 'unknown',
-      location: subdomainParts.slice(5).join('-') || 'unknown',
-      instance: subdomainParts[subdomainParts.length - 1] || 'unknown',
-      domain,
-      port
-    };
-  }
-
-  extractGeographicRegion(dns: string): string {
-    const dnsInfo = this.parseDNS(dns);
-    return GeographicRegionMapping[dnsInfo.region] || dnsInfo.region || 'unknown';
-  }
-
-  extractInfrastructureProvider(dns: string): string {
-    const dnsInfo = this.parseDNS(dns);
-    return ProviderMapping[dnsInfo.provider] || dnsInfo.domain.split('.')[0] || 'unknown';
-  }
-
-  extractDatacenterCode(dns: string): string {
-    const dnsInfo = this.parseDNS(dns);
-    return dnsInfo.location || 'unknown';
-  }
-
-  classifyProviderType(provider: string): 'monadinfra' | 'community' | 'enterprise' {
-    if (provider.includes('monadinfra') || provider === 'mf') {
-      return 'monadinfra';
-    } else if (['brightlystake', 'liquify', 'node3tech'].includes(provider)) {
-      return 'enterprise';
-    } else {
-      return 'community';
+    if (message !== 'collecting vote') {
+      return null;
     }
-  }
-}
 
-// =============================================
-// VOTE CHAIN BUILDER IMPLEMENTATION
-// =============================================
+    try {
+      const roundStr = fields.round;
+      const epochStr = fields.epoch;
+      const currentStakeStr = fields.current_stake;
+      const totalStakeStr = fields.total_stake;
 
-class VoteChainBuilderImpl implements VoteChainBuilder {
-  extractVoteInfo(voteString: string): VoteInfo {
-    // Parse vote string like "Vote { id: aee1..7277, epoch: 1, r: 29573, pid: e7ec..6dd2, pr: 29572 }"
-    const idMatch = voteString.match(/id: ([a-f0-9.]+)/);
-    const epochMatch = voteString.match(/epoch: (\d+)/);
-    const roundMatch = voteString.match(/r: (\d+)/);
-    const pidMatch = voteString.match(/pid: ([a-f0-9.]+)/);
-    const prMatch = voteString.match(/pr: (\d+)/);
-    
-    return {
-      id: idMatch ? idMatch[1] : '',
-      epoch: epochMatch ? parseInt(epochMatch[1]) : 0,
-      round: roundMatch ? parseInt(roundMatch[1]) : 0,
-      parentId: pidMatch ? pidMatch[1] : undefined,
-      parentRound: prMatch ? parseInt(prMatch[1]) : undefined
-    };
-  }
+      if (!roundStr || !epochStr || !currentStakeStr || !totalStakeStr) {
+        return null;
+      }
 
-  buildChain(votes: VoteInfo[]): VoteChain[] {
-    const chains: VoteChain[] = [];
-    
-    // Sort votes by round for proper chain building
-    const sortedVotes = votes.sort((a, b) => a.round - b.round);
-    
-    for (const vote of sortedVotes) {
-      const chain: VoteChain = {
-        voteId: vote.id,
-        round: vote.round,
-        epoch: vote.epoch,
-        parentVoteId: vote.parentId,
-        parentRound: vote.parentRound,
-        validatorId: '', // Would need additional context
-        timestamp: new Date() // Would need actual timestamp
+      const round = Number(roundStr);
+      const epoch = Number(epochStr);
+
+      // Parse stake values: "Ok(Stake(1273254265463543980894843884))" or "Stake(9554473084196538460577820321)"
+      const parseStake = (stakeStr: string): bigint => {
+        const match = String(stakeStr).match(/(\d+)/);
+        return match ? BigInt(match[1]) : 0n;
       };
-      
-      chains.push(chain);
+
+      const currentStake = parseStake(currentStakeStr);
+      const totalStake = parseStake(totalStakeStr);
+
+      // Calculate stake ratio as percentage
+      const stakeRatio = totalStake > 0n
+        ? (Number(currentStake) / Number(totalStake)) * 100
+        : 0;
+
+      // Generate event ID for deduplication
+      const crypto = require('crypto');
+      const eventId = crypto
+        .createHash('sha1')
+        .update(`${epoch}${round}${currentStake}${totalStake}`)
+        .digest('hex');
+
+      return {
+        timestamp: new Date(log.timestamp),
+        epoch,
+        round,
+        currentStake,
+        totalStake,
+        stakeRatio,
+        eventId
+      };
+    } catch (error) {
+      logger.warn(`Failed to parse BFT round state: ${error}`);
+      return null;
     }
-    
-    return chains;
   }
 
-  findParentVote(vote: VoteInfo, previousVotes: VoteInfo[]): VoteInfo | null {
-    if (!vote.parentId) return null;
-    
-    return previousVotes.find(v => v.id === vote.parentId) || null;
-  }
+  /**
+   * Filter BFT round states to keep only the highest stake per epoch+round
+   * This matches the Perl command logic which only tracks increasing stake values
+   */
+  private filterBftRoundStatesByMaxStake(events: BftRoundStateEvent[]): BftRoundStateEvent[] {
+    if (events.length === 0) return [];
 
-  validateChainIntegrity(chain: VoteChain[]): boolean {
-    // Validate that rounds are sequential and parent relationships are correct
-    for (let i = 1; i < chain.length; i++) {
-      const current = chain[i];
-      const previous = chain[i - 1];
-      
-      if (current.parentRound !== previous.round) {
-        return false;
+    // Group by epoch+round and keep only the max stake
+    const maxStakeMap = new Map<string, BftRoundStateEvent>();
+
+    for (const event of events) {
+      const key = `${event.epoch}-${event.round}`;
+      const existing = maxStakeMap.get(key);
+
+      // Keep event if:
+      // 1. No existing event for this epoch+round, OR
+      // 2. This event has higher currentStake than existing
+      if (!existing || event.currentStake > existing.currentStake) {
+        maxStakeMap.set(key, event);
       }
     }
-    
-    return true;
+
+    return Array.from(maxStakeMap.values());
   }
-} 
+
+  /**
+   * Insert BFT vote events into ClickHouse
+   */
+  async insertBftVotes(events: BftVoteEvent[]): Promise<void> {
+    if (events.length === 0) {
+      return;
+    }
+
+    if (!this.clickhouseClient) {
+      logger.warn('💾 No ClickHouse client available, skipping BFT vote insertion');
+      return;
+    }
+
+    try {
+      const values = events.map(event => {
+        // Format timestamp for ClickHouse DateTime64
+        const timestamp = event.timestamp instanceof Date
+          ? event.timestamp.toISOString().replace('T', ' ').replace('Z', '')
+          : new Date(event.timestamp).toISOString().replace('T', ' ').replace('Z', '');
+
+        return {
+          ts: timestamp,
+          epoch: event.epoch,
+          round: event.round,
+          author: event.author,
+          sig: event.sig,
+          vote_id: event.voteId,
+          event_id: event.eventId
+        };
+      });
+
+      await this.clickhouseClient.getClient().insert({
+        table: 'bft_votes',
+        values,
+        format: 'JSONEachRow'
+      });
+
+      logger.info(`💾 Successfully inserted ${events.length} BFT vote events`);
+    } catch (error) {
+      logger.error('Failed to insert BFT votes:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Insert BFT round state events into ClickHouse
+   */
+  async insertBftRoundStates(events: BftRoundStateEvent[]): Promise<void> {
+    if (events.length === 0) {
+      return;
+    }
+
+    if (!this.clickhouseClient) {
+      logger.warn('💾 No ClickHouse client available, skipping BFT round state insertion');
+      return;
+    }
+
+    try {
+      const values = events.map(event => {
+        // Format timestamp for ClickHouse DateTime64
+        const timestamp = event.timestamp instanceof Date
+          ? event.timestamp.toISOString().replace('T', ' ').replace('Z', '')
+          : new Date(event.timestamp).toISOString().replace('T', ' ').replace('Z', '');
+
+        return {
+          ts: timestamp,
+          epoch: event.epoch,
+          round: event.round,
+          current_stake: event.currentStake.toString(),
+          total_stake: event.totalStake.toString(),
+          stake_ratio: event.stakeRatio,
+          event_id: event.eventId
+        };
+      });
+
+      await this.clickhouseClient.getClient().insert({
+        table: 'bft_round_state',
+        values,
+        format: 'JSONEachRow'
+      });
+
+      logger.info(`💾 Successfully inserted ${events.length} BFT round state events`);
+    } catch (error) {
+      logger.error('Failed to insert BFT round states:', error);
+      throw error;
+    }
+  }
+
+  // =============================================
+  // STATISTICS AND MONITORING
+  // =============================================
+
+  getProcessingStats(): any {
+    return {
+      validatorRegistrySize: this.validatorRegistry.size,
+      isInitialized: this.isInitialized,
+      validatorService: this.validatorService ? this.validatorService.getStats() : null
+    };
+  }
+}

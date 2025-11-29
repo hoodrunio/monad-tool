@@ -9,6 +9,7 @@ export function createAdminRoutes(adminController: AdminController): Router {
   router.post('/api/cache/flush', adminController.flushCache.bind(adminController));
   router.get('/api/cache/stats', adminController.getCacheStats.bind(adminController));
   router.post('/api/cache/warmup', adminController.warmupCache.bind(adminController));
+  router.post('/api/cache/clear-validators', adminController.clearValidatorCaches.bind(adminController));
   
   // Log processing management
   router.post('/api/logs/process', adminController.processLogs.bind(adminController));
@@ -21,6 +22,19 @@ export function createAdminRoutes(adminController: AdminController): Router {
   // Maintenance operations
   router.get('/api/maintenance/status', adminController.getMaintenanceStatus.bind(adminController));
   router.post('/api/maintenance/perform', adminController.performMaintenance.bind(adminController));
+
+  // Domain mapping management
+  router.get('/api/domain-mappings', adminController.getDomainMappings.bind(adminController));
+  router.post('/api/domain-mappings', adminController.addDomainMapping.bind(adminController));
+  router.delete('/api/domain-mappings/:hostname', adminController.removeDomainMapping.bind(adminController));
+  router.get('/api/domain-mappings/:hostname/check', adminController.checkDomainMapping.bind(adminController));
+
+  // Keybase ID management
+  router.get('/api/keybase-mappings', adminController.getKeybaseMappings.bind(adminController));
+  router.post('/api/keybase-mappings', adminController.addKeybaseMapping.bind(adminController));
+  router.delete('/api/keybase-mappings/:validatorId', adminController.removeKeybaseMapping.bind(adminController));
+  router.get('/api/keybase-mappings/:validatorId/check', adminController.checkKeybaseMapping.bind(adminController));
+  router.post('/api/keybase-mappings/refresh-logos', adminController.refreshKeybaseLogos.bind(adminController));
 
   return router;
 } 

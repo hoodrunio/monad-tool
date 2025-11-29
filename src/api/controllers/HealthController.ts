@@ -42,21 +42,29 @@ export class HealthController {
   async getSystemHealth(req: Request, res: Response): Promise<void> {
     try {
       const health = await this.ingestionService.getSystemHealth();
-      
-      const overallHealth = health.database && health.cache ? 'healthy' : 'unhealthy';
+
+      // Check for duplicate validators in the database
+      const duplicateCheck = await this.checkForDuplicateValidators();
+
+      const overallHealth = health.database && health.cache && !duplicateCheck.hasDuplicates ? 'healthy' : 'degraded';
       const statusCode = overallHealth === 'healthy' ? 200 : 503;
-      
+
       res.status(statusCode).json({
         status: overallHealth,
         components: {
           database: health.database ? 'healthy' : 'unhealthy',
           cache: health.cache ? 'healthy' : 'unhealthy',
+          validators: duplicateCheck.hasDuplicates ? 'warning' : 'healthy',
           ingestion: {
             running: this.ingestionService.isServiceRunning(),
             queueSize: this.ingestionService.getQueueSize(),
             metrics: health.ingestion
           }
         },
+        warnings: duplicateCheck.hasDuplicates ? [
+          `Found ${duplicateCheck.duplicateCount} duplicate validator records in validator_registry`,
+          'Run OPTIMIZE TABLE validator_registry FINAL to merge duplicates'
+        ] : [],
         timestamp: new Date().toISOString()
       });
     } catch (error) {
@@ -196,4 +204,41 @@ export class HealthController {
       });
     }
   }
-} 
+
+  // =============================================
+  // HELPER METHODS
+  // =============================================
+
+  /**
+   * Check for duplicate validator records in the database
+   */
+  private async checkForDuplicateValidators(): Promise<{ hasDuplicates: boolean; duplicateCount: number }> {
+    try {
+      // Query to detect duplicate validators (same validator_id with multiple records)
+      const duplicateCheckQuery = `
+        SELECT COUNT(*) as duplicate_count
+        FROM (
+          SELECT validator_id
+          FROM validator_registry
+          WHERE is_active = 1
+          GROUP BY validator_id, epoch, last_updated
+          HAVING COUNT(*) > 1
+        )
+      `;
+
+      const result = await this.clickhouseClient.executeRawQuery(duplicateCheckQuery);
+      const duplicateCount = result[0]?.duplicate_count || 0;
+
+      return {
+        hasDuplicates: duplicateCount > 0,
+        duplicateCount: Number(duplicateCount)
+      };
+    } catch (error) {
+      logger.error('Failed to check for duplicate validators:', error);
+      return {
+        hasDuplicates: false,
+        duplicateCount: 0
+      };
+    }
+  }
+}

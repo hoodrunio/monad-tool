@@ -7,6 +7,7 @@ import rateLimit from 'express-rate-limit';
 import { DataIngestionService } from '../services/data-ingestion';
 import { MonadClickHouseClient } from '../database/clickhouse-client';
 import { MonadRedisClient } from '../cache/redis-client';
+import { NodeRpcClient } from '../services/blockchain/NodeRpcClient';
 import { logger } from '../utils/logger';
 
 // Import Controllers
@@ -15,6 +16,20 @@ import { ValidatorController } from './controllers/ValidatorController';
 import { NetworkController } from './controllers/NetworkController';
 import { EventController } from './controllers/EventController';
 import { AdminController } from './controllers/AdminController';
+import { QueryPerformanceController } from './controllers/QueryPerformanceController';
+import { EpochController } from './controllers/EpochController';
+import { EnhancedEpochController } from './controllers/EnhancedEpochController';
+import { TransactionAnalyticsController } from './controllers/TransactionAnalyticsController';
+import { StakingEventController } from './controllers/StakingEventController';
+import { ConsensusController } from './controllers/ConsensusController';
+import { TipRevenueController } from './controllers/TipRevenueController';
+
+// Import Staking Services
+import { StakingUpdateService, StakingUpdateConfig } from '../services/staking/StakingUpdateService';
+import { StakingEventIndexer } from '../services/staking-events/StakingEventIndexer';
+
+// Import Tip Revenue Services
+import { TipRevenueSyncService, TipRevenueSyncConfig } from '../services/tip-revenue';
 
 // Import Routes
 import { createHealthRoutes } from './routes/health';
@@ -22,6 +37,14 @@ import { createValidatorRoutes } from './routes/validators';
 import { createNetworkRoutes } from './routes/network';
 import { createEventRoutes } from './routes/events';
 import { createAdminRoutes } from './routes/admin';
+import { createQueryPerformanceRoutes } from './routes/query-performance';
+import { createDNSAnalyticsRoutes } from './routes/dns-analytics';
+import { createEpochRoutes } from './routes/epoch';
+import { createEnhancedEpochRoutes } from './routes/enhanced-epoch';
+import { createTransactionAnalyticsRoutes } from './routes/transaction-analytics';
+import { createStakingEventsRouter } from './routes/staking-events';
+import { createConsensusRouter } from './routes/consensus';
+import { createTipRevenueRoutes, createValidatorTipRevenueRoutes } from './routes/tip-revenue';
 
 export interface APIServerConfig {
   port: number;
@@ -44,6 +67,9 @@ export class AnalyticsAPIServer {
   private clickhouseClient: MonadClickHouseClient;
   private redisClient: MonadRedisClient;
   private server: any;
+  private stakingUpdateService: StakingUpdateService | null = null;
+  private stakingEventIndexer: StakingEventIndexer | null = null;
+  private tipRevenueSyncService: TipRevenueSyncService | null = null;
 
   // Controllers
   private healthController!: HealthController;
@@ -51,6 +77,13 @@ export class AnalyticsAPIServer {
   private networkController!: NetworkController;
   private eventController!: EventController;
   private adminController!: AdminController;
+  private queryPerformanceController!: QueryPerformanceController;
+  private epochController!: EpochController;
+  private enhancedEpochController!: EnhancedEpochController;
+  private transactionAnalyticsController!: TransactionAnalyticsController;
+  private stakingEventController!: StakingEventController;
+  private consensusController!: ConsensusController;
+  private tipRevenueController!: TipRevenueController;
 
   constructor(config: APIServerConfig, ingestionService: DataIngestionService) {
     this.config = config;
@@ -81,6 +114,15 @@ export class AnalyticsAPIServer {
       defaultTtl: 300
     });
 
+    // Initialize staking services
+    this.initializeStakingServices();
+
+    // Initialize staking events indexer (separate from stakingUpdateService)
+    this.initializeStakingEventIndexer();
+
+    // Initialize tip revenue services
+    this.initializeTipRevenueServices();
+
     // Initialize controllers
     this.initializeControllers();
 
@@ -88,6 +130,109 @@ export class AnalyticsAPIServer {
     this.setupMiddleware();
     this.setupRoutes();
     this.setupErrorHandling();
+  }
+
+  // =============================================
+  // STAKING SERVICES INITIALIZATION
+  // =============================================
+
+  private initializeStakingServices(): void {
+    // Only initialize staking services if RPC URL is provided
+    const rpcUrl = process.env.MONAD_RPC_URL;
+    if (!rpcUrl) {
+      logger.warn('⚠️  MONAD_RPC_URL not configured, staking services will be disabled');
+      return;
+    }
+
+    try {
+      const stakingConfig: StakingUpdateConfig = {
+        updateIntervalMs: parseInt(process.env.STAKING_UPDATE_INTERVAL_MS || '30000'), // 30 seconds default
+        rpcUrl,
+        clickhouseClient: this.clickhouseClient,
+        redisClient: this.redisClient
+      };
+
+      this.stakingUpdateService = new StakingUpdateService(stakingConfig);
+      logger.info('✅ Staking services initialized');
+    } catch (error) {
+      logger.error('❌ Failed to initialize staking services:', error);
+      logger.warn('⚠️  Continuing without staking integration');
+    }
+  }
+
+  // =============================================
+  // STAKING EVENTS INDEXER INITIALIZATION
+  // =============================================
+
+  private initializeStakingEventIndexer(): void {
+    const rpcUrl = process.env.MONAD_RPC_URL;
+    if (!rpcUrl) {
+      logger.warn('⚠️  MONAD_RPC_URL not configured, staking event indexer will be disabled');
+      return;
+    }
+
+    try {
+      const wsUrl = process.env.MONAD_WS_URL || '';
+      const startBlock = parseInt(process.env.STAKING_INDEXER_START_BLOCK || '0');
+      const pollingInterval = parseInt(process.env.STAKING_INDEXER_POLLING_INTERVAL_MS || '2000');
+      const batchSize = parseInt(process.env.STAKING_INDEXER_BATCH_SIZE || '1000');
+      const reconnectDelay = parseInt(process.env.STAKING_INDEXER_RECONNECT_DELAY_MS || '5000');
+      const maxReconnectAttempts = parseInt(process.env.STAKING_INDEXER_MAX_RECONNECT_ATTEMPTS || '10');
+      const enableWebSocket = (process.env.STAKING_INDEXER_ENABLE_WS || 'true').toLowerCase() !== 'false';
+      const enablePolling = (process.env.STAKING_INDEXER_ENABLE_POLLING || 'true').toLowerCase() !== 'false';
+
+      this.stakingEventIndexer = new StakingEventIndexer(this.clickhouseClient, {
+        rpcUrl,
+        wsUrl,
+        startBlock,
+        pollingInterval,
+        batchSize,
+        reconnectDelay,
+        maxReconnectAttempts,
+        enableWebSocket,
+        enablePolling
+      });
+
+      logger.info('✅ Staking event indexer initialized');
+    } catch (error) {
+      logger.error('❌ Failed to initialize staking event indexer:', error);
+      logger.warn('⚠️  Continuing without staking event indexing');
+      this.stakingEventIndexer = null;
+    }
+  }
+
+  // =============================================
+  // TIP REVENUE SERVICES INITIALIZATION
+  // =============================================
+
+  private initializeTipRevenueServices(): void {
+    const rpcUrl = process.env.MONAD_RPC_URL;
+    if (!rpcUrl) {
+      logger.warn('⚠️  MONAD_RPC_URL not configured, tip revenue services will be disabled');
+      return;
+    }
+
+    try {
+      const tipRevenueConfig: TipRevenueSyncConfig = {
+        updateIntervalMs: parseInt(process.env.TIP_REVENUE_SYNC_INTERVAL_MS || '10000'),
+        batchSize: parseInt(process.env.TIP_REVENUE_BATCH_SIZE || '50'),
+        rpcUrl,
+        enableBackfill: (process.env.TIP_REVENUE_ENABLE_BACKFILL || 'false').toLowerCase() === 'true',
+        backfillStartBlock: parseInt(process.env.TIP_REVENUE_START_BLOCK || '0')
+      };
+
+      this.tipRevenueSyncService = new TipRevenueSyncService(
+        tipRevenueConfig,
+        this.clickhouseClient,
+        this.redisClient
+      );
+
+      logger.info('✅ Tip revenue services initialized');
+    } catch (error) {
+      logger.error('❌ Failed to initialize tip revenue services:', error);
+      logger.warn('⚠️  Continuing without tip revenue tracking');
+      this.tipRevenueSyncService = null;
+    }
   }
 
   // =============================================
@@ -103,7 +248,8 @@ export class AnalyticsAPIServer {
 
     this.validatorController = new ValidatorController(
       this.clickhouseClient,
-      this.redisClient
+      this.redisClient,
+      this.stakingUpdateService || undefined
     );
 
     this.networkController = new NetworkController(
@@ -121,6 +267,47 @@ export class AnalyticsAPIServer {
       this.clickhouseClient,
       this.redisClient
     );
+
+    this.queryPerformanceController = new QueryPerformanceController(
+      this.clickhouseClient
+    );
+
+    this.epochController = new EpochController(
+      this.redisClient
+    );
+
+    // Initialize enhanced epoch controller with RPC client
+    const rpcUrl = process.env.RPC_URL || 'http://localhost:8080';
+    const rpcTimeout = parseInt(process.env.RPC_TIMEOUT || '10000');
+    const rpcClient = new NodeRpcClient(rpcUrl, rpcTimeout);
+    const epochInterval = parseInt(process.env.EPOCH_INTERVAL || '50000');
+    
+    this.enhancedEpochController = new EnhancedEpochController(
+      this.redisClient,
+      this.clickhouseClient,
+      rpcClient,
+      epochInterval
+    );
+
+    this.transactionAnalyticsController = new TransactionAnalyticsController(
+      this.clickhouseClient,
+      this.redisClient
+    );
+
+    this.stakingEventController = new StakingEventController(
+      this.clickhouseClient,
+      this.stakingEventIndexer || undefined
+    );
+
+    this.consensusController = new ConsensusController(
+      this.clickhouseClient
+    );
+
+    this.tipRevenueController = new TipRevenueController(
+      this.clickhouseClient,
+      this.redisClient,
+      this.tipRevenueSyncService || undefined
+    );
   }
 
   // =============================================
@@ -130,6 +317,9 @@ export class AnalyticsAPIServer {
   private setupMiddleware(): void {
     // Security
     this.app.use(helmet());
+    
+    // Trust proxy for X-Forwarded-For headers (needed for rate limiting behind nginx/reverse proxy)
+    this.app.set('trust proxy', 1);
     
     // CORS
     if (this.config.enableCors) {
@@ -185,6 +375,15 @@ export class AnalyticsAPIServer {
     this.app.use('/', createNetworkRoutes(this.networkController));
     this.app.use('/', createEventRoutes(this.eventController));
     this.app.use('/', createAdminRoutes(this.adminController));
+    this.app.use('/', createQueryPerformanceRoutes(this.queryPerformanceController));
+    this.app.use('/', createDNSAnalyticsRoutes(this.clickhouseClient, this.redisClient));
+    this.app.use('/', createEpochRoutes(this.epochController));
+    this.app.use('/', createEnhancedEpochRoutes(this.enhancedEpochController));
+    this.app.use('/api/transaction-analytics', createTransactionAnalyticsRoutes(this.transactionAnalyticsController));
+    this.app.use('/api/staking', createStakingEventsRouter(this.stakingEventController));
+    this.app.use('/api/consensus', createConsensusRouter(this.consensusController));
+    this.app.use('/api/tip-revenue', createTipRevenueRoutes(this.tipRevenueController));
+    this.app.use('/api/validators/:id', createValidatorTipRevenueRoutes(this.tipRevenueController));
 
     // API documentation endpoint
     this.app.get('/api/docs', this.handleApiDocs.bind(this));
@@ -267,6 +466,43 @@ export class AnalyticsAPIServer {
           'POST /api/cache/flush': 'Flush cache (with optional pattern)',
           'POST /api/logs/process': 'Process log batch',
           'GET /api/maintenance/status': 'System maintenance status'
+        },
+        epoch: {
+          'GET /api/epoch/progress': 'Current epoch progress with percentage and time estimates',
+          'GET /api/epoch/info': 'Comprehensive epoch information',
+          'GET /api/epoch/current': 'Current epoch number only',
+          'GET /api/epoch/block/:blockNumber': 'Get epoch information for specific block',
+          'GET /api/epoch/:epochNumber/blocks': 'Get block range for specific epoch',
+          'GET /api/epoch/config': 'Epoch configuration settings'
+        },
+        epochV2: {
+          'GET /api/v2/epoch/info': 'Protocol-accurate epoch info with precompile, delay period, ABT, staleness',
+          'GET /api/v2/epoch/current': 'Current epoch ID and delay status (lightweight)',
+          'GET /api/v2/epoch/progress': 'Epoch progress with phase tracking (normal/delay/stale)',
+          'GET /api/v2/epoch/abt': 'Average Block Time with outlier statistics',
+          'GET /api/v2/epoch/staleness': 'Indexer staleness information',
+          'POST /api/v2/epoch/abt/recompute': 'Force recomputation of ABT',
+          'GET /api/v2/epoch/health': 'Health check for epoch tracking system'
+        },
+        transactionAnalytics: {
+          'GET /api/transaction-analytics/validator/:id': 'Comprehensive transaction metrics for specific validator',
+          'GET /api/transaction-analytics/validator/:id/trends': 'Validator transaction trends over time',
+          'GET /api/transaction-analytics/network/summary': 'Network-wide transaction summary',
+          'GET /api/transaction-analytics/network/trends': 'Network transaction trends over time',
+          'GET /api/transaction-analytics/rankings': 'Validator rankings by transaction processing performance',
+          'GET /api/transaction-analytics/tps': 'TPS analytics with time series data (hourly/daily/minute granularity)',
+          'GET /api/transaction-analytics/tps/current': 'Real-time current TPS calculation',
+          'GET /api/transaction-analytics/geographic': 'Transaction processing analytics by geographic location',
+          'GET /api/transaction-analytics/providers': 'Transaction processing analytics by infrastructure provider'
+        },
+        tipRevenue: {
+          'GET /api/tip-revenue/rankings': 'Validators ranked by tip revenue',
+          'GET /api/tip-revenue/network/summary': 'Network-wide tip revenue summary (24h)',
+          'GET /api/tip-revenue/trends': 'Tip revenue trends over time',
+          'GET /api/tip-revenue/sync/status': 'Tip revenue sync service status',
+          'POST /api/tip-revenue/sync/force': 'Force tip revenue sync',
+          'GET /api/validators/:id/tip-revenue': 'Validator tip revenue details',
+          'GET /api/validators/:id/tip-revenue/history': 'Validator tip revenue history (for graphs)'
         }
       },
       timestamp: new Date().toISOString()
@@ -353,11 +589,60 @@ export class AnalyticsAPIServer {
 
   async start(): Promise<void> {
     try {
+      // Start staking service if available
+      if (this.stakingUpdateService) {
+        try {
+          logger.info('🔄 Initializing and starting staking service...');
+          await this.stakingUpdateService.initialize();
+          this.stakingUpdateService.start();
+          logger.info('✅ Staking service started');
+        } catch (error) {
+          logger.warn('⚠️  Failed to start staking service, continuing without staking integration:', error);
+          this.stakingUpdateService = null; // Disable staking service
+        }
+      }
+
+      // Start staking events indexer if available
+      if (this.stakingEventIndexer) {
+        (async () => {
+          try {
+            logger.info('🔄 Starting staking events indexer...');
+            await this.stakingEventIndexer!.start();
+            logger.info('✅ Staking events indexer started');
+          } catch (error) {
+            logger.warn('⚠️  Failed to start staking events indexer, continuing without it:', error);
+            this.stakingEventIndexer = null;
+          }
+        })();
+      }
+
+      // Start tip revenue sync service if available
+      if (this.tipRevenueSyncService) {
+        (async () => {
+          try {
+            logger.info('🔄 Starting tip revenue sync service...');
+            await this.tipRevenueSyncService!.initialize();
+            this.tipRevenueSyncService!.start();
+            logger.info('✅ Tip revenue sync service started');
+          } catch (error) {
+            logger.warn('⚠️  Failed to start tip revenue sync service, continuing without it:', error);
+            this.tipRevenueSyncService = null;
+          }
+        })();
+      }
+
       this.server = this.app.listen(this.config.port, () => {
         logger.info(`🚀 Monad Analytics API Server started on port ${this.config.port}`);
         logger.info(`📊 API Documentation: http://localhost:${this.config.port}/api/docs`);
         logger.info(`💚 Health Check: http://localhost:${this.config.port}/health`);
         logger.info(`📈 System Status: http://localhost:${this.config.port}/api/status`);
+        
+        if (this.stakingUpdateService) {
+          logger.info(`⚡ Staking Integration: GET /api/validators/staking/info`);
+          logger.info(`🔄 Force Update: POST /api/validators/staking/update`);
+        } else {
+          logger.info(`⚠️  Staking integration disabled - configure MONAD_RPC_URL for full features`);
+        }
       });
 
       // Set server timeout
@@ -370,11 +655,37 @@ export class AnalyticsAPIServer {
   }
 
   async stop(): Promise<void> {
+    // Stop staking service if running
+    if (this.stakingUpdateService) {
+      this.stakingUpdateService.stop();
+      logger.info('✅ Staking service stopped');
+    }
+
     if (this.server) {
       this.server.close();
       logger.info('✅ API server stopped');
     }
     
+    // Stop staking events indexer if running
+    if (this.stakingEventIndexer) {
+      try {
+        await this.stakingEventIndexer.stop();
+        logger.info('✅ Staking events indexer stopped');
+      } catch (error) {
+        logger.warn('⚠️  Error while stopping staking events indexer:', error);
+      }
+    }
+
+    // Stop tip revenue sync service if running
+    if (this.tipRevenueSyncService) {
+      try {
+        this.tipRevenueSyncService.stop();
+        logger.info('✅ Tip revenue sync service stopped');
+      } catch (error) {
+        logger.warn('⚠️  Error while stopping tip revenue sync service:', error);
+      }
+    }
+
     // Close database connections
     await this.clickhouseClient.close();
     await this.redisClient.close();

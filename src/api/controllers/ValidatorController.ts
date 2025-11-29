@@ -1,30 +1,269 @@
-// Monad Validator Analytics - Validator Controller
+// Monad Validator Analytics - Refactored Validator Controller
+// Focus: Separate Validator Metrics (Block Proposals + QC Participation) + Staking Integration
 import { Request, Response } from 'express';
+import { ethers } from 'ethers';
 import { MonadClickHouseClient } from '../../database/clickhouse-client';
 import { MonadRedisClient } from '../../cache/redis-client';
+import { StakingUpdateService } from '../../services/staking/StakingUpdateService';
 import { logger } from '../../utils/logger';
 
 export class ValidatorController {
   constructor(
     private clickhouseClient: MonadClickHouseClient,
-    private redisClient: MonadRedisClient
+    private redisClient: MonadRedisClient,
+    private stakingUpdateService?: StakingUpdateService
   ) {}
 
+  // Method to update staking service after initialization
+  async setStakingUpdateService(stakingUpdateService: StakingUpdateService | null): Promise<void> {
+    this.stakingUpdateService = stakingUpdateService || undefined;
+    logger.info('✅ StakingUpdateService updated in ValidatorController');
+  }
+
   // =============================================
-  // VALIDATOR RANKINGS
+  // STAKING INTEGRATION METHODS
+  // =============================================
+
+  async getStakingInfo(req: Request, res: Response): Promise<void> {
+    try {
+      if (!this.stakingUpdateService) {
+        res.status(503).json({
+          error: 'Staking service not available',
+          message: 'Staking integration is not configured',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const stats = this.stakingUpdateService.getStakingStats();
+      const status = this.stakingUpdateService.getStatus();
+
+      // Convert BigInt values to strings and wei to MON for JSON serialization
+      const sanitizedStats = stats ? {
+        ...stats,
+        totalStake: stats.totalStake?.toString(),
+        averageStake: stats.averageStake?.toString(),
+        totalStakeMON: stats.totalStake ? (Number(stats.totalStake) / Math.pow(10, 18)).toFixed(4) : "0",
+        averageStakeMON: stats.averageStake ? (Number(stats.averageStake) / Math.pow(10, 18)).toFixed(4) : "0",
+        currentEpoch: stats.currentEpoch?.toString()
+      } : null;
+
+      const sanitizedStatus = {
+        ...status,
+        lastStakingInfo: status.lastStakingInfo ? {
+          ...status.lastStakingInfo,
+          currentEpoch: status.lastStakingInfo.currentEpoch?.toString(),
+          // Convert validatorStakes Map with BigInt values to serializable object with MON conversion
+          validatorStakes: status.lastStakingInfo.validatorStakes ? 
+            Object.fromEntries(
+              Array.from((status.lastStakingInfo.validatorStakes as Map<string, bigint>).entries())
+                .map(([key, value]: [string, bigint]) => [
+                  key, 
+                  {
+                    wei: value.toString(),
+                    mon: (Number(value) / Math.pow(10, 18)).toFixed(4)
+                  }
+                ])
+            ) : null,
+          // Convert Sets to arrays
+          activeValidators: status.lastStakingInfo.activeValidators ? 
+            Array.from(status.lastStakingInfo.activeValidators) : [],
+          consensusValidators: status.lastStakingInfo.consensusValidators ? 
+            Array.from(status.lastStakingInfo.consensusValidators) : [],
+          executionValidators: status.lastStakingInfo.executionValidators ? 
+            Array.from(status.lastStakingInfo.executionValidators) : []
+        } : null
+      };
+
+      res.json({
+        stakingStats: sanitizedStats,
+        serviceStatus: sanitizedStatus,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to get staking info:', error);
+      res.status(500).json({
+        error: 'Failed to get staking info',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async forceStakingUpdate(req: Request, res: Response): Promise<void> {
+    try {
+      if (!this.stakingUpdateService) {
+        res.status(503).json({
+          error: 'Staking service not available',
+          message: 'Staking integration is not configured',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      logger.info('🔄 Force staking update requested');
+      await this.stakingUpdateService.forceUpdate();
+
+      res.json({
+        message: 'Staking update completed successfully',
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to force staking update:', error);
+      res.status(500).json({
+        error: 'Failed to force staking update',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async forceFullStakingSync(req: Request, res: Response): Promise<void> {
+    try {
+      if (!this.stakingUpdateService) {
+        res.status(503).json({
+          error: 'Staking service not available',
+          message: 'Staking integration is not configured',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      logger.info('🔁 Force full staking synchronization requested via API');
+      await this.stakingUpdateService.forceFullSync();
+
+      res.json({
+        message: 'Full staking synchronization completed successfully',
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to force full staking synchronization:', error);
+      res.status(500).json({
+        error: 'Failed to force full staking synchronization',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async getValidatorDelegators(req: Request, res: Response): Promise<void> {
+    try {
+      if (!this.stakingUpdateService) {
+        res.status(503).json({
+          error: 'Staking service not available',
+          message: 'Staking integration is not configured',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const validatorId = (req.params.id || '').trim();
+
+      if (!/^[0-9]+$/.test(validatorId)) {
+        res.status(400).json({
+          error: 'Invalid validator ID',
+          message: 'Validator ID must be a positive integer',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const startDelegatorParam = (req.query.startDelegator as string | undefined)?.trim();
+      const fetchAllParam = (req.query.fetchAll as string | undefined)?.toLowerCase();
+      const maxPagesParam = (req.query.maxPages as string | undefined)?.trim();
+
+      let startDelegator: string | undefined;
+
+      if (startDelegatorParam && startDelegatorParam.length > 0) {
+        if (startDelegatorParam === '0' || startDelegatorParam === '0x0') {
+          startDelegator = ethers.ZeroAddress;
+        } else if (ethers.isAddress(startDelegatorParam)) {
+          startDelegator = ethers.getAddress(startDelegatorParam);
+        } else {
+          res.status(400).json({
+            error: 'Invalid startDelegator parameter',
+            message: 'startDelegator must be a valid Ethereum address or zero',
+            timestamp: new Date().toISOString()
+          });
+          return;
+        }
+      }
+
+      const fetchAll = fetchAllParam === 'true' || fetchAllParam === '1';
+
+      let maxPages: number | undefined;
+      if (!fetchAll && maxPagesParam) {
+        const parsed = Number(maxPagesParam);
+        if (!Number.isInteger(parsed) || parsed < 1) {
+          res.status(400).json({
+            error: 'Invalid maxPages parameter',
+            message: 'maxPages must be a positive integer when provided',
+            timestamp: new Date().toISOString()
+          });
+          return;
+        }
+        maxPages = parsed;
+      }
+
+      logger.info(`📋 Fetching delegators for validator ${validatorId} (fetchAll=${fetchAll}, maxPages=${maxPages ?? 1})`);
+
+      const result = await this.stakingUpdateService.getValidatorDelegators(validatorId, {
+        startDelegator,
+        maxPages,
+        fetchAll
+      });
+
+      const normalizedStartDelegator = startDelegator ?? ethers.ZeroAddress;
+
+      res.json({
+        validatorId: result.validatorId,
+        delegators: result.delegators,
+        pagination: {
+          startDelegator: normalizedStartDelegator,
+          nextDelegator: result.nextDelegator,
+          isDone: result.isDone,
+          pagesFetched: result.pagesFetched,
+          fetchAll,
+          maxPages: fetchAll ? null : (maxPages ?? 1)
+        },
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Invalid address')) {
+        res.status(400).json({
+          error: 'Invalid address provided',
+          message: error.message,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      logger.error('Failed to fetch validator delegators:', error);
+      res.status(500).json({
+        error: 'Failed to fetch validator delegators',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  // =============================================
+  // VALIDATOR RANKINGS (Separate Metrics + Staking)
   // =============================================
 
   async getValidatorRankings(req: Request, res: Response): Promise<void> {
     try {
       const timeWindow = (req.query.window as string) || '1h';
       const limit = parseInt(req.query.limit as string) || 50;
-      const sortBy = (req.query.sortBy as string) || 'total_events';
+      const page = parseInt(req.query.page as string) || 1;
+      const sortBy = (req.query.sortBy as string) || 'uptime_score';
+      const activeOnly = req.query.active_only !== 'false'; // Default true, false only if explicitly set to 'false'
       
       // Validate parameters
-      if (!['1m', '1h', '24h'].includes(timeWindow)) {
+      if (!['1h', '24h', '7d'].includes(timeWindow)) {
         res.status(400).json({
           error: 'Invalid time window',
-          message: 'Must be 1m, 1h, or 24h',
+          message: 'Must be 1h, 24h, or 7d',
           timestamp: new Date().toISOString()
         });
         return;
@@ -39,38 +278,67 @@ export class ValidatorController {
         return;
       }
 
-      // Try cache first
-      const cacheKey = `validator_rankings:${timeWindow}:${limit}:${sortBy}`;
-      const cached = await this.redisClient.getValidatorRankings(cacheKey);
+      if (page < 1) {
+        res.status(400).json({
+          error: 'Invalid page parameter',
+          message: 'Page must be >= 1',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      if (!['uptime_score', 'block_proposal_ratio', 'qc_participation_rate', 'stake'].includes(sortBy)) {
+        res.status(400).json({
+          error: 'Invalid sortBy parameter',
+          message: 'Must be uptime_score, block_proposal_ratio, qc_participation_rate, or stake',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Force table optimization to ensure no duplicates exist
+      await this.ensureNoDuplicates();
+
+      // Try cache first - include activeOnly in cache key
+      const cacheKey = `validator_rankings:${timeWindow}:${limit}:${page}:${sortBy}:${activeOnly}`;
+      const cached = await this.redisClient['client'].get(cacheKey);
       
       if (cached) {
+        const cachedData = JSON.parse(cached);
         res.json({
-          data: cached,
+          data: cachedData.data,
+          pagination: cachedData.pagination,
           metadata: {
             timeWindow,
             limit,
+            page,
             sortBy,
-            source: 'cache'
+            activeOnly,
+            source: 'cache',
+            formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
           },
           timestamp: new Date().toISOString()
         });
         return;
       }
 
-      // Query database
-      const rankings = await this.getValidatorRankingsFromDB(timeWindow, limit, sortBy);
+      // Calculate rankings with pagination from raw data
+      const result = await this.calculateValidatorRankingsWithPagination(timeWindow, limit, page, sortBy, activeOnly);
       
-      // Cache result for 5 minutes
-      await this.redisClient.cacheValidatorRankings(cacheKey, rankings, 300);
+      // Cache result for 2 minutes (rankings update frequently)
+      await this.redisClient['client'].setex(cacheKey, 120, JSON.stringify(result));
       
       res.json({
-        data: rankings,
+        data: result.data,
+        pagination: result.pagination,
         metadata: {
           timeWindow,
           limit,
+          page,
           sortBy,
+          activeOnly,
           source: 'database',
-          count: rankings.length
+          formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
         },
         timestamp: new Date().toISOString()
       });
@@ -85,14 +353,239 @@ export class ValidatorController {
   }
 
   // =============================================
-  // VALIDATOR HISTORY
+  // VALIDATOR DETAILS (Separate Metrics)
+  // =============================================
+
+  async getValidatorDetails(req: Request, res: Response): Promise<void> {
+    try {
+      const validatorId = req.params.id;
+      
+      if (!validatorId) {
+        res.status(400).json({
+          error: 'Missing validator ID',
+          message: 'Validator ID is required',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const timeWindow = this.getIntervalClause('24h');
+      
+      // Get block proposal metrics with provider info from validator_registry
+      const blockProposalQuery = `
+        SELECT
+          b.validator_id,
+          COUNT(*) as total_proposals,
+          COUNT(CASE WHEN b.status = 'proposed' THEN 1 END) as successful_proposals,
+          COUNT(CASE WHEN b.status = 'skipped' THEN 1 END) as skipped_proposals,
+          (COUNT(CASE WHEN b.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio,
+          COALESCE(vr.validator_name, 'unknown') as validator_name,
+          COALESCE(vr.validator_website, '') as validator_website,
+          COALESCE(vr.validator_logo_url, '') as validator_logo_url,
+          COALESCE(vr.validator_description, '') as validator_description,
+          COALESCE(vr.validator_x_handle, '') as validator_x_handle,
+          COALESCE(vr.provider, 'unknown') as provider,
+          COALESCE(vr.location, 'unknown') as location,
+          COALESCE(vr.auth_address, '') as auth_address,
+          COALESCE(vr.stake, 0) as stake,
+          COALESCE(vr.commission, '0') as commission,
+          COALESCE(vr.consensus_commission, '0') as consensus_commission,
+          COALESCE(vr.snapshot_commission, '0') as snapshot_commission,
+          COALESCE(vr.keybase_id, '') as keybase_id,
+          COALESCE(vr.keybase_logo_url, '') as keybase_logo_url,
+          MIN(b.timestamp) as first_seen,
+          MAX(b.timestamp) as last_activity
+        FROM block_proposals b
+        LEFT JOIN validator_registry_latest vr ON vr.validator_id = b.validator_id
+        WHERE b.validator_id = '${validatorId}'
+          AND b.timestamp >= now() - INTERVAL ${timeWindow}
+        GROUP BY
+          b.validator_id,
+          vr.validator_name,
+          vr.validator_website,
+          vr.validator_logo_url,
+          vr.validator_description,
+          vr.validator_x_handle,
+          vr.provider,
+          vr.location,
+          vr.auth_address,
+          vr.stake,
+          vr.commission,
+          vr.consensus_commission,
+          vr.snapshot_commission,
+          vr.keybase_id,
+          vr.keybase_logo_url
+      `;
+
+      // Get QC participation metrics
+      const qcParticipationQuery = `
+        SELECT 
+          validator_id,
+          COUNT(*) as total_qc_opportunities,
+          COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
+          (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate,
+          AVG(participation_rate) as avg_network_participation_rate
+        FROM qc_participation
+        WHERE validator_id = '${validatorId}'
+          AND timestamp >= now() - INTERVAL ${timeWindow}
+        GROUP BY validator_id
+      `;
+
+      const [blockResult, qcResult] = await Promise.all([
+        this.clickhouseClient.executeRawQuery(blockProposalQuery),
+        this.clickhouseClient.executeRawQuery(qcParticipationQuery)
+      ]);
+
+      const [blockData] = blockResult;
+      const [qcData] = qcResult;
+      
+      if (!blockData && !qcData) {
+        res.status(404).json({
+          error: 'Validator not found',
+          message: `No data found for validator ${validatorId} in the last 24 hours`,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Calculate combined uptime score
+      const blockRatio = parseFloat(blockData?.block_proposal_ratio || 0);
+      const qcRate = parseFloat(qcData?.qc_participation_rate || 0);
+      const uptimeScore = blockRatio * 0.7 + qcRate * 0.3;
+
+      // DATABASE-FIRST: Get staking information from database
+      let stakingInfo = null;
+      const commissionSource: {
+        commission?: any;
+        consensus_commission?: any;
+        snapshot_commission?: any;
+      } = {
+        commission: blockData?.commission,
+        consensus_commission: blockData?.consensus_commission,
+        snapshot_commission: blockData?.snapshot_commission
+      };
+      try {
+        const stakingQuery = `
+          SELECT 
+            precompile_validator_id,
+            is_staking_active,
+            real_time_stake_wei,
+            auth_address,
+            commission,
+            consensus_commission,
+            snapshot_commission
+          FROM validator_registry 
+          WHERE validator_id = '${validatorId}'
+          ORDER BY last_updated DESC 
+          LIMIT 1
+        `;
+        
+        const stakingResult = await this.clickhouseClient.executeRawQuery(stakingQuery);
+        const stakingData = stakingResult[0];
+        
+        const authAddress = stakingData?.auth_address || blockData?.auth_address || null;
+
+        if (stakingData) {
+          commissionSource.commission = stakingData.commission ?? commissionSource.commission;
+          commissionSource.consensus_commission = stakingData.consensus_commission ?? commissionSource.consensus_commission;
+          commissionSource.snapshot_commission = stakingData.snapshot_commission ?? commissionSource.snapshot_commission;
+          // Convert wei to MON (1 MON = 10^18 wei)
+          const realTimeStakeMON = stakingData.real_time_stake_wei 
+            ? (Number(stakingData.real_time_stake_wei) / Math.pow(10, 18)).toFixed(4)
+            : "0";
+            
+          stakingInfo = {
+            is_staking_active: Boolean(stakingData.is_staking_active),
+            real_time_stake_mon: realTimeStakeMON,
+            real_time_stake_wei: stakingData.real_time_stake_wei || "0",
+            precompile_validator_id: stakingData.precompile_validator_id || null,
+            auth_address: authAddress
+          };
+        } else if (authAddress) {
+          stakingInfo = {
+            is_staking_active: null,
+            real_time_stake_mon: null,
+            real_time_stake_wei: null,
+            precompile_validator_id: null,
+            auth_address: authAddress
+          };
+        }
+      } catch (error) {
+        logger.warn(`Failed to get staking info for validator ${validatorId}:`, error);
+      }
+
+      const commissionSummary = this.buildCommissionBundle(commissionSource);
+
+      if (stakingInfo) {
+        stakingInfo = {
+          ...stakingInfo,
+          ...commissionSummary
+        };
+      }
+
+      // Format response with separate metrics
+      res.json({
+        validator_id: validatorId,
+        stake: parseInt(blockData?.stake || 0),
+        staking: stakingInfo,
+        metrics: {
+          block_proposal_ratio: blockRatio,
+          qc_participation_rate: qcRate,
+          uptime_score: uptimeScore
+        },
+        details: {
+          block_proposals: {
+            total_opportunities: parseInt(blockData?.total_proposals || 0),
+            successful_proposals: parseInt(blockData?.successful_proposals || 0),
+            skipped_proposals: parseInt(blockData?.skipped_proposals || 0)
+          },
+          qc_participation: {
+            total_opportunities: parseInt(qcData?.total_qc_opportunities || 0),
+            participations: parseInt(qcData?.qc_participations || 0),
+            avg_network_participation_rate: parseFloat(qcData?.avg_network_participation_rate || 0)
+          }
+        },
+        infrastructure: {
+          validator_name: blockData?.validator_name || 'unknown',
+          validator_website: blockData?.validator_website || null,
+          validator_logo_url: blockData?.validator_logo_url || null,
+          validator_description: blockData?.validator_description || null,
+          validator_x_handle: blockData?.validator_x_handle || null,
+          provider: blockData?.provider || 'unknown',
+          location: blockData?.location || 'unknown'
+        },
+        keybase: {
+          id: blockData?.keybase_id || null,
+          logo_url: blockData?.keybase_logo_url || null
+        },
+        activity: {
+          first_seen: blockData?.first_seen || null,
+          last_activity: blockData?.last_activity || null
+        },
+        metadata: {
+          time_window: '24h',
+          uptime_formula: 'block_proposal_ratio * 0.7 + qc_participation_rate * 0.3'
+        },
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('Failed to get validator details:', error);
+      res.status(500).json({
+        error: 'Failed to get validator details',
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  // =============================================
+  // VALIDATOR PERFORMANCE HISTORY
   // =============================================
 
   async getValidatorHistory(req: Request, res: Response): Promise<void> {
     try {
       const validatorId = req.params.id;
       const hours = parseInt(req.query.hours as string) || 24;
-      const granularity = (req.query.granularity as string) || '1h';
       
       if (!validatorId) {
         res.status(400).json({
@@ -113,16 +606,15 @@ export class ValidatorController {
       }
 
       // Try cache first
-      const cacheKey = `validator_history:${validatorId}:${hours}:${granularity}`;
-      const cached = await this.redisClient.getValidatorHistory(validatorId, hours);
+      const cacheKey = `validator_history:${validatorId}:${hours}`;
+      const cached = await this.redisClient['client'].get(cacheKey);
       
       if (cached) {
         res.json({
           validatorId,
-          history: cached,
+          history: JSON.parse(cached),
           metadata: {
             hours,
-            granularity,
             source: 'cache'
           },
           timestamp: new Date().toISOString()
@@ -130,18 +622,17 @@ export class ValidatorController {
         return;
       }
 
-      // Query database
-      const history = await this.clickhouseClient.getValidatorHistory(validatorId, hours);
+      // Get hourly aggregated data
+      const history = await this.getValidatorHourlyHistory(validatorId, hours);
       
-      // Cache result for 2 minutes
-      await this.redisClient.cacheValidatorHistory(validatorId, hours, history, 120);
+      // Cache result for 5 minutes
+      await this.redisClient['client'].setex(cacheKey, 300, JSON.stringify(history));
       
       res.json({
         validatorId,
         history,
         metadata: {
           hours,
-          granularity,
           source: 'database',
           dataPoints: history.length
         },
@@ -158,126 +649,47 @@ export class ValidatorController {
   }
 
   // =============================================
-  // VALIDATOR DETAILS
+  // VALIDATOR PERFORMANCE COMPARISON
   // =============================================
 
-  async getValidatorDetails(req: Request, res: Response): Promise<void> {
+  async compareValidators(req: Request, res: Response): Promise<void> {
     try {
-      const validatorId = req.params.id;
-      
-      if (!validatorId) {
-        res.status(400).json({
-          error: 'Missing validator ID',
-          message: 'Validator ID is required',
-          timestamp: new Date().toISOString()
-        });
-        return;
-      }
-
-      // Get validator details from database
-      const query = `
-        SELECT 
-          validator_id,
-          COUNT(*) as total_events,
-          COUNT(DISTINCT event_type) as unique_event_types,
-          AVG(processing_delay_ms) as avg_processing_delay,
-          COUNT(CASE WHEN is_successful = 1 THEN 1 END) as successful_events,
-          COUNT(CASE WHEN is_successful = 1 THEN 1 END) / COUNT(*) * 100 as success_rate,
-          MIN(timestamp) as first_seen,
-          MAX(timestamp) as last_activity,
-          any(geographic_region) as region,
-          any(infrastructure_provider) as provider,
-          any(datacenter_code) as datacenter,
-          any(validator_dns) as dns_name
-        FROM validator_events
-        WHERE validator_id = '${validatorId}'
-          AND timestamp >= now() - INTERVAL 7 DAY
-        GROUP BY validator_id
-      `;
-
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
-
-      const details = await result.json() as any[];
-      
-      if (details.length === 0) {
-        res.status(404).json({
-          error: 'Validator not found',
-          message: `No data found for validator ${validatorId}`,
-          timestamp: new Date().toISOString()
-        });
-        return;
-      }
-
-      res.json({
-        validator: details[0],
-        timestamp: new Date().toISOString()
-      });
-    } catch (error) {
-      logger.error('Failed to get validator details:', error);
-      res.status(500).json({
-        error: 'Failed to get validator details',
-        message: error instanceof Error ? error.message : String(error),
-        timestamp: new Date().toISOString()
-      });
-    }
-  }
-
-  // =============================================
-  // VALIDATOR PERFORMANCE METRICS
-  // =============================================
-
-  async getValidatorPerformance(req: Request, res: Response): Promise<void> {
-    try {
-      const validatorId = req.params.id;
+      const validatorIds = req.body.validator_ids;
       const timeWindow = (req.query.window as string) || '24h';
       
-      if (!validatorId) {
+      if (!validatorIds || !Array.isArray(validatorIds) || validatorIds.length === 0) {
         res.status(400).json({
-          error: 'Missing validator ID',
-          message: 'Validator ID is required',
+          error: 'Invalid validator IDs',
+          message: 'Provide an array of validator IDs in request body',
           timestamp: new Date().toISOString()
         });
         return;
       }
 
-      const query = `
-        SELECT 
-          toStartOfHour(timestamp) as hour,
-          COUNT(*) as events_count,
-          COUNT(DISTINCT event_type) as event_types_count,
-          AVG(processing_delay_ms) as avg_processing_delay,
-          COUNT(CASE WHEN is_successful = 1 THEN 1 END) as successful_events,
-          COUNT(CASE WHEN is_successful = 1 THEN 1 END) / COUNT(*) * 100 as success_rate
-        FROM validator_events
-        WHERE validator_id = '${validatorId}'
-          AND timestamp >= now() - INTERVAL 24 HOUR
-        GROUP BY hour
-        ORDER BY hour
-      `;
+      if (validatorIds.length > 20) {
+        res.status(400).json({
+          error: 'Too many validators',
+          message: 'Maximum 20 validators allowed for comparison',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
 
-      const result = await this.clickhouseClient['client'].query({
-        query,
-        format: 'JSONEachRow'
-      });
-
-      const performance = await result.json() as any[];
+      const comparison = await this.compareValidatorsMetrics(validatorIds, timeWindow);
       
       res.json({
-        validatorId,
-        performance,
+        comparison,
         metadata: {
           timeWindow,
-          dataPoints: performance.length
+          validatorCount: comparison.length,
+          requestedCount: validatorIds.length
         },
         timestamp: new Date().toISOString()
       });
     } catch (error) {
-      logger.error('Failed to get validator performance:', error);
+      logger.error('Failed to compare validators:', error);
       res.status(500).json({
-        error: 'Failed to get validator performance',
+        error: 'Failed to compare validators',
         message: error instanceof Error ? error.message : String(error),
         timestamp: new Date().toISOString()
       });
@@ -288,60 +700,535 @@ export class ValidatorController {
   // HELPER METHODS
   // =============================================
 
-  private async getValidatorRankingsFromDB(timeWindow: string, limit: number, sortBy: string): Promise<any[]> {
-    let intervalClause = '24 HOUR';
+  private async calculateValidatorRankingsWithPagination(timeWindow: string, limit: number, page: number, sortBy: string, activeOnly: boolean = true): Promise<{ data: any[], pagination: any }> {
+    const intervalClause = this.getIntervalClause(timeWindow);
+    const offset = (page - 1) * limit;
     
-    switch (timeWindow) {
-      case '1m':
-        intervalClause = '1 HOUR';
-        break;
-      case '1h':
-        intervalClause = '24 HOUR';
-        break;
-      case '24h':
-        intervalClause = '7 DAY';
-        break;
-    }
+    const activeValidatorsCTE = this.buildActiveValidatorsCTE(activeOnly);
 
-    let orderByClause = 'total_events DESC, success_rate DESC';
-    
-    switch (sortBy) {
-      case 'success_rate':
-        orderByClause = 'success_rate DESC, total_events DESC';
-        break;
-      case 'processing_delay':
-        orderByClause = 'avg_processing_delay ASC';
-        break;
-      case 'last_activity':
-        orderByClause = 'last_activity DESC';
-        break;
-    }
-
-    const query = `
-      SELECT 
-        validator_id,
-        COUNT(*) as total_events,
-        COUNT(DISTINCT event_type) as event_types,
-        AVG(processing_delay_ms) as avg_processing_delay,
-        COUNT(CASE WHEN is_successful = 1 THEN 1 END) as successful_events,
-        COUNT(CASE WHEN is_successful = 1 THEN 1 END) / COUNT(*) * 100 as success_rate,
-        MAX(timestamp) as last_activity,
-        any(geographic_region) as region,
-        any(infrastructure_provider) as provider,
-        any(datacenter_code) as datacenter
-      FROM validator_events
-      WHERE timestamp >= now() - INTERVAL ${intervalClause}
-        AND validator_id != 'unknown'
-      GROUP BY validator_id
-      ORDER BY ${orderByClause}
-      LIMIT ${limit}
+    // First, get the total count - use aggregated latest validator records to ensure accuracy
+    const countQuery = `
+      WITH 
+        active_validators AS (
+          ${activeValidatorsCTE}
+        )
+      SELECT COUNT(*) as total_count
+      FROM active_validators
     `;
 
-    const result = await this.clickhouseClient['client'].query({
-      query,
-      format: 'JSONEachRow'
+    // Main query with pagination and stake amounts - ONLY include validators in validator_registry
+    // Use aggregated latest record per validator to prevent duplicates
+    const query = `
+      WITH 
+        active_validators AS (
+          ${activeValidatorsCTE}
+        ),
+        block_metrics AS (
+          SELECT 
+            bp.validator_id,
+            COUNT(*) as total_block_opportunities,
+            COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) as blocks_proposed,
+            COUNT(CASE WHEN bp.status = 'skipped' THEN 1 END) as blocks_skipped,
+            (COUNT(CASE WHEN bp.status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
+          FROM block_proposals bp
+          INNER JOIN active_validators av ON bp.validator_id = av.validator_id
+          WHERE bp.timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY bp.validator_id
+        ),
+        qc_metrics AS (
+          SELECT 
+            qc.validator_id,
+            COUNT(*) as total_qc_opportunities,
+            COUNT(CASE WHEN qc.participated = 1 THEN 1 END) as qc_participations,
+            (COUNT(CASE WHEN qc.participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
+          FROM qc_participation qc
+          INNER JOIN active_validators av ON qc.validator_id = av.validator_id
+          WHERE qc.timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY qc.validator_id
+        )
+      SELECT DISTINCT
+        av.validator_id as validator_id,
+        COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
+        COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
+        (COALESCE(b.block_proposal_ratio, 0) * 0.7 + COALESCE(q.qc_participation_rate, 0) * 0.3) as uptime_score,
+        COALESCE(b.total_block_opportunities, 0) as total_block_opportunities,
+        COALESCE(b.blocks_proposed, 0) as blocks_proposed,
+        COALESCE(b.blocks_skipped, 0) as blocks_skipped,
+        COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
+        COALESCE(q.qc_participations, 0) as qc_participations,
+        av.validator_name as validator_name,
+        av.validator_website as validator_website,
+        av.validator_logo_url as validator_logo_url,
+        av.validator_description as validator_description,
+        av.validator_x_handle as validator_x_handle,
+        av.provider as provider,
+        av.location as location,
+        av.stake as stake,
+        av.keybase_id as keybase_id,
+        av.keybase_logo_url as keybase_logo_url,
+        av.precompile_validator_id as precompile_validator_id,
+        av.is_staking_active as is_staking_active,
+        av.real_time_stake_wei as real_time_stake_wei,
+        av.commission as commission,
+        av.consensus_commission as consensus_commission,
+        av.snapshot_commission as snapshot_commission
+      FROM active_validators av
+      LEFT JOIN block_metrics b ON av.validator_id = b.validator_id
+      LEFT JOIN qc_metrics q ON av.validator_id = q.validator_id
+      ORDER BY ${this.getSortByClause(sortBy)}
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    const [countResult, dataResult] = await Promise.all([
+      this.clickhouseClient.executeRawQuery(countQuery),
+      this.clickhouseClient.executeRawQuery(query)
+    ]);
+
+    const totalCount = countResult[0]?.total_count || 0;
+    const totalPages = Math.ceil(totalCount / limit);
+    
+    const rankings = dataResult.map((r, index) => {
+      const commissionSummary = this.buildCommissionBundle({
+        commission: r.commission,
+        consensus_commission: r.consensus_commission,
+        snapshot_commission: r.snapshot_commission
+      });
+      // DATABASE-FIRST: Staking information is already in validator_registry table
+      let stakingInfo = {
+        is_staking_active: Boolean(r.is_staking_active),
+        real_time_stake_mon: r.real_time_stake_wei ? 
+          (Number(r.real_time_stake_wei) / Math.pow(10, 18)).toFixed(4) : "0",
+        real_time_stake_wei: r.real_time_stake_wei || "0",
+        precompile_validator_id: r.precompile_validator_id || null
+      };
+
+      stakingInfo = {
+        ...stakingInfo,
+        ...commissionSummary
+      };
+
+      return {
+        rank: offset + index + 1,
+        validator_id: r.validator_id,
+        staking: stakingInfo,
+        metrics: {
+          block_proposal_ratio: parseFloat(r.block_proposal_ratio || 0),
+          qc_participation_rate: parseFloat(r.qc_participation_rate || 0),
+          uptime_score: parseFloat(r.uptime_score || 0)
+        },
+        details: {
+          total_block_opportunities: parseInt(r.total_block_opportunities || 0),
+          total_qc_opportunities: parseInt(r.total_qc_opportunities || 0),
+          blocks_proposed: parseInt(r.blocks_proposed || 0),
+          blocks_skipped: parseInt(r.blocks_skipped || 0),
+          qc_participations: parseInt(r.qc_participations || 0)
+        },
+        infrastructure: {
+          validator_name: r.validator_name || 'unknown',
+          validator_website: r.validator_website || null,
+          validator_logo_url: r.validator_logo_url || null,
+          validator_description: r.validator_description || null,
+          validator_x_handle: r.validator_x_handle || null,
+          provider: r.provider || 'unknown',
+          location: r.location || 'unknown'
+        },
+        keybase: {
+          id: r.keybase_id || null,
+          logo_url: r.keybase_logo_url || null
+        }
+      };
     });
 
-    return result.json();
+    return {
+      data: rankings,
+      pagination: {
+        current_page: page,
+        total_pages: totalPages,
+        total_count: totalCount,
+        per_page: limit,
+        has_next_page: page < totalPages,
+        has_prev_page: page > 1
+      }
+    };
   }
-} 
+
+  private buildActiveValidatorsCTE(activeOnly: boolean): string {
+    const statusFilter = activeOnly ? 'WHERE is_staking_active = 1' : '';
+
+    return `
+      SELECT *
+      FROM (
+        SELECT
+          validator_id,
+          COALESCE(
+            argMaxIf(validator_name, last_updated, validator_name != '' AND validator_name != 'unknown'),
+            argMax(validator_name, last_updated)
+          ) AS validator_name,
+          COALESCE(
+            argMaxIf(validator_website, last_updated, validator_website != ''),
+            argMax(validator_website, last_updated)
+          ) AS validator_website,
+          COALESCE(
+            argMaxIf(validator_logo_url, last_updated, validator_logo_url != ''),
+            argMax(validator_logo_url, last_updated)
+          ) AS validator_logo_url,
+          COALESCE(
+            argMaxIf(validator_description, last_updated, validator_description != ''),
+            argMax(validator_description, last_updated)
+          ) AS validator_description,
+          COALESCE(
+            argMaxIf(validator_x_handle, last_updated, validator_x_handle != ''),
+            argMax(validator_x_handle, last_updated)
+          ) AS validator_x_handle,
+          COALESCE(
+            argMaxIf(provider, last_updated, provider != '' AND provider != 'unknown'),
+            argMax(provider, last_updated)
+          ) AS provider,
+          COALESCE(
+            argMaxIf(location, last_updated, location != '' AND location != 'unknown'),
+            argMax(location, last_updated)
+          ) AS location,
+          argMax(stake, last_updated) AS stake,
+          COALESCE(
+            argMaxIf(keybase_id, last_updated, keybase_id != ''),
+            argMax(keybase_id, last_updated)
+          ) AS keybase_id,
+          COALESCE(
+            argMaxIf(keybase_logo_url, last_updated, keybase_logo_url != ''),
+            argMax(keybase_logo_url, last_updated)
+          ) AS keybase_logo_url,
+          argMax(precompile_validator_id, last_updated) AS precompile_validator_id,
+          argMax(is_staking_active, last_updated) AS is_staking_active,
+          COALESCE(
+            argMaxIf(real_time_stake_wei, last_updated, real_time_stake_wei != '' AND real_time_stake_wei != '0'),
+            argMax(real_time_stake_wei, last_updated)
+          ) AS real_time_stake_wei,
+          COALESCE(
+            argMaxIf(commission, last_updated, commission != ''),
+            argMax(commission, last_updated)
+          ) AS commission,
+          COALESCE(
+            argMaxIf(consensus_commission, last_updated, consensus_commission != ''),
+            argMax(consensus_commission, last_updated)
+          ) AS consensus_commission,
+          COALESCE(
+            argMaxIf(snapshot_commission, last_updated, snapshot_commission != ''),
+            argMax(snapshot_commission, last_updated)
+          ) AS snapshot_commission
+        FROM validator_registry FINAL
+        GROUP BY validator_id
+      ) latest_validators
+      ${statusFilter}
+    `;
+  }
+
+  private async getValidatorHourlyHistory(validatorId: string, hours: number): Promise<any[]> {
+    // Get hourly aggregated block proposal data
+    const blockQuery = `
+      SELECT 
+        toStartOfHour(timestamp) as hour,
+        COUNT(*) as block_opportunities,
+        COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
+        COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
+        (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
+      FROM block_proposals
+      WHERE validator_id = '${validatorId}'
+        AND timestamp >= now() - INTERVAL ${hours} HOUR
+      GROUP BY hour
+      ORDER BY hour
+    `;
+
+    // Get hourly aggregated QC participation data
+    const qcQuery = `
+      SELECT 
+        toStartOfHour(timestamp) as hour,
+        COUNT(*) as qc_opportunities,
+        COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
+        (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
+      FROM qc_participation
+      WHERE validator_id = '${validatorId}'
+        AND timestamp >= now() - INTERVAL ${hours} HOUR
+      GROUP BY hour
+      ORDER BY hour
+    `;
+
+    const [blockResult, qcResult] = await Promise.all([
+      this.clickhouseClient.executeRawQuery(blockQuery),
+      this.clickhouseClient.executeRawQuery(qcQuery)
+    ]);
+
+    const blockData = blockResult;
+    const qcData = qcResult;
+
+    // Merge data by hour
+    const hourlyData = new Map<string, any>();
+    
+    blockData.forEach(b => {
+      hourlyData.set(b.hour, {
+        hour: b.hour,
+        block_opportunities: parseInt(b.block_opportunities || 0),
+        blocks_proposed: parseInt(b.blocks_proposed || 0),
+        blocks_skipped: parseInt(b.blocks_skipped || 0),
+        block_proposal_ratio: parseFloat(b.block_proposal_ratio || 0),
+        qc_opportunities: 0,
+        qc_participations: 0,
+        qc_participation_rate: 0
+      });
+    });
+
+    qcData.forEach(q => {
+      const existing = hourlyData.get(q.hour) || {
+        hour: q.hour,
+        block_opportunities: 0,
+        blocks_proposed: 0,
+        blocks_skipped: 0,
+        block_proposal_ratio: 0
+      };
+      
+      existing.qc_opportunities = parseInt(q.qc_opportunities || 0);
+      existing.qc_participations = parseInt(q.qc_participations || 0);
+      existing.qc_participation_rate = parseFloat(q.qc_participation_rate || 0);
+      
+      hourlyData.set(q.hour, existing);
+    });
+
+    // Convert to array and calculate uptime scores
+    return Array.from(hourlyData.values()).map(h => ({
+      hour: h.hour,
+      metrics: {
+        block_proposal_ratio: h.block_proposal_ratio,
+        qc_participation_rate: h.qc_participation_rate,
+        uptime_score: h.block_proposal_ratio * 0.7 + h.qc_participation_rate * 0.3
+      },
+      activity: {
+        block_opportunities: h.block_opportunities,
+        blocks_proposed: h.blocks_proposed,
+        blocks_skipped: h.blocks_skipped,
+        qc_opportunities: h.qc_opportunities,
+        qc_participations: h.qc_participations
+      }
+    })).sort((a, b) => a.hour.localeCompare(b.hour));
+  }
+
+  private async compareValidatorsMetrics(validatorIds: string[], timeWindow: string): Promise<any[]> {
+    const validatorIdList = validatorIds.map(id => `'${id}'`).join(',');
+    const intervalClause = this.getIntervalClause(timeWindow);
+
+    const query = `
+      WITH 
+        block_metrics AS (
+          SELECT 
+            validator_id,
+            COUNT(*) as total_block_opportunities,
+            COUNT(CASE WHEN status = 'proposed' THEN 1 END) as blocks_proposed,
+            COUNT(CASE WHEN status = 'skipped' THEN 1 END) as blocks_skipped,
+            (COUNT(CASE WHEN status = 'proposed' THEN 1 END) * 100.0 / COUNT(*)) as block_proposal_ratio
+          FROM block_proposals
+          WHERE validator_id IN (${validatorIdList})
+            AND timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY validator_id
+        ),
+        qc_metrics AS (
+          SELECT 
+            validator_id,
+            COUNT(*) as total_qc_opportunities,
+            COUNT(CASE WHEN participated = 1 THEN 1 END) as qc_participations,
+            (COUNT(CASE WHEN participated = 1 THEN 1 END) * 100.0 / COUNT(*)) as qc_participation_rate
+          FROM qc_participation
+          WHERE validator_id IN (${validatorIdList})
+            AND timestamp >= now() - INTERVAL ${intervalClause}
+          GROUP BY validator_id
+        )
+      SELECT
+        COALESCE(b.validator_id, q.validator_id) as validator_id,
+        COALESCE(b.block_proposal_ratio, 0) as block_proposal_ratio,
+        COALESCE(q.qc_participation_rate, 0) as qc_participation_rate,
+        (COALESCE(b.block_proposal_ratio, 0) * 0.7 + COALESCE(q.qc_participation_rate, 0) * 0.3) as uptime_score,
+        COALESCE(b.total_block_opportunities, 0) as total_block_opportunities,
+        COALESCE(b.blocks_proposed, 0) as blocks_proposed,
+        COALESCE(b.blocks_skipped, 0) as blocks_skipped,
+        COALESCE(q.total_qc_opportunities, 0) as total_qc_opportunities,
+        COALESCE(q.qc_participations, 0) as qc_participations,
+        COALESCE(vr.validator_name, 'unknown') as validator_name,
+        COALESCE(vr.validator_website, '') as validator_website,
+        COALESCE(vr.validator_logo_url, '') as validator_logo_url,
+        COALESCE(vr.validator_description, '') as validator_description,
+        COALESCE(vr.validator_x_handle, '') as validator_x_handle,
+        COALESCE(vr.provider, 'unknown') as provider,
+        COALESCE(vr.location, 'unknown') as location,
+        COALESCE(vr.auth_address, '') as auth_address,
+        COALESCE(vr.stake, 0) as stake,
+        COALESCE(vr.keybase_id, '') as keybase_id,
+        COALESCE(vr.keybase_logo_url, '') as keybase_logo_url
+      FROM block_metrics b
+      FULL OUTER JOIN qc_metrics q ON b.validator_id = q.validator_id
+      LEFT JOIN validator_registry_latest vr ON vr.validator_id = COALESCE(b.validator_id, q.validator_id)
+      ORDER BY uptime_score DESC
+    `;
+
+    const result = await this.clickhouseClient.executeRawQuery(query);
+
+    const comparison = result;
+    
+    return comparison.map(v => ({
+      validator_id: v.validator_id,
+      stake: parseInt(v.stake || 0),
+      staking: {
+        auth_address: v.auth_address || null
+      },
+      metrics: {
+        block_proposal_ratio: parseFloat(v.block_proposal_ratio || 0),
+        qc_participation_rate: parseFloat(v.qc_participation_rate || 0),
+        uptime_score: parseFloat(v.uptime_score || 0)
+      },
+      totals: {
+        total_block_opportunities: parseInt(v.total_block_opportunities || 0),
+        blocks_proposed: parseInt(v.blocks_proposed || 0),
+        blocks_skipped: parseInt(v.blocks_skipped || 0),
+        total_qc_opportunities: parseInt(v.total_qc_opportunities || 0),
+        qc_participations: parseInt(v.qc_participations || 0)
+      },
+      infrastructure: {
+        validator_name: v.validator_name || 'unknown',
+        validator_website: v.validator_website || null,
+        validator_logo_url: v.validator_logo_url || null,
+        validator_description: v.validator_description || null,
+        validator_x_handle: v.validator_x_handle || null,
+        provider: v.provider || 'unknown',
+        location: v.location || 'unknown'
+      },
+      keybase: {
+        id: v.keybase_id || null,
+        logo_url: v.keybase_logo_url || null
+      }
+    }));
+  }
+
+  private buildCommissionBundle(source: {
+    commission?: any;
+    consensus_commission?: any;
+    snapshot_commission?: any;
+  }): {
+    commission: { raw: string; ratio: string; percentage: string };
+    consensus_commission: { raw: string; ratio: string; percentage: string };
+    snapshot_commission: { raw: string; ratio: string; percentage: string };
+  } {
+    return {
+      commission: this.formatCommissionValue(source?.commission),
+      consensus_commission: this.formatCommissionValue(source?.consensus_commission),
+      snapshot_commission: this.formatCommissionValue(source?.snapshot_commission)
+    };
+  }
+
+  private formatCommissionValue(value: any): { raw: string; ratio: string; percentage: string } {
+    const raw = this.normalizeCommissionRaw(value);
+    if (raw === '0') {
+      return { raw, ratio: '0', percentage: '0' };
+    }
+
+    try {
+      const ratio = ethers.formatUnits(BigInt(raw), 18);
+      const numeric = parseFloat(ratio);
+      const percentage = Number.isNaN(numeric) ? '0' : (numeric * 100).toFixed(4);
+      return { raw, ratio, percentage };
+    } catch (error) {
+      logger.debug('Failed to format commission value', { value, error });
+      return { raw, ratio: '0', percentage: '0' };
+    }
+  }
+
+  private normalizeCommissionRaw(value: any): string {
+    if (value === null || value === undefined) {
+      return '0';
+    }
+
+    if (typeof value === 'bigint') {
+      return value.toString();
+    }
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return '0';
+      }
+      return Math.trunc(value).toString();
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        return '0';
+      }
+
+      try {
+        return BigInt(trimmed).toString();
+      } catch (error) {
+        logger.debug('Unable to normalize commission string', { value: trimmed, error });
+        return '0';
+      }
+    }
+
+    return '0';
+  }
+
+  private getIntervalClause(timeWindow: string): string {
+    switch (timeWindow) {
+      case '1h':
+        return '1 HOUR';
+      case '24h':
+        return '24 HOUR';
+      case '7d':
+        return '7 DAY';
+      default:
+        return '24 HOUR';
+    }
+  }
+
+  private getSortByClause(sortBy: string): string {
+    switch (sortBy) {
+      case 'block_proposal_ratio':
+        return 'block_proposal_ratio DESC, uptime_score DESC';
+      case 'qc_participation_rate':
+        return 'qc_participation_rate DESC, uptime_score DESC';
+      case 'stake':
+        return 'stake DESC, uptime_score DESC';
+      case 'uptime_score':
+      default:
+        return 'uptime_score DESC, block_proposal_ratio DESC';
+    }
+  }
+
+  // =============================================
+  // DUPLICATE PREVENTION HELPER
+  // =============================================
+
+  private async ensureNoDuplicates(): Promise<void> {
+    try {
+      // Check if we need to optimize the table (detect duplicates)
+      const duplicateCheckQuery = `
+        SELECT validator_id
+        FROM validator_registry
+        WHERE is_active = 1
+        GROUP BY validator_id, epoch, last_updated
+        HAVING COUNT(*) > 1
+        LIMIT 1
+      `;
+      
+      const duplicateResult = await this.clickhouseClient.executeRawQuery(duplicateCheckQuery);
+      
+      if (duplicateResult.length > 0) {
+        logger.warn('🔧 Detected duplicate validators, optimizing table...');
+        
+        // Force table optimization to merge duplicates
+        await this.clickhouseClient.executeCommand('OPTIMIZE TABLE validator_registry FINAL');
+        
+        // Clear related cache entries
+        await this.redisClient.invalidatePattern('validator_*');
+        
+        logger.info('✅ Table optimization and cache clearing completed');
+      }
+    } catch (error) {
+      logger.warn('Failed to check/fix duplicates:', error);
+      // Don't throw - this is a best effort optimization
+    }
+  }
+}

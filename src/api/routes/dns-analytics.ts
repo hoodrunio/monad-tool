@@ -1,0 +1,89 @@
+import { Router } from 'express';
+import { DNSAnalyticsController } from '../controllers/DNSAnalyticsController';
+import { MonadClickHouseClient } from '../../database/clickhouse-client';
+import { MonadRedisClient } from '../../cache/redis-client';
+import { ServiceContainer } from '../../services/service-container';
+
+export function createDNSAnalyticsRoutes(
+  clickhouseClient: MonadClickHouseClient, 
+  redisClient: MonadRedisClient
+): Router {
+  const router = Router();
+  const dnsController = new DNSAnalyticsController(clickhouseClient, redisClient);
+
+  // DNS Analysis Routes
+  router.get('/api/dns/analyze', (req, res) => dnsController.analyzeDNSAddress(req, res));
+  router.post('/api/dns/batch-analyze', (req, res) => dnsController.batchAnalyzeDNS(req, res));
+
+  // Network Topology Routes
+  router.get('/api/dns/network-topology', (req, res) => dnsController.getNetworkTopology(req, res));
+  router.get('/api/dns/centralization-risks', (req, res) => dnsController.getCentralizationRisks(req, res));
+
+  // Distribution Statistics Routes
+  router.get('/api/dns/provider-distribution', (req, res) => dnsController.getProviderDistribution(req, res));
+  router.get('/api/dns/geographic-distribution', (req, res) => dnsController.getGeographicDistribution(req, res));
+
+  // Validator Infrastructure Routes
+  router.get('/api/dns/validator-infrastructure/:validatorId', (req, res) => dnsController.getValidatorInfrastructure(req, res));
+  router.get('/api/dns/search', (req, res) => dnsController.searchValidators(req, res));
+
+  // Cache Management Routes
+  router.get('/api/dns/cache-stats', (req, res) => dnsController.getDNSCacheStats(req, res));
+  router.post('/api/dns/clear-cache', (req, res) => dnsController.clearDNSCache(req, res));
+
+  // Provider Performance Cache Status Route
+  router.get('/api/dns/provider-cache-status', (req, res) => {
+    try {
+      const serviceContainer = ServiceContainer.getInstance();
+      const cacheService = serviceContainer.getProviderCacheService();
+      const status = cacheService.getStatus();
+      
+      res.json({
+        success: true,
+        data: {
+          isRunning: status.isRunning,
+          isCalculating: status.isCalculating,
+          lastCalculationTime: status.lastCalculationTime,
+          calculationErrors: status.calculationErrors,
+          nextUpdateInMs: status.nextUpdateIn,
+          cacheAgeMs: status.cacheAge,
+          cacheAgeHuman: status.cacheAge > 0 ? `${Math.floor(status.cacheAge / 60000)} minutes ago` : 'Never',
+          backgroundServiceStatus: 'active'
+        }
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get cache status'
+      });
+    }
+  });
+
+  // Force Provider Cache Recalculation Route
+  router.post('/api/dns/force-provider-cache-update', async (req, res) => {
+    try {
+      const serviceContainer = ServiceContainer.getInstance();
+      const cacheService = serviceContainer.getProviderCacheService();
+      
+      const success = await cacheService.forceRecalculation();
+      
+      res.json({
+        success: true,
+        data: {
+          recalculationTriggered: success,
+          message: success ? 'Provider cache recalculation started' : 'Recalculation already in progress'
+        }
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to trigger cache recalculation'
+      });
+    }
+  });
+
+  // Health Check Route
+  router.get('/api/dns/health', (req, res) => dnsController.healthCheck(req, res));
+
+  return router;
+} 
